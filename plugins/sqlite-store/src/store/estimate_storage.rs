@@ -1,6 +1,6 @@
 //! `EstimateStorage` implementation backed by SQLite.
 
-use rusqlite::{params, Row};
+use rusqlite::{Row, params};
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
@@ -8,8 +8,8 @@ use voom_domain::estimate::{CostModelSample, EstimateOperationKey, EstimateRun, 
 use voom_domain::storage::{CostModelSampleFilters, EstimateStorage};
 
 use super::{
-    checked_i64_to_u64, format_datetime, other_storage_err, parse_required_datetime, row_uuid,
-    storage_err, OptionalExt, SqlQuery, SqliteStore,
+    OptionalExt, SqlQuery, SqliteStore, checked_i64_to_u64, format_datetime, other_storage_err,
+    parse_required_datetime, row_uuid, storage_err,
 };
 
 fn usize_to_i64(value: usize, field: &str) -> Result<i64> {

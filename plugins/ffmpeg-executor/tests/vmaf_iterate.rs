@@ -3,7 +3,7 @@ use std::path::Path;
 
 use voom_ffmpeg_executor::vmaf::{SampleError, SampleExtractor, VmafError, VmafModel};
 use voom_ffmpeg_executor::vmaf_iterate::{
-    iterate_to_target_with, BitrateBounds, EncodeAttempt, IterationResult,
+    BitrateBounds, EncodeAttempt, IterationResult, iterate_to_target_with,
 };
 
 struct MockSampleExtractor;

@@ -58,7 +58,7 @@ impl voom_kernel::Plugin for CapabilityCollectorPlugin {
     }
 
     fn on_event(&self, event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
-        if let Event::ExecutorCapabilities(ref caps) = event {
+        if let Event::ExecutorCapabilities(caps) = event {
             self.map.lock().register(caps.clone());
         }
         Ok(None)

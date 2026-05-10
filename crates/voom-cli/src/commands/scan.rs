@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::app;
@@ -20,7 +20,7 @@ use voom_domain::storage::StorageTrait;
 use voom_domain::verification::{VerificationMode, VerificationOutcome, VerificationRecord};
 use voom_verifier::VerifierConfig;
 
-use crate::commands::verify::{run_quick_pass, QuickVerifyTarget};
+use crate::commands::verify::{QuickVerifyTarget, run_quick_pass};
 
 /// Run the scan command.
 ///

@@ -4,11 +4,11 @@ pub mod query;
 
 use std::sync::Arc;
 
+use voom_domain::Capability;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::{Event, EventResult};
 use voom_domain::stats::SnapshotTrigger;
 use voom_domain::storage::StorageTrait;
-use voom_domain::Capability;
 use voom_kernel::Plugin;
 
 pub use query::{DatabaseStats, IssueReport, ReportRequest, ReportResult, ReportSection};

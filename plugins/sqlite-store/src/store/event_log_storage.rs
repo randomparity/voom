@@ -1,11 +1,11 @@
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 
 use voom_domain::errors::Result;
 use voom_domain::storage::{
     EventLogFilters, EventLogRecord, EventLogStorage, PruneReport, RetentionPolicy,
 };
 
-use super::{format_datetime, parse_datetime, storage_err, SqliteStore};
+use super::{SqliteStore, format_datetime, parse_datetime, storage_err};
 
 impl EventLogStorage for SqliteStore {
     fn insert_event_log(&self, record: &EventLogRecord) -> Result<i64> {

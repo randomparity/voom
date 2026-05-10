@@ -6,8 +6,8 @@ mod safeguards;
 mod transitions;
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use anyhow::{Context, Result};
 use console::style;
@@ -137,7 +137,8 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
 
         // Auto-prune stale file entries under the target directories
         for path in &paths {
-            match store.prune_missing_files_under(path) {
+            let prune_result = store.prune_missing_files_under(path);
+            match prune_result {
                 Ok(n) if n > 0 && !plan_only && !quiet => eprintln!("Pruned {n} stale entries."),
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "auto-prune failed"),

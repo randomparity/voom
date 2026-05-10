@@ -207,10 +207,12 @@ mod tests {
         };
         let json = serde_json::to_value(&response).unwrap();
         assert_eq!(json["errors"][0]["suggestion"], "did you mean \"hevc\"?");
-        assert!(!json["errors"][0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("suggestion"));
+        assert!(
+            !json["errors"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("suggestion")
+        );
     }
 
     #[test]

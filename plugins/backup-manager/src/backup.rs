@@ -11,10 +11,10 @@ use uuid::Uuid;
 use voom_domain::errors::Result;
 
 use crate::destination::{
-    remote_path_for, upload_with_rclone, RemoteBackupRecord, RemoteUploadReceipt,
-    RemoteUploadRequest,
+    RemoteBackupRecord, RemoteUploadReceipt, RemoteUploadRequest, remote_path_for,
+    upload_with_rclone,
 };
-use crate::{plugin_err, BackupConfig, BackupRecord};
+use crate::{BackupConfig, BackupRecord, plugin_err};
 
 /// Create a backup of the given file.
 ///
@@ -357,14 +357,18 @@ mod tests {
 
         assert_eq!(record.remote_backups.len(), 2);
         assert_eq!(uploads.borrow().len(), 2);
-        assert!(record
-            .remote_backups
-            .iter()
-            .any(|backup| backup.destination_name == "offsite"));
-        assert!(record
-            .remote_backups
-            .iter()
-            .any(|backup| backup.destination_name == "archive-s3"));
+        assert!(
+            record
+                .remote_backups
+                .iter()
+                .any(|backup| backup.destination_name == "offsite")
+        );
+        assert!(
+            record
+                .remote_backups
+                .iter()
+                .any(|backup| backup.destination_name == "archive-s3")
+        );
     }
 
     #[test]

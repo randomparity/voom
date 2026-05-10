@@ -4,10 +4,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use console::style;
 use tokio_util::sync::CancellationToken;
-use voom_web_server::server::{start_server, ServerConfig};
+use voom_web_server::server::{ServerConfig, start_server};
 use voom_web_server::state::{
-    ProcessRunLaunchRequest, ProcessRunLaunchResponse, ProcessRunLauncher, SseEvent,
-    SSE_CHANNEL_CAPACITY,
+    ProcessRunLaunchRequest, ProcessRunLaunchResponse, ProcessRunLauncher, SSE_CHANNEL_CAPACITY,
+    SseEvent,
 };
 
 use crate::cli::{ErrorHandling, ProcessArgs, ServeArgs};

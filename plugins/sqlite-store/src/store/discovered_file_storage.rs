@@ -7,7 +7,7 @@ use uuid::Uuid;
 use voom_domain::errors::Result;
 
 use super::{
-    checked_i64_to_u64, format_datetime, parse_required_datetime, storage_err, SqliteStore,
+    SqliteStore, checked_i64_to_u64, format_datetime, parse_required_datetime, storage_err,
 };
 
 /// Status of a discovered file in the staging pipeline.
@@ -145,11 +145,7 @@ impl SqliteStore {
                     size: checked_i64_to_u64(row.get("size")?, "discovered_files.size")?,
                     content_hash: {
                         let h: String = row.get("content_hash")?;
-                        if h.is_empty() {
-                            None
-                        } else {
-                            Some(h)
-                        }
+                        if h.is_empty() { None } else { Some(h) }
                     },
                     status: DiscoveredStatus::parse(&status_str).ok_or_else(|| {
                         rusqlite::Error::FromSqlConversionFailure(

@@ -136,7 +136,7 @@ fn load_templates(template_dir: Option<&str>) -> Result<tera::Tera, ServerError>
 /// template set without starting the full server.
 pub fn embedded_templates() -> Result<tera::Tera, ServerError> {
     macro_rules! register_templates {
-        ($tera:expr, $( $name:literal ),+ $(,)?) => {
+        ($tera:expr_2021, $( $name:literal ),+ $(,)?) => {
             $(
                 $tera
                     .add_raw_template(

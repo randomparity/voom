@@ -14,7 +14,7 @@
 
 | Component | Technology | Crate |
 |-----------|-----------|-------|
-| Language | Rust (2021 edition) | — |
+| Language | Rust (2024 edition) | — |
 | CLI | clap (derive) | `clap` |
 | Web server | axum | `axum`, `tower`, `tokio` |
 | Web frontend | htmx + Alpine.js | — (static assets) |

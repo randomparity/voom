@@ -1,17 +1,17 @@
 //! Server-Sent Events (SSE) for live updates.
 
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::sse::{Event as SseAxumEvent, KeepAlive, Sse};
 use axum::response::IntoResponse;
-use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
-use tokio_stream::wrappers::BroadcastStream;
+use axum::response::sse::{Event as SseAxumEvent, KeepAlive, Sse};
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::state::{AppState, SseEvent};
 

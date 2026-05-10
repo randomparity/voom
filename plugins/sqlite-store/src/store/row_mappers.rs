@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use rusqlite::types::Type;
 use rusqlite::Row;
+use rusqlite::types::Type;
 use uuid::Uuid;
 
 use voom_domain::bad_file::{BadFile, BadFileSource};

@@ -96,7 +96,7 @@ mod tests {
 
     use voom_domain::media::{MediaFile, Track, TrackType};
 
-    use super::{apply_detected_languages, AUDIO_LANGUAGE_DETECTOR_PLUGIN};
+    use super::{AUDIO_LANGUAGE_DETECTOR_PLUGIN, apply_detected_languages};
 
     fn make_file_with_audio_tracks() -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from("/tmp/test.mkv"));

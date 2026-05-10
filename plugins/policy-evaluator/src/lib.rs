@@ -16,8 +16,8 @@ use voom_domain::media::MediaFile;
 use voom_dsl::compiled::CompiledPolicy;
 
 pub use evaluator::{
-    apply_capability_hints, evaluate, evaluate_with_context, evaluate_with_phase_outputs,
-    EvaluationOutcome,
+    EvaluationOutcome, apply_capability_hints, evaluate, evaluate_with_context,
+    evaluate_with_phase_outputs,
 };
 
 /// Evaluate a policy with system capabilities available to conditions,

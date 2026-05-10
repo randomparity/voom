@@ -1,7 +1,7 @@
 //! Plugin-related API endpoints.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::Serialize;
 
 use crate::errors::WebError;

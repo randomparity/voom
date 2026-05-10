@@ -1,13 +1,13 @@
 //! File transition history API endpoint.
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use serde::Serialize;
 use uuid::Uuid;
 
 use voom_domain::transition::FileTransition;
 
-use crate::errors::{spawn_store_op, WebError};
+use crate::errors::{WebError, spawn_store_op};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]

@@ -7,8 +7,8 @@
 pub mod convert;
 
 pub use convert::{
-    capability_from_wit, capability_to_wit, event_from_wasm, event_result_from_wasm,
-    event_result_to_wasm, event_to_wasm, WasmEventResult,
+    WasmEventResult, capability_from_wit, capability_to_wit, event_from_wasm,
+    event_result_from_wasm, event_result_to_wasm, event_to_wasm,
 };
 
 /// The path to the WIT interface definitions, for use by `bindgen!` and `wit_bindgen::generate!`.

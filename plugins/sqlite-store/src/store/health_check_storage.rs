@@ -3,7 +3,7 @@ use rusqlite::params;
 use voom_domain::errors::Result;
 use voom_domain::storage::{HealthCheckFilters, HealthCheckRecord, HealthCheckStorage};
 
-use super::{format_datetime, storage_err, SqliteStore};
+use super::{SqliteStore, format_datetime, storage_err};
 
 impl HealthCheckStorage for SqliteStore {
     fn insert_health_check(&self, record: &HealthCheckRecord) -> Result<()> {

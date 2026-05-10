@@ -366,10 +366,12 @@ fn test_policy_test_json_reports_failures_and_exits_one() {
     assert_eq!(json["summary"]["total"], 1);
     assert_eq!(json["cases"][0]["name"], "containerizes mp4");
     assert_eq!(json["cases"][0]["status"], "fail");
-    assert!(json["cases"][0]["failures"][0]
-        .as_str()
-        .unwrap()
-        .contains("missing"));
+    assert!(
+        json["cases"][0]["failures"][0]
+            .as_str()
+            .unwrap()
+            .contains("missing")
+    );
 }
 
 #[test]

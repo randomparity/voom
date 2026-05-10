@@ -102,7 +102,7 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
 
     // Helper macro to conditionally register a plugin (skips if disabled).
     macro_rules! register_if_enabled {
-        ($name:expr, $plugin:expr, $priority:expr, $label:expr) => {
+        ($name:expr_2021, $plugin:expr_2021, $priority:expr_2021, $label:expr_2021) => {
             if !disabled.iter().any(|d| d == $name) {
                 let ctx = voom_kernel::PluginContext::new(plugin_json($name), data_dir.clone());
                 kernel
@@ -110,7 +110,7 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
                     .with_context(|| format!("Failed to initialize {}", $label))?;
             }
         };
-        ($name:expr, $plugin:expr, $priority:expr, $label:expr, $ctx:expr) => {
+        ($name:expr_2021, $plugin:expr_2021, $priority:expr_2021, $label:expr_2021, $ctx:expr_2021) => {
             if !disabled.iter().any(|d| d == $name) {
                 kernel
                     .init_and_register(Arc::new($plugin), $priority, $ctx)
@@ -456,10 +456,12 @@ mod tests {
         };
         let result = bootstrap_kernel_with_store(&config).expect("bootstrap should succeed");
         // Verify the store is functional
-        assert!(result
-            .store
-            .list_files(&voom_domain::FileFilters::default())
-            .is_ok());
+        assert!(
+            result
+                .store
+                .list_files(&voom_domain::FileFilters::default())
+                .is_ok()
+        );
     }
 
     #[test]

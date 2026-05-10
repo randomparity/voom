@@ -533,13 +533,13 @@ mod tests {
             CompiledCondition::Exists {
                 target: TrackTarget::Audio,
                 filter: Some(voom_dsl::compiled::CompiledFilter::LangIn(vec![
-                    "eng".into()
+                    "eng".into(),
                 ])),
             },
             CompiledCondition::Exists {
                 target: TrackTarget::Audio,
                 filter: Some(voom_dsl::compiled::CompiledFilter::LangIn(vec![
-                    "jpn".into()
+                    "jpn".into(),
                 ])),
             },
         ]);
@@ -549,7 +549,7 @@ mod tests {
         let not_cond = CompiledCondition::Not(Box::new(CompiledCondition::Exists {
             target: TrackTarget::Audio,
             filter: Some(voom_dsl::compiled::CompiledFilter::LangIn(vec![
-                "fre".into()
+                "fre".into(),
             ])),
         }));
         assert!(evaluate_condition(&not_cond, &file, &ctx));

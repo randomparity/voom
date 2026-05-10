@@ -1,7 +1,7 @@
 //! Integration tests for the web server REST API.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use axum_test::TestServer;
 use serde_json::json;

@@ -329,11 +329,10 @@ impl MkvtoolnixExecutorPlugin {
                     stderr_tail: voom_process::stderr_tail(&o.stderr, 20),
                     duration_ms,
                 };
-                Ok(vec![ActionResult::success(
-                    action.operation,
-                    &action.description,
-                )
-                .with_execution_detail(detail)])
+                Ok(vec![
+                    ActionResult::success(action.operation, &action.description)
+                        .with_execution_detail(detail),
+                ])
             }
             Ok(o) => {
                 let tail = voom_process::stderr_tail(&o.stderr, 20);
@@ -354,12 +353,10 @@ impl MkvtoolnixExecutorPlugin {
                     stderr_tail: tail,
                     duration_ms,
                 };
-                Ok(vec![ActionResult::failure(
-                    action.operation,
-                    &action.description,
-                    &error_msg,
-                )
-                .with_execution_detail(detail)])
+                Ok(vec![
+                    ActionResult::failure(action.operation, &action.description, &error_msg)
+                        .with_execution_detail(detail),
+                ])
             }
             Err(e) => Err(VoomError::ToolExecution {
                 tool: "mkvmerge".into(),

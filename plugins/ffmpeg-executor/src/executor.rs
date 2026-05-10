@@ -19,7 +19,7 @@ use voom_domain::temp_file::temp_path_with_ext;
 use crate::command::{build_ffmpeg_command, output_extension};
 use crate::hwaccel::HwAccelConfig;
 use crate::vmaf::FullSample;
-use crate::vmaf_iterate::{iterate_to_target, BitrateBounds, IterationError, IterationResult};
+use crate::vmaf_iterate::{BitrateBounds, IterationError, IterationResult, iterate_to_target};
 
 /// Default timeout for `FFmpeg` operations (4 hours — transcode can be slow).
 const FFMPEG_TIMEOUT: Duration = Duration::from_secs(4 * 60 * 60);
@@ -219,12 +219,10 @@ fn execute_plan_with_runners(
                 stderr_tail: tail,
                 duration_ms,
             };
-            let action_results = vec![ActionResult::failure(
-                actions[0].operation,
-                &actions[0].description,
-                &error_msg,
-            )
-            .with_execution_detail(detail)];
+            let action_results = vec![
+                ActionResult::failure(actions[0].operation, &actions[0].description, &error_msg)
+                    .with_execution_detail(detail),
+            ];
             Ok(PlanExecution {
                 action_results,
                 transcode_outcomes,

@@ -1,7 +1,7 @@
 //! `VerificationStorage` implementation backed by SQLite.
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Row};
+use rusqlite::{Row, params};
 
 use voom_domain::errors::Result;
 use voom_domain::media::{Container, MediaFile};
@@ -13,7 +13,7 @@ use voom_domain::verification::{
 };
 
 use super::row_mappers::row_to_verification;
-use super::{format_datetime, parse_datetime, storage_err, SqlQuery, SqliteStore};
+use super::{SqlQuery, SqliteStore, format_datetime, parse_datetime, storage_err};
 
 const SELECT_VERIFICATION: &str = "SELECT id, file_id, verified_at, mode, outcome, \
     error_count, warning_count, content_hash, details FROM verifications";

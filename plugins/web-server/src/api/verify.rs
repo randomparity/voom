@@ -1,7 +1,7 @@
 //! Verification and integrity API endpoints.
 
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use serde::Deserialize;
 
 use voom_domain::utils::since::parse_since;
@@ -10,7 +10,7 @@ use voom_domain::verification::{
     VerificationRecord,
 };
 
-use crate::errors::{spawn_store_op, WebError};
+use crate::errors::{WebError, spawn_store_op};
 use crate::state::AppState;
 
 /// Default page size when the caller does not specify `limit`.

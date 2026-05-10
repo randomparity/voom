@@ -50,6 +50,12 @@ impl ProcessLock {
     }
 }
 
+impl Drop for ProcessLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self._file);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,9 +65,15 @@ mod tests {
     // locks simultaneously. Serialize all lock tests to prevent flakes.
     static LOCK_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn lock_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        LOCK_TEST
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn test_acquire_succeeds_in_fresh_dir() {
-        let _guard = LOCK_TEST.lock().expect("test mutex");
+        let _guard = lock_test_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         let _lock = ProcessLock::acquire(dir.path()).expect("acquire");
         assert!(dir.path().join("voom.lock").exists());
@@ -69,7 +81,7 @@ mod tests {
 
     #[test]
     fn test_second_acquire_fails() {
-        let _guard = LOCK_TEST.lock().expect("test mutex");
+        let _guard = lock_test_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         let _first = ProcessLock::acquire(dir.path()).expect("first acquire");
         let result = ProcessLock::acquire(dir.path());
@@ -90,18 +102,18 @@ mod tests {
 
     #[test]
     fn test_lock_released_on_drop() {
-        let _guard = LOCK_TEST.lock().expect("test mutex");
+        let _guard = lock_test_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         {
             let _lock = ProcessLock::acquire(dir.path()).expect("first acquire");
         }
         // First lock is dropped; acquiring again must succeed.
-        ProcessLock::acquire(dir.path()).expect("re-acquire after drop");
+        let _lock = ProcessLock::acquire(dir.path()).expect("re-acquire after drop");
     }
 
     #[test]
     fn test_creates_nested_dirs() {
-        let _guard = LOCK_TEST.lock().expect("test mutex");
+        let _guard = lock_test_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         let nested = dir.path().join("a").join("b").join("c");
         assert!(!nested.exists());
@@ -111,7 +123,7 @@ mod tests {
 
     #[test]
     fn test_lock_file_is_named_voom_lock() {
-        let _guard = LOCK_TEST.lock().expect("test mutex");
+        let _guard = lock_test_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         let _lock = ProcessLock::acquire(dir.path()).expect("acquire");
         assert!(dir.path().join("voom.lock").exists());

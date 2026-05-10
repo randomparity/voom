@@ -262,8 +262,8 @@ mod tests {
     #[test]
     fn test_scan_reuses_cached_hash_when_fingerprint_matches() {
         use chrono::Utc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
         use voom_domain::media::StoredFingerprint;
 
         let dir = tempfile::tempdir().unwrap();
@@ -313,8 +313,8 @@ mod tests {
     #[test]
     fn test_scan_rehashes_when_size_differs() {
         use chrono::Utc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
         use voom_domain::media::StoredFingerprint;
 
         let dir = tempfile::tempdir().unwrap();
@@ -352,8 +352,8 @@ mod tests {
     #[test]
     fn test_scan_rehashes_when_mtime_is_newer_than_last_seen() {
         use chrono::Utc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
         use voom_domain::media::StoredFingerprint;
 
         let dir = tempfile::tempdir().unwrap();

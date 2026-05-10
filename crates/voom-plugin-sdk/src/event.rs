@@ -1,7 +1,7 @@
 //! Event serialization/deserialization helpers for the WASM boundary.
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::Event;
 

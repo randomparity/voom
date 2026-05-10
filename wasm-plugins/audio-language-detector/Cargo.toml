@@ -1,7 +1,7 @@
 [package]
 name = "audio-language-detector"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "VOOM WASM plugin for audio language detection via Whisper (uses host tool runner)"
 
 [lib]

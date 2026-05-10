@@ -530,11 +530,10 @@ mod tests {
             "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stdout.write('a' * 40)\nPY\n",
         )
         .expect("write script");
-        make_executable(&script);
 
         let output = run_with_timeout_env_config(
-            script.to_str().expect("utf8 path"),
-            &[] as &[&str],
+            "sh",
+            &[script.to_str().expect("utf8 path")],
             Duration::from_secs(5),
             &[],
             CaptureConfig {
@@ -561,11 +560,10 @@ mod tests {
             "#!/bin/sh\npython3 - <<'PY'\nimport sys\nsys.stderr.write('first\\nsecond\\nthird\\nfourth\\n')\nPY\n",
         )
         .expect("write script");
-        make_executable(&script);
 
         let output = run_with_timeout_env_config(
-            script.to_str().expect("utf8 path"),
-            &[] as &[&str],
+            "sh",
+            &[script.to_str().expect("utf8 path")],
             Duration::from_secs(5),
             &[],
             CaptureConfig {
@@ -623,15 +621,6 @@ mod tests {
             }
             other => panic!("expected ToolExecution, got: {other}"),
         }
-    }
-
-    #[cfg(unix)]
-    fn make_executable(path: &std::path::Path) {
-        use std::os::unix::fs::PermissionsExt;
-
-        let mut perms = std::fs::metadata(path).expect("metadata").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(path, perms).expect("chmod");
     }
 
     #[test]

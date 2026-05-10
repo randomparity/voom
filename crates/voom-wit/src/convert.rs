@@ -645,8 +645,9 @@ mod tests {
         })
         .unwrap_err();
 
-        assert!(err
-            .to_string()
-            .contains("failed to deserialize execution detail"));
+        assert!(
+            err.to_string()
+                .contains("failed to deserialize execution detail")
+        );
     }
 }

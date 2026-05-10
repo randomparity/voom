@@ -283,6 +283,7 @@ mod tests {
                 title: None,
                 position: None,
                 source_track: None,
+                loudness: None,
             },
             "Synthesize English audio description",
         ))
@@ -362,6 +363,7 @@ mod tests {
                 title: None,
                 position: None,
                 source_track: None,
+                loudness: None,
             },
             "empty synth",
         ));

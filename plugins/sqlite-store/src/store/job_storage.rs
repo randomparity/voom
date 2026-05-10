@@ -7,8 +7,8 @@ use voom_domain::job::{Job, JobStatus, JobUpdate};
 use voom_domain::storage::{JobFilters, JobStorage, PruneReport, RetentionPolicy};
 
 use super::{
-    format_datetime, other_storage_err, parse_datetime, row_to_job, storage_err, SqlQuery,
-    SqliteStore,
+    SqlQuery, SqliteStore, format_datetime, other_storage_err, parse_datetime, row_to_job,
+    storage_err,
 };
 
 fn serialize_json(value: &serde_json::Value) -> Result<String> {

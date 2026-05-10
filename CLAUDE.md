@@ -53,7 +53,7 @@ Plugins communicate exclusively through an **event bus** (synchronous priority-o
 
 ## Tech Stack
 
-Rust 2021 edition. Key crates: clap (CLI), axum/tokio (web + async), pest (DSL parser), wasmtime/wit-bindgen (WASM plugins), rusqlite (SQLite), serde/rmp-serde (serialization), tracing (logging), insta (snapshot tests), thiserror/anyhow (errors), walkdir/rayon (file walking), xxhash-rust (hashing).
+Rust 2024 edition. Key crates: clap (CLI), axum/tokio (web + async), pest (DSL parser), wasmtime/wit-bindgen (WASM plugins), rusqlite (SQLite), serde/rmp-serde (serialization), tracing (logging), insta (snapshot tests), thiserror/anyhow (errors), walkdir/rayon (file walking), xxhash-rust (hashing).
 
 Web frontend: htmx + Alpine.js with Tera templates.
 

@@ -7,7 +7,7 @@ use std::io::Read as _;
 use std::path::Path;
 use std::time::Duration;
 
-use super::{HostState, HttpResponse, ToolOutput, MAX_PLUGIN_DATA_VALUE_SIZE};
+use super::{HostState, HttpResponse, MAX_PLUGIN_DATA_VALUE_SIZE, ToolOutput};
 
 /// Extract the host (domain) from a URL string.
 /// Supports `scheme://[user@]host[:port]/...` forms.
@@ -562,9 +562,11 @@ mod tests {
 
         let result = state.get_path_transitions("/etc/passwd");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("not within allowed directories"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("not within allowed directories")
+        );
     }
 
     #[test]
@@ -740,9 +742,11 @@ mod tests {
     fn test_check_http_domain_allowed_host_passes() {
         // No network call — check_http_domain is a pure allowlist check.
         let state = HostState::new("test".into()).with_http_domains(vec!["api.example.com".into()]);
-        assert!(state
-            .check_http_domain("https://api.example.com/v1/resource")
-            .is_ok());
+        assert!(
+            state
+                .check_http_domain("https://api.example.com/v1/resource")
+                .is_ok()
+        );
     }
 
     #[test]

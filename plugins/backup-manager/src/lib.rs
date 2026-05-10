@@ -539,9 +539,11 @@ mod tests {
         let path = Path::new("/media/movies/Movie.mkv");
         let backup = plugin.backup_path_for(path, Uuid::new_v4());
 
-        assert!(backup
-            .to_string_lossy()
-            .starts_with("/media/movies/.voom-backup/Movie.mkv."));
+        assert!(
+            backup
+                .to_string_lossy()
+                .starts_with("/media/movies/.voom-backup/Movie.mkv.")
+        );
         assert!(backup.to_string_lossy().ends_with(".vbak"));
     }
 
