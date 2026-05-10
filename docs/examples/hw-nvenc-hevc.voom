@@ -1,0 +1,24 @@
+// NVENC HEVC transcode policy.
+//
+// Demonstrates explicit NVENC use with the process-level hardware limiter.
+// Set `[plugin.ffmpeg-executor] nvenc_max_parallel` in config.toml to tune
+// concurrent hardware transcodes independently of `voom process --workers`.
+//
+// Designed for use with: ffmpeg-executor, backup-manager
+
+policy "hw-nvenc-hevc" {
+  config {
+    on_error: continue
+  }
+
+  phase transcode-video {
+    skip when video.codec in [hevc, h265]
+
+    transcode video to hevc {
+      crf: 32
+      preset: medium
+      hw: nvenc
+      hw_fallback: true
+    }
+  }
+}

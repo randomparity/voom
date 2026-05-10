@@ -587,6 +587,7 @@ voom config get <KEY>
 ```bash
 voom config get auth_token
 voom config get plugin.ffmpeg-executor.hw_accel
+voom config get plugin.ffmpeg-executor.nvenc_max_parallel
 ```
 
 #### `voom config set`
@@ -602,9 +603,12 @@ voom config set <KEY> <VALUE>
 ```bash
 voom config set auth_token mytoken
 voom config set plugin.ffmpeg-executor.hw_accel nvenc
+voom config set plugin.ffmpeg-executor.nvenc_max_parallel 2
 ```
 
 Configuration file location: `~/.config/voom/config.toml`
+
+For hardware transcoding, see [Hardware Transcoding](hardware-transcoding.md).
 
 ---
 

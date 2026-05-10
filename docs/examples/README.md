@@ -36,6 +36,13 @@ the rest of the batch continues.
 
 **Plugins used:** ffmpeg-executor, backup-manager
 
+### [hw-nvenc-hevc.voom](hw-nvenc-hevc.voom)
+Explicit NVENC HEVC transcode policy. Pair with
+`[plugin.ffmpeg-executor] nvenc_max_parallel` to validate hardware resource
+limiting independently from `voom process --workers`.
+
+**Plugins used:** ffmpeg-executor, backup-manager
+
 ### [preflight-archive.voom](preflight-archive.voom)
 Archival policy for pre-flight cost estimates. Demonstrates container,
 video-transcode, and audio-transcode phases intended for `voom process --estimate`.
@@ -121,7 +128,7 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 | `order tracks` | movie-library, anime, strict, full |
 | `defaults` | movie-library, anime, strict, full |
 | `actions` (video/audio/subtitle) | movie-library, anime, strict, full |
-| `transcode` (video/audio) | transcode, containerize-then-transcode, preflight-archive, preflight-size-gate, hdr-archival, hdr-sdr-mobile, full |
+| `transcode` (video/audio) | transcode, containerize-then-transcode, hw-nvenc-hevc, preflight-archive, preflight-size-gate, hdr-archival, hdr-sdr-mobile, full |
 | `preserve_hdr` / `tonemap` | hdr-archival, hdr10plus-preserve, dolby-vision-rpu, hdr-sdr-mobile |
 | `crop: auto` | transcode |
 | `synthesize` | transcode, full |

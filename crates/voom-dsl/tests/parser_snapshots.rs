@@ -310,6 +310,15 @@ fn example_continue_on_error_transcode_parses_and_validates() {
 }
 
 #[test]
+fn example_hw_nvenc_hevc_parses_and_validates() {
+    let input = include_str!("../../../docs/examples/hw-nvenc-hevc.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "hw-nvenc-hevc");
+    assert_eq!(ast.phases.len(), 1);
+    voom_dsl::validate(&ast).unwrap();
+}
+
+#[test]
 fn example_hdr_archival_parses_and_validates() {
     let input = include_str!("../../../docs/examples/hdr-archival.voom");
     let ast = parse_policy(input).unwrap();
