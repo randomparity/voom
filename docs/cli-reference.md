@@ -149,8 +149,8 @@ voom estimate calibrate --benchmark-corpus /tmp/voom-estimate-corpus --max-fixtu
 The standalone command shares the `process --estimate` planning path. Calibration
 records local codec/backend samples used by later estimates. `--benchmark-corpus`
 uses media from `scripts/generate-test-corpus` and persists measured HEVC
-software samples with an estimate-vs-actual summary; without it, calibration
-seeds conservative default samples.
+software samples with a holdout estimate-vs-actual summary; without it,
+calibration seeds conservative default samples.
 
 ---
 
