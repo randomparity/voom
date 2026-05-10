@@ -1,0 +1,13 @@
+{
+  "policy": "../hw-nvenc-hevc.voom",
+  "cases": [
+    {
+      "name": "plans explicit nvenc hevc transcode",
+      "fixture": "movie-mp4.json",
+      "expect": {
+        "phases_run": ["transcode-video"],
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}
