@@ -12,6 +12,7 @@
 | [quickstart.md](quickstart.md) | Getting started guide |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Local development, coverage, and CI workflow notes |
 | [mutation-testing-baseline.md](mutation-testing-baseline.md) | Initial cargo-mutants baseline and triage notes |
+| [openssf-scorecard.md](openssf-scorecard.md) | OpenSSF Scorecard maintenance and admin-only settings |
 | [plugin-development.md](plugin-development.md) | Guide for writing native and WASM plugins |
 | [preflight-estimates.md](preflight-estimates.md) | Runtime, output size, savings, and calibration estimates before processing |
 | [policy-testing.md](policy-testing.md) | Tutorial for writing fixture-backed `.voom` policy tests |
