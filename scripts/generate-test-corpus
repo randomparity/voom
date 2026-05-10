@@ -21,35 +21,71 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 TITLE_POOL = [
-    "The Silent Echo", "Orbital Descent S02E07", "Crimson Meridian",
-    "Waypoint Zero", "The Last Cartographer", "Neon Reef",
-    "Parallax S01E03 — Inversion", "Dustwalker", "Abyssal Reach",
-    "Iron Chorus", "The Vanishing Gradient", "Solstice Run",
+    "The Silent Echo",
+    "Orbital Descent S02E07",
+    "Crimson Meridian",
+    "Waypoint Zero",
+    "The Last Cartographer",
+    "Neon Reef",
+    "Parallax S01E03 — Inversion",
+    "Dustwalker",
+    "Abyssal Reach",
+    "Iron Chorus",
+    "The Vanishing Gradient",
+    "Solstice Run",
 ]
 
 ENCODER_POOL = [
-    "libebml v1.4.4 + libmatroska v1.7.1", "Lavf60.3.100",
-    "HandBrake 1.7.3 2024011800", "MakeMKV v1.17.6",
-    "x264 core 164 r3108", "mkvmerge v82.0",
+    "libebml v1.4.4 + libmatroska v1.7.1",
+    "Lavf60.3.100",
+    "HandBrake 1.7.3 2024011800",
+    "MakeMKV v1.17.6",
+    "x264 core 164 r3108",
+    "mkvmerge v82.0",
 ]
 
-LANG_POOL = ["eng", "spa", "fra", "deu", "jpn", "und", "zho", "por", "ita",
-             "kor", "rus", "ara"]
+LANG_POOL = [
+    "eng",
+    "spa",
+    "fra",
+    "deu",
+    "jpn",
+    "und",
+    "zho",
+    "por",
+    "ita",
+    "kor",
+    "rus",
+    "ara",
+]
 
 AUDIO_TITLE_POOL = [
-    "English 5.1 Surround", "Director's Commentary", "Music & Effects",
-    "Descriptive Audio", "Stereo", "Original Mix", "DTS-HD MA 7.1",
-    "AAC Stereo", "Commentary by Director",
+    "English 5.1 Surround",
+    "Director's Commentary",
+    "Music & Effects",
+    "Descriptive Audio",
+    "Stereo",
+    "Original Mix",
+    "DTS-HD MA 7.1",
+    "AAC Stereo",
+    "Commentary by Director",
 ]
 
 SUB_TITLE_POOL = [
-    "English (SDH)", "Forced Signs & Songs", "Full Subtitles",
-    "Commentary Subtitles", "Closed Captions", "Hearing Impaired",
+    "English (SDH)",
+    "Forced Signs & Songs",
+    "Full Subtitles",
+    "Commentary Subtitles",
+    "Closed Captions",
+    "Hearing Impaired",
 ]
 
 HANDLER_POOL = [
-    "VideoHandler", "SoundHandler", "Apple Video Media Handler",
-    "GPAC ISO Video Handler", "GPAC ISO Audio Handler",
+    "VideoHandler",
+    "SoundHandler",
+    "Apple Video Media Handler",
+    "GPAC ISO Video Handler",
+    "GPAC ISO Audio Handler",
 ]
 
 SCHEMA_VERSION = 1
@@ -61,47 +97,105 @@ ALL_PROFILE_MEMBERS = {"smoke", "coverage", "stress"}
 # ---------------------------------------------------------------------------
 
 MOVIE_TITLE_POOL = [
-    "The Silent Echo", "Crimson Meridian", "Neon Reef",
-    "Orbital Descent", "Dustwalker", "Iron Chorus",
-    "Abyssal Reach", "The Vanishing Gradient", "Solstice Run",
-    "Waypoint Zero", "The Last Cartographer", "Parallax",
-    "Black Meridian", "The Obsidian Gate", "Phantom Corridor",
-    "Static Bloom", "Voidrunner", "The Copper Key",
-    "Fractured Light", "Signal Drift", "Terminal Velocity",
-    "Hollow Earth", "The Glass Frontier", "Midnight Protocol",
-    "Starfall", "The Iron Bloom", "Chroma Shift",
-    "Deep Current", "The Pale Beyond", "Atlas Point",
+    "The Silent Echo",
+    "Crimson Meridian",
+    "Neon Reef",
+    "Orbital Descent",
+    "Dustwalker",
+    "Iron Chorus",
+    "Abyssal Reach",
+    "The Vanishing Gradient",
+    "Solstice Run",
+    "Waypoint Zero",
+    "The Last Cartographer",
+    "Parallax",
+    "Black Meridian",
+    "The Obsidian Gate",
+    "Phantom Corridor",
+    "Static Bloom",
+    "Voidrunner",
+    "The Copper Key",
+    "Fractured Light",
+    "Signal Drift",
+    "Terminal Velocity",
+    "Hollow Earth",
+    "The Glass Frontier",
+    "Midnight Protocol",
+    "Starfall",
+    "The Iron Bloom",
+    "Chroma Shift",
+    "Deep Current",
+    "The Pale Beyond",
+    "Atlas Point",
 ]
 
 FOREIGN_TITLE_POOL = [
-    "Café Páramo", "Über den Wolken", "La Dernière Nuit",
-    "El Sueño Eterno", "Der letzte Horizont", "Le Cercle Rouge",
-    "Nocturne d'Argent", "Sous les étoiles", "Die Stille Welt",
-    "Märchenstunde", "Añoranza", "Éclipse Totale",
-    "Flüsterwald", "Pièce Montée", "Täuschung",
+    "Café Páramo",
+    "Über den Wolken",
+    "La Dernière Nuit",
+    "El Sueño Eterno",
+    "Der letzte Horizont",
+    "Le Cercle Rouge",
+    "Nocturne d'Argent",
+    "Sous les étoiles",
+    "Die Stille Welt",
+    "Märchenstunde",
+    "Añoranza",
+    "Éclipse Totale",
+    "Flüsterwald",
+    "Pièce Montée",
+    "Täuschung",
 ]
 
 EPISODE_TITLE_POOL = [
-    "The Last Stand", "Inversion", "Pilot", "Reckoning",
-    "Zero Hour", "Convergence", "Fallout", "Awakening",
-    "Crossfire", "Echoes", "The Signal", "Chrysalis",
+    "The Last Stand",
+    "Inversion",
+    "Pilot",
+    "Reckoning",
+    "Zero Hour",
+    "Convergence",
+    "Fallout",
+    "Awakening",
+    "Crossfire",
+    "Echoes",
+    "The Signal",
+    "Chrysalis",
 ]
 
 QUALITY_TAGS = ["480p", "720p", "1080p", "2160p", "4K"]
 
 SOURCE_TAGS = [
-    "BluRay", "WEB-DL", "HDTV", "REMUX", "BDRip",
-    "DVDRip", "WEBRip", "AMZN", "NF",
+    "BluRay",
+    "WEB-DL",
+    "HDTV",
+    "REMUX",
+    "BDRip",
+    "DVDRip",
+    "WEBRip",
+    "AMZN",
+    "NF",
 ]
 
 GROUP_TAGS = [
-    "SPARKS", "YTS.MX", "RARBG", "FGT", "EVO",
-    "FLUX", "NOGRP", "AMIABLE", "ROVERS", "GECKOS",
+    "SPARKS",
+    "YTS.MX",
+    "RARBG",
+    "FGT",
+    "EVO",
+    "FLUX",
+    "NOGRP",
+    "AMIABLE",
+    "ROVERS",
+    "GECKOS",
 ]
 
 EDITION_TAGS = [
-    "Extended Cut", "Director's Cut", "Theatrical",
-    "Unrated", "Remastered", "IMAX",
+    "Extended Cut",
+    "Director's Cut",
+    "Theatrical",
+    "Unrated",
+    "Remastered",
+    "IMAX",
 ]
 
 
@@ -184,6 +278,7 @@ def random_timestamp(rng):
 # ---------------------------------------------------------------------------
 # File manifest
 # ---------------------------------------------------------------------------
+
 
 def fixture_filename(spec):
     """Return the output filename for a fixture spec."""
@@ -340,8 +435,12 @@ def build_manifest():
             "video": {"codec": "libx264", "size": "1920x1080", "fps": 24},
             "audio": [
                 {"codec": "flac", "channels": 2},
-                {"codec": "ac3", "channels": 6, "title": "Director's Commentary",
-                 "disposition": "comment"},
+                {
+                    "codec": "ac3",
+                    "channels": 6,
+                    "title": "Director's Commentary",
+                    "disposition": "comment",
+                },
             ],
             "subs": [{"format": "srt", "lang": "eng"}],
             "special": [],
@@ -473,36 +572,44 @@ def build_random_specs(count, seed, duration_range):
         duration = file_rng.randint(dur_min, dur_max)
 
         # Build content signature for hash uniqueness
-        audio_sig = tuple(
-            (t["codec"], t["channels"]) for t in audio
-        )
-        sub_sig = tuple(
-            (s["format"], s.get("lang", "und")) for s in subs
-        )
+        audio_sig = tuple((t["codec"], t["channels"]) for t in audio)
+        sub_sig = tuple((s["format"], s.get("lang", "und")) for s in subs)
         signature = (
-            duration, video["codec"], video["size"],
-            video["fps"], ext, audio_sig, sub_sig,
+            duration,
+            video["codec"],
+            video["size"],
+            video["fps"],
+            ext,
+            audio_sig,
+            sub_sig,
         )
 
         while signature in used_signatures:
             # Bump duration until we find an unused signature
             duration = duration + 1
             signature = (
-                duration, video["codec"], video["size"],
-                video["fps"], ext, audio_sig, sub_sig,
+                duration,
+                video["codec"],
+                video["size"],
+                video["fps"],
+                ext,
+                audio_sig,
+                sub_sig,
             )
 
         used_signatures.add(signature)
 
-        specs.append({
-            "stem": stem,
-            "ext": ext,
-            "video": video,
-            "audio": audio,
-            "subs": subs,
-            "special": [],
-            "duration_override": duration,
-        })
+        specs.append(
+            {
+                "stem": stem,
+                "ext": ext,
+                "video": video,
+                "audio": audio,
+                "subs": subs,
+                "special": [],
+                "duration_override": duration,
+            }
+        )
 
     return specs
 
@@ -551,7 +658,13 @@ def write_run_manifest(dest, manifest):
 # File corruption for error-path testing
 # ---------------------------------------------------------------------------
 
-CORRUPTION_TYPES = ["truncated", "header_damage", "mid_stream", "zero_length", "wrong_extension"]
+CORRUPTION_TYPES = [
+    "truncated",
+    "header_damage",
+    "mid_stream",
+    "zero_length",
+    "wrong_extension",
+]
 
 
 def apply_corruption(file_path, corruption_type, rng):
@@ -583,7 +696,10 @@ def apply_corruption(file_path, corruption_type, rng):
         for i in range(min(block_size, len(data) - offset)):
             data[offset + i] = rng.randint(0, 255)
         file_path.write_bytes(bytes(data))
-        return f"mid-stream corruption ({block_size} bytes at offset {offset})", file_path
+        return (
+            f"mid-stream corruption ({block_size} bytes at offset {offset})",
+            file_path,
+        )
 
     elif corruption_type == "zero_length":
         file_path.write_bytes(b"")
@@ -623,13 +739,15 @@ def select_and_corrupt(dest, random_specs, corrupt_count, seed):
             continue
         ctype = rng.choice(CORRUPTION_TYPES)
         desc, final_path = apply_corruption(filepath, ctype, rng)
-        results.append({
-            "original_filename": filename,
-            "filename": final_path.name,
-            "type": ctype,
-            "description": desc,
-            "size": final_path.stat().st_size,
-        })
+        results.append(
+            {
+                "original_filename": filename,
+                "filename": final_path.name,
+                "type": ctype,
+                "description": desc,
+                "size": final_path.stat().st_size,
+            }
+        )
 
     return results
 
@@ -648,12 +766,15 @@ def update_generated_entries_for_corruptions(generated_entries, corrupt_results)
 # Encoder availability
 # ---------------------------------------------------------------------------
 
+
 def probe_encoders():
     """Return the set of available ffmpeg encoder names."""
     try:
         result = subprocess.run(
             ["ffmpeg", "-encoders", "-hide_banner"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         encoders = set()
         for line in result.stdout.splitlines():
@@ -672,12 +793,11 @@ def probe_encoders():
 # Subtitle temp file helpers
 # ---------------------------------------------------------------------------
 
+
 def write_srt(path, duration):
     """Write a minimal SRT subtitle file."""
     path.write_text(
-        "1\n"
-        f"00:00:00,000 --> 00:00:{duration:02d},000\n"
-        "Test subtitle line\n\n"
+        f"1\n00:00:00,000 --> 00:00:{duration:02d},000\nTest subtitle line\n\n"
     )
 
 
@@ -707,9 +827,7 @@ def write_ass(path, duration):
 def write_vtt(path, duration):
     """Write a minimal WebVTT subtitle file."""
     path.write_text(
-        "WEBVTT\n\n"
-        f"00:00:00.000 --> 00:00:{duration:02d}.000\n"
-        "Test subtitle line\n\n"
+        f"WEBVTT\n\n00:00:00.000 --> 00:00:{duration:02d}.000\nTest subtitle line\n\n"
     )
 
 
@@ -724,32 +842,109 @@ SUB_WRITERS = {
 # Image attachment helpers
 # ---------------------------------------------------------------------------
 
+
 def write_minimal_jpeg(path):
     """Write a minimal valid 1x1 white JPEG file (~125 bytes)."""
     # SOI + JFIF APP0 + quantization table + SOF0 + DHT + SOS + data + EOI
-    path.write_bytes(bytes([
-        # SOI
-        0xFF, 0xD8,
-        # APP0 (JFIF marker)
-        0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00,
-        0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
-        # DQT (quantization table, all ones)
-        0xFF, 0xDB, 0x00, 0x43, 0x00,
-        *([0x01] * 64),
-        # SOF0 (1x1, 8-bit, 1 component)
-        0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00, 0x01,
-        0x01, 0x01, 0x11, 0x00,
-        # DHT (Huffman table)
-        0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01,
-        0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
-        0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
-        # SOS + compressed data
-        0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F,
-        0x00, 0x7B, 0x40,
-        # EOI
-        0xFF, 0xD9,
-    ]))
+    path.write_bytes(
+        bytes(
+            [
+                # SOI
+                0xFF,
+                0xD8,
+                # APP0 (JFIF marker)
+                0xFF,
+                0xE0,
+                0x00,
+                0x10,
+                0x4A,
+                0x46,
+                0x49,
+                0x46,
+                0x00,
+                0x01,
+                0x01,
+                0x00,
+                0x00,
+                0x01,
+                0x00,
+                0x01,
+                0x00,
+                0x00,
+                # DQT (quantization table, all ones)
+                0xFF,
+                0xDB,
+                0x00,
+                0x43,
+                0x00,
+                *([0x01] * 64),
+                # SOF0 (1x1, 8-bit, 1 component)
+                0xFF,
+                0xC0,
+                0x00,
+                0x0B,
+                0x08,
+                0x00,
+                0x01,
+                0x00,
+                0x01,
+                0x01,
+                0x01,
+                0x11,
+                0x00,
+                # DHT (Huffman table)
+                0xFF,
+                0xC4,
+                0x00,
+                0x1F,
+                0x00,
+                0x00,
+                0x01,
+                0x05,
+                0x01,
+                0x01,
+                0x01,
+                0x01,
+                0x01,
+                0x01,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x02,
+                0x03,
+                0x04,
+                0x05,
+                0x06,
+                0x07,
+                0x08,
+                0x09,
+                0x0A,
+                0x0B,
+                # SOS + compressed data
+                0xFF,
+                0xDA,
+                0x00,
+                0x08,
+                0x01,
+                0x01,
+                0x00,
+                0x00,
+                0x3F,
+                0x00,
+                0x7B,
+                0x40,
+                # EOI
+                0xFF,
+                0xD9,
+            ]
+        )
+    )
 
 
 def write_minimal_png(path):
@@ -757,21 +952,21 @@ def write_minimal_png(path):
     import struct
     import zlib
 
-    sig = b'\x89PNG\r\n\x1a\n'
+    sig = b"\x89PNG\r\n\x1a\n"
 
     # IHDR: 1x1, 8-bit grayscale
-    ihdr_data = struct.pack('>IIBBBBB', 1, 1, 8, 0, 0, 0, 0)
-    ihdr = struct.pack('>I', 13) + b'IHDR' + ihdr_data
-    ihdr += struct.pack('>I', zlib.crc32(b'IHDR' + ihdr_data) & 0xFFFFFFFF)
+    ihdr_data = struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)
+    ihdr = struct.pack(">I", 13) + b"IHDR" + ihdr_data
+    ihdr += struct.pack(">I", zlib.crc32(b"IHDR" + ihdr_data) & 0xFFFFFFFF)
 
     # IDAT: filter byte 0 + single white pixel 0xFF
-    raw = zlib.compress(b'\x00\xFF')
-    idat = struct.pack('>I', len(raw)) + b'IDAT' + raw
-    idat += struct.pack('>I', zlib.crc32(b'IDAT' + raw) & 0xFFFFFFFF)
+    raw = zlib.compress(b"\x00\xff")
+    idat = struct.pack(">I", len(raw)) + b"IDAT" + raw
+    idat += struct.pack(">I", zlib.crc32(b"IDAT" + raw) & 0xFFFFFFFF)
 
     # IEND
-    iend = struct.pack('>I', 0) + b'IEND'
-    iend += struct.pack('>I', zlib.crc32(b'IEND') & 0xFFFFFFFF)
+    iend = struct.pack(">I", 0) + b"IEND"
+    iend += struct.pack(">I", zlib.crc32(b"IEND") & 0xFFFFFFFF)
 
     path.write_bytes(sig + ihdr + idat + iend)
 
@@ -779,6 +974,7 @@ def write_minimal_png(path):
 # ---------------------------------------------------------------------------
 # ffmpeg command builder
 # ---------------------------------------------------------------------------
+
 
 def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
     """Build the ffmpeg command list for a given file spec.
@@ -794,7 +990,9 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
     subs = spec.get("subs", [])
 
     # --- Video input ---
-    vf_filters = [f"testsrc2=duration={duration}:size={video['size']}:rate={video['fps']}"]
+    vf_filters = [
+        f"testsrc2=duration={duration}:size={video['size']}:rate={video['fps']}"
+    ]
     if "vfr" in specials:
         # Vary PTS to create variable frame rate
         vf_filters.append("setpts='PTS+0.002*sin(N*0.1)/TB'")
@@ -804,20 +1002,30 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
     for i, audio in enumerate(audios):
         ch = audio["channels"]
         if ch <= 2:
-            cmd += ["-f", "lavfi", "-i",
-                    f"sine=frequency={440 + i * 110}:duration={duration}:sample_rate=48000"]
+            cmd += [
+                "-f",
+                "lavfi",
+                "-i",
+                f"sine=frequency={440 + i * 110}:duration={duration}:sample_rate=48000",
+            ]
         else:
             # Generate 5.1/7.1 by merging multiple sine sources
             freqs = [220, 330, 440, 550, 660, 770, 880, 990][:ch]
             filter_parts = []
             for j, freq in enumerate(freqs):
-                filter_parts.append(f"sine=frequency={freq}:duration={duration}:sample_rate=48000")
+                filter_parts.append(
+                    f"sine=frequency={freq}:duration={duration}:sample_rate=48000"
+                )
             amerge_input = "|".join(filter_parts)
             cmd += ["-f", "lavfi", "-i", f"amovie='{amerge_input}'" if False else ""]
             # Actually, use a complex filter approach — replace last two args
             cmd = cmd[:-2]
-            cmd += ["-f", "lavfi", "-i",
-                    f"sine=frequency=440:duration={duration}:sample_rate=48000"]
+            cmd += [
+                "-f",
+                "lavfi",
+                "-i",
+                f"sine=frequency=440:duration={duration}:sample_rate=48000",
+            ]
 
     # --- Subtitle inputs ---
     sub_files = []
@@ -854,11 +1062,12 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
 
     # Audio inputs (one sine per audio track)
     for i, audio in enumerate(audios):
-        audio_filter = f"sine=frequency={440 + i * 110}:duration={duration}:sample_rate=48000"
+        audio_filter = (
+            f"sine=frequency={440 + i * 110}:duration={duration}:sample_rate=48000"
+        )
         if "volume" in audio:
             audio_filter += f",volume={audio['volume']}"
-        cmd += ["-f", "lavfi", "-i",
-                audio_filter]
+        cmd += ["-f", "lavfi", "-i", audio_filter]
 
     # Subtitle inputs
     sub_files = []
@@ -902,15 +1111,18 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
     needs_hevc_hdr_bsf = False
     if "hdr10" in specials:
         cmd += [
-            "-pix_fmt", "yuv420p10le",
+            "-pix_fmt",
+            "yuv420p10le",
         ]
         if vcodec == "libx265":
-            cmd += ["-x265-params",
-                    "hdr-opt=1:repeat-headers=1:colorprim=bt2020:"
-                    "transfer=smpte2084:colormatrix=bt2020nc:"
-                    "master-display=G(13250,34500)B(7500,3000)"
-                    "R(34000,16000)WP(15635,16450)L(10000000,1):"
-                    "max-cll=1000,400"]
+            cmd += [
+                "-x265-params",
+                "hdr-opt=1:repeat-headers=1:colorprim=bt2020:"
+                "transfer=smpte2084:colormatrix=bt2020nc:"
+                "master-display=G(13250,34500)B(7500,3000)"
+                "R(34000,16000)WP(15635,16450)L(10000000,1):"
+                "max-cll=1000,400",
+            ]
             needs_hevc_hdr_bsf = True
 
     # --- Audio codecs ---
@@ -991,28 +1203,48 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
         font_path = Path(tmpdir) / "DummyFont.ttf"
         # Create a minimal dummy file (not a real font, but ffmpeg accepts it)
         font_path.write_bytes(b"\x00\x01\x00\x00" + b"\x00" * 28)
-        cmd += ["-attach", str(font_path),
-                "-metadata:s:t:0", "mimetype=font/sfnt",
-                "-metadata:s:t:0", "filename=DummyFont.ttf"]
+        cmd += [
+            "-attach",
+            str(font_path),
+            "-metadata:s:t:0",
+            "mimetype=font/sfnt",
+            "-metadata:s:t:0",
+            "filename=DummyFont.ttf",
+        ]
         # JPEG cover image
         cover_path = Path(tmpdir) / "cover.jpg"
         write_minimal_jpeg(cover_path)
-        cmd += ["-attach", str(cover_path),
-                "-metadata:s:t:1", "mimetype=image/jpeg",
-                "-metadata:s:t:1", "filename=cover.jpg"]
+        cmd += [
+            "-attach",
+            str(cover_path),
+            "-metadata:s:t:1",
+            "mimetype=image/jpeg",
+            "-metadata:s:t:1",
+            "filename=cover.jpg",
+        ]
         # PNG poster image
         poster_path = Path(tmpdir) / "poster.png"
         write_minimal_png(poster_path)
-        cmd += ["-attach", str(poster_path),
-                "-metadata:s:t:2", "mimetype=image/png",
-                "-metadata:s:t:2", "filename=poster.png"]
+        cmd += [
+            "-attach",
+            str(poster_path),
+            "-metadata:s:t:2",
+            "mimetype=image/png",
+            "-metadata:s:t:2",
+            "filename=poster.png",
+        ]
 
     if "cover_art" in specials:
         cover_path = Path(tmpdir) / "cover.jpg"
         write_minimal_jpeg(cover_path)
-        cmd += ["-attach", str(cover_path),
-                "-metadata:s:t:0", "mimetype=image/jpeg",
-                "-metadata:s:t:0", "filename=cover.jpg"]
+        cmd += [
+            "-attach",
+            str(cover_path),
+            "-metadata:s:t:0",
+            "mimetype=image/jpeg",
+            "-metadata:s:t:0",
+            "filename=cover.jpg",
+        ]
 
     if needs_hevc_hdr_bsf:
         cmd += [
@@ -1034,6 +1266,7 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def format_size(n):
     """Format bytes as a human-readable string."""
     if n < 1024:
@@ -1051,23 +1284,30 @@ def main():
         description="Generate synthetic video files with diverse characteristics for testing.",
     )
     parser.add_argument(
-        "dest", metavar="DEST",
+        "dest",
+        metavar="DEST",
         help="Directory to generate files into (created if needed)",
     )
     parser.add_argument(
-        "--duration", type=int, default=2, metavar="SECS",
+        "--duration",
+        type=int,
+        default=2,
+        metavar="SECS",
         help="Duration of each file in seconds (default: 2)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Show ffmpeg commands without running them",
     )
     parser.add_argument(
-        "--only", metavar="NAMES",
+        "--only",
+        metavar="NAMES",
         help="Comma-separated list of file stems to generate (default: all)",
     )
     parser.add_argument(
-        "--skip", metavar="NAMES",
+        "--skip",
+        metavar="NAMES",
         help="Comma-separated list of file stems to skip",
     )
     parser.add_argument(
@@ -1077,23 +1317,34 @@ def main():
         help="Named deterministic fixture profile to generate (default: coverage)",
     )
     parser.add_argument(
-        "--seed", type=int, default=42, metavar="N",
+        "--seed",
+        type=int,
+        default=42,
+        metavar="N",
         help="RNG seed for metadata randomization (default: 42)",
     )
     parser.add_argument(
-        "--verbose", action="store_true",
+        "--verbose",
+        action="store_true",
         help="Show full ffmpeg output",
     )
     parser.add_argument(
-        "--count", type=int, default=0, metavar="N",
+        "--count",
+        type=int,
+        default=0,
+        metavar="N",
         help="Generate N additional random files alongside the manifest",
     )
     parser.add_argument(
-        "--duration-range", default="1-5", metavar="MIN-MAX",
+        "--duration-range",
+        default="1-5",
+        metavar="MIN-MAX",
         help="Duration range in seconds for random files (default: 1-5)",
     )
     parser.add_argument(
-        "--corrupt", default="0", metavar="N_OR_PCT",
+        "--corrupt",
+        default="0",
+        metavar="N_OR_PCT",
         help="Corrupt N files (or N%% of --count) from the random set",
     )
     args = parser.parse_args()
@@ -1105,8 +1356,10 @@ def main():
         if dur_range[0] < 1 or dur_range[1] < dur_range[0]:
             raise ValueError
     except (ValueError, IndexError):
-        print(f"Error: --duration-range must be MIN-MAX (e.g., 1-5), got '{args.duration_range}'",
-              file=sys.stderr)
+        print(
+            f"Error: --duration-range must be MIN-MAX (e.g., 1-5), got '{args.duration_range}'",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # Parse corrupt count
@@ -1118,8 +1371,10 @@ def main():
         corrupt_count = int(corrupt_str)
 
     if corrupt_count > 0 and args.count < corrupt_count:
-        print(f"Error: --corrupt {corrupt_count} requires --count >= {corrupt_count}",
-              file=sys.stderr)
+        print(
+            f"Error: --corrupt {corrupt_count} requires --count >= {corrupt_count}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     dest = Path(args.dest)
@@ -1150,8 +1405,10 @@ def main():
     # Probe available encoders
     available = probe_encoders()
     if not available:
-        print("Warning: could not probe ffmpeg encoders, will try all files",
-              file=sys.stderr)
+        print(
+            "Warning: could not probe ffmpeg encoders, will try all files",
+            file=sys.stderr,
+        )
 
     if not args.dry_run:
         dest.mkdir(parents=True, exist_ok=True)
@@ -1173,14 +1430,18 @@ def main():
             # Check encoder availability
             req = spec.get("requires_encoder")
             if req and available and req not in available:
-                print(f"[{idx}/{total}] Skipping {filename} — encoder '{req}' not available")
-                skipped_entries.append({
-                    "filename": filename,
-                    "stem": stem,
-                    "reason": f"encoder '{req}' not available",
-                    "covers": spec.get("covers", []),
-                    "expect": spec.get("expect", {}),
-                })
+                print(
+                    f"[{idx}/{total}] Skipping {filename} — encoder '{req}' not available"
+                )
+                skipped_entries.append(
+                    {
+                        "filename": filename,
+                        "stem": stem,
+                        "reason": f"encoder '{req}' not available",
+                        "covers": spec.get("covers", []),
+                        "expect": spec.get("expect", {}),
+                    }
+                )
                 skip_count += 1
                 continue
 
@@ -1190,16 +1451,22 @@ def main():
             file_duration = spec.get("duration_override", args.duration)
 
             try:
-                cmd, outfile = build_ffmpeg_cmd(spec, dest, file_duration, file_rng, tmpdir)
+                cmd, outfile = build_ffmpeg_cmd(
+                    spec, dest, file_duration, file_rng, tmpdir
+                )
             except Exception as e:
-                print(f"[{idx}/{total}] FAILED {filename} — error building command: {e}")
-                failed_entries.append({
-                    "filename": filename,
-                    "stem": stem,
-                    "reason": f"error building command: {e}",
-                    "covers": spec.get("covers", []),
-                    "expect": spec.get("expect", {}),
-                })
+                print(
+                    f"[{idx}/{total}] FAILED {filename} — error building command: {e}"
+                )
+                failed_entries.append(
+                    {
+                        "filename": filename,
+                        "stem": stem,
+                        "reason": f"error building command: {e}",
+                        "covers": spec.get("covers", []),
+                        "expect": spec.get("expect", {}),
+                    }
+                )
                 fail_count += 1
                 continue
 
@@ -1229,58 +1496,72 @@ def main():
                     stderr = result.stderr if not args.verbose else ""
                     if stderr:
                         # Show last few lines of stderr
-                        lines = stderr.decode("utf-8", errors="replace").strip().splitlines()
+                        lines = (
+                            stderr.decode("utf-8", errors="replace")
+                            .strip()
+                            .splitlines()
+                        )
                         for line in lines[-5:]:
                             print(f"  {line}")
-                    failed_entries.append({
-                        "filename": filename,
-                        "stem": stem,
-                        "reason": f"ffmpeg failed with exit code {result.returncode}",
-                        "covers": spec.get("covers", []),
-                        "expect": spec.get("expect", {}),
-                    })
+                    failed_entries.append(
+                        {
+                            "filename": filename,
+                            "stem": stem,
+                            "reason": f"ffmpeg failed with exit code {result.returncode}",
+                            "covers": spec.get("covers", []),
+                            "expect": spec.get("expect", {}),
+                        }
+                    )
                     fail_count += 1
                     continue
 
                 size = outfile.stat().st_size
                 total_size += size
                 print(f"OK ({format_size(size)})")
-                generated_entries.append({
-                    "filename": filename,
-                    "stem": stem,
-                    "size": size,
-                    "duration": file_duration,
-                    "profiles": spec.get("profiles", ["coverage"]),
-                    "covers": spec.get("covers", []),
-                    "expect": spec.get("expect", {}),
-                })
+                generated_entries.append(
+                    {
+                        "filename": filename,
+                        "stem": stem,
+                        "size": size,
+                        "duration": file_duration,
+                        "profiles": spec.get("profiles", ["coverage"]),
+                        "covers": spec.get("covers", []),
+                        "expect": spec.get("expect", {}),
+                    }
+                )
                 ok_count += 1
 
             except subprocess.TimeoutExpired:
                 print("FAILED (timeout)")
-                failed_entries.append({
-                    "filename": filename,
-                    "stem": stem,
-                    "reason": "ffmpeg timed out",
-                    "covers": spec.get("covers", []),
-                    "expect": spec.get("expect", {}),
-                })
+                failed_entries.append(
+                    {
+                        "filename": filename,
+                        "stem": stem,
+                        "reason": "ffmpeg timed out",
+                        "covers": spec.get("covers", []),
+                        "expect": spec.get("expect", {}),
+                    }
+                )
                 fail_count += 1
             except Exception as e:
                 print(f"FAILED ({e})")
-                failed_entries.append({
-                    "filename": filename,
-                    "stem": stem,
-                    "reason": f"ffmpeg failed: {e}",
-                    "covers": spec.get("covers", []),
-                    "expect": spec.get("expect", {}),
-                })
+                failed_entries.append(
+                    {
+                        "filename": filename,
+                        "stem": stem,
+                        "reason": f"ffmpeg failed: {e}",
+                        "covers": spec.get("covers", []),
+                        "expect": spec.get("expect", {}),
+                    }
+                )
                 fail_count += 1
 
     # Apply corruption to selected random files
     corrupt_results = []
     if corrupt_count > 0 and not args.dry_run:
-        corrupt_results = select_and_corrupt(dest, random_specs, corrupt_count, args.seed)
+        corrupt_results = select_and_corrupt(
+            dest, random_specs, corrupt_count, args.seed
+        )
         update_generated_entries_for_corruptions(generated_entries, corrupt_results)
         for result in corrupt_results:
             filename = result["filename"]
@@ -1290,6 +1571,7 @@ def main():
 
     corruption_entries = [
         {
+            "original_filename": result["original_filename"],
             "filename": result["filename"],
             "type": result["type"],
             "description": result["description"],

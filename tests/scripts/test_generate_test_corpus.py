@@ -109,7 +109,9 @@ def test_build_run_manifest_records_generated_skipped_failed_and_corruptions():
                 "expect": {"bad_file": False},
             }
         ],
-        corruptions=[{"filename": "corrupt-truncated-tail.mkv", "type": "truncated_tail"}],
+        corruptions=[
+            {"filename": "corrupt-truncated-tail.mkv", "type": "truncated_tail"}
+        ],
     )
 
     assert manifest["schema_version"] == 1
@@ -178,7 +180,9 @@ def test_select_and_corrupt_reports_final_filenames_and_sizes(tmp_path):
         assert final_path.exists()
         assert result["size"] == final_path.stat().st_size
 
-    renamed = next(result for result in corruptions if result["type"] == "wrong_extension")
+    renamed = next(
+        result for result in corruptions if result["type"] == "wrong_extension"
+    )
     assert renamed["original_filename"] == "rename-case.mp4"
     assert renamed["filename"] == "rename-case.mkv"
     assert not (tmp_path / renamed["original_filename"]).exists()
