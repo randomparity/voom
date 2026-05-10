@@ -876,10 +876,14 @@ def materialize_corrupt_fixture(dest, spec, rng):
     return {
         "original_filename": original_filename,
         "filename": final_path.name,
+        "stem": spec["stem"],
         "source_filename": source_filename,
         "type": corruption_type,
         "description": desc,
         "size": final_path.stat().st_size,
+        "profiles": spec.get("profiles", ["coverage"]),
+        "covers": spec.get("covers", []),
+        "expect": spec.get("expect", {}),
         "skipped": False,
     }
 
@@ -937,10 +941,9 @@ def build_corruption_manifest_entries(corrupt_results):
             "description": result["description"],
             "size": result["size"],
         }
-        if result.get("source_filename"):
-            entry["source_filename"] = result["source_filename"]
-        if result.get("skipped"):
-            entry["skipped"] = True
+        for key in ("stem", "source_filename", "profiles", "covers", "expect"):
+            if key in result:
+                entry[key] = result[key]
         entries.append(entry)
     return entries
 
@@ -1758,9 +1761,16 @@ def main():
             corruption = spec["corruption"]
             corruption_type = corruption["type"]
             source_filename = f"{corruption['source_stem']}.{corruption['source_ext']}"
+            final_filename = filename
+            if corruption_type == "wrong_extension":
+                final_filename = Path(filename).with_suffix(".mkv").name
+            final_detail = ""
+            if final_filename != filename:
+                final_detail = f"; final filename {final_filename}"
             print(f"[{start + offset}/{total}] {filename}")
             print(
-                f"  deterministic corruption: {corruption_type} from {source_filename}"
+                "  deterministic corruption: "
+                f"{corruption_type} from {source_filename}{final_detail}"
             )
             print()
             ok_count += 1

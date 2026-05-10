@@ -279,6 +279,36 @@ def test_materialize_corrupt_fixture_creates_final_file(tmp_path):
     assert final_path.exists()
 
 
+def test_deterministic_corruption_manifest_entry_retains_fixture_metadata(tmp_path):
+    generator = load_generator()
+    source = tmp_path / "basic-h264-aac.mp4"
+    source.write_bytes(bytes(range(256)) * 16)
+    spec = {
+        "stem": "corrupt-truncated-tail",
+        "ext": "mp4",
+        "profiles": ["coverage"],
+        "covers": ["bad_file.truncated_tail"],
+        "expect": {"bad_file": True, "corruption": "truncated_tail"},
+        "corruption": {
+            "source_stem": "basic-h264-aac",
+            "source_ext": "mp4",
+            "type": "truncated_tail",
+        },
+    }
+
+    result = generator.materialize_corrupt_fixture(tmp_path, spec, random.Random(7))
+    entry = generator.build_corruption_manifest_entries([result])[0]
+
+    final_path = tmp_path / "corrupt-truncated-tail.mp4"
+    assert entry["stem"] == "corrupt-truncated-tail"
+    assert entry["filename"] == "corrupt-truncated-tail.mp4"
+    assert entry["source_filename"] == "basic-h264-aac.mp4"
+    assert entry["covers"] == ["bad_file.truncated_tail"]
+    assert entry["expect"]["bad_file"] is True
+    assert entry["profiles"] == ["coverage"]
+    assert entry["size"] == final_path.stat().st_size
+
+
 def test_materialize_corrupt_fixture_reports_missing_source(tmp_path):
     generator = load_generator()
     spec = {
