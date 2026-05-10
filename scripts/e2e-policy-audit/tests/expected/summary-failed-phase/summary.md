@@ -26,7 +26,13 @@ transcode-video	3	1	1	1
 
 ## Anomaly section
 
-### Failed plans (first 50)
+### Failure clusters
+```
+phase	signature	exit_code	container	video_codec	count	top_resolution	sample_path	sample_plan_id	sample_error
+transcode-video	unknown				1			plan-4	encoder failed
+```
+
+### Failed plans (first 20)
 ```
 plan_id	file_id	phase	result
 plan-4	file-4	transcode-video	{"error":"encoder failed"}

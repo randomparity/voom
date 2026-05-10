@@ -78,6 +78,49 @@ EOF
 
 run_summary_failed_phase_test
 
+run_failure_clusters_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  cat >"${actual}/failed-plans.tsv" <<'EOF'
+plan_id	file_id	phase	result
+plan-1	file-1	transcode-video	{"detail":{"exit_code":187,"command":"ffmpeg -i '/lib/show/S01E01.mkv' out.mkv","stderr_tail":"cuCtxCreate failed -> CUDA_ERROR_OUT_OF_MEMORY: out of memory"},"error":"ffmpeg exited with exit status: 187"}
+plan-2	file-2	transcode-video	{"detail":null,"error":"storage error: failed to insert transcode outcome: FOREIGN KEY constraint failed"}
+EOF
+
+  cat >"${actual}/files.tsv" <<'EOF'
+id	path
+file-1	/lib/show/S01E01.mkv
+file-2	/lib/show/S01E02.mkv
+EOF
+
+  cat >"${actual}/ffprobe.ndjson" <<'EOF'
+{"path":"/lib/show/S01E01.mkv","container":"mkv","video":[{"index":0,"codec":"h264","width":1920,"height":1080}],"audio":[{"index":1}]}
+{"path":"/lib/show/S01E02.mkv","container":"mkv","video":[{"index":0,"codec":"mpeg4","width":640,"height":480}],"audio":[]}
+EOF
+
+  "lib/failure-clusters.py" \
+    "${actual}/failed-plans.tsv" \
+    "${actual}/failure-clusters.tsv" \
+    "${actual}/failure-clusters.md" \
+    --files-tsv "${actual}/files.tsv" \
+    --pre-ffprobe "${actual}/ffprobe.ndjson"
+
+  cat >"${actual}/expected-clusters.tsv" <<'EOF'
+phase	signature	exit_code	container	video_codec	count	top_resolution	sample_path	sample_plan_id	sample_error
+transcode-video	cuda-context-oom	187	mkv	h264	1	1920x1080	/lib/show/S01E01.mkv	plan-1	ffmpeg exited with exit status: 187 | cuCtxCreate failed -> CUDA_ERROR_OUT_OF_MEMORY: out of memory
+transcode-video	storage-fk-transcode-outcome		mkv	mpeg4	1	640x480	/lib/show/S01E02.mkv	plan-2	storage error: failed to insert transcode outcome: FOREIGN KEY constraint failed
+EOF
+
+  assert_match "${actual}/failure-clusters.tsv" "${actual}/expected-clusters.tsv"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_failure_clusters_test
+
 raw_actual=$(mktemp -d)
 trap 'rm -rf "${raw_actual}"' EXIT
 

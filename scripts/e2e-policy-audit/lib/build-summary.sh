@@ -76,9 +76,17 @@ fi
 # Per-phase plan summary from db-export/plans.tsv.
 phase_summary="${run}/diffs/phase-summary.tsv"
 failed_plans="${run}/diffs/failed-plans.tsv"
+failure_clusters="${run}/diffs/failure-clusters.tsv"
+failure_clusters_md="${run}/diffs/failure-clusters.md"
 plans_tsv="${run}/db-export/plans.tsv"
 if [[ -f "${plans_tsv}" ]]; then
   "${script_dir}/plan-phase-summary.py" "${plans_tsv}" "${phase_summary}" "${failed_plans}"
+  if [[ -s "${failed_plans}" ]] && [[ $(awk 'END {print NR}' "${failed_plans}") -gt 1 ]]; then
+    "${script_dir}/failure-clusters.py" \
+      "${failed_plans}" "${failure_clusters}" "${failure_clusters_md}" \
+      --files-tsv "${run}/db-export/files.tsv" \
+      --pre-ffprobe "${run}/pre/ffprobe.ndjson"
+  fi
 
   while IFS=$'\t' read -r phase total _completed _skipped failed; do
     [[ "${phase}" == "phase" ]] && continue
@@ -129,10 +137,19 @@ fi
   echo
   echo "## Anomaly section"
   echo
-  echo "### Failed plans (first 50)"
+  echo "### Failure clusters"
+  if [[ -s "${failure_clusters}" ]]; then
+    echo '```'
+    head -21 "${failure_clusters}"
+    echo '```'
+  else
+    echo "(none)"
+  fi
+  echo
+  echo "### Failed plans (first 20)"
   echo '```'
   if [[ -f "${failed_plans}" ]] && [[ $(awk 'END {print NR}' "${failed_plans}") -gt 1 ]]; then
-    head -51 "${failed_plans}"
+    head -21 "${failed_plans}"
   else
     echo "(none)"
   fi
