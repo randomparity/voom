@@ -6,6 +6,7 @@ pub mod health;
 pub mod jobs;
 pub mod plugins;
 pub mod policy;
+pub mod process_runs;
 pub mod stats;
 pub mod tools;
 pub mod transitions;

@@ -10,6 +10,84 @@ use voom_domain::storage::StorageTrait;
 /// job-progress events without lagging slow clients.
 pub const SSE_CHANNEL_CAPACITY: usize = 256;
 
+/// Request handed from the Web API to the application-level process launcher.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct ProcessRunLaunchRequest {
+    pub paths: Vec<std::path::PathBuf>,
+    pub policy: Option<std::path::PathBuf>,
+    pub policy_map: Option<std::path::PathBuf>,
+    pub workers: usize,
+    pub force_rescan: bool,
+    pub estimate_id: uuid::Uuid,
+}
+
+impl ProcessRunLaunchRequest {
+    #[must_use]
+    pub fn new(paths: Vec<std::path::PathBuf>, estimate_id: uuid::Uuid) -> Self {
+        Self {
+            paths,
+            policy: None,
+            policy_map: None,
+            workers: 0,
+            force_rescan: false,
+            estimate_id,
+        }
+    }
+
+    #[must_use]
+    pub fn with_policy(mut self, policy: Option<std::path::PathBuf>) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub fn with_policy_map(mut self, policy_map: Option<std::path::PathBuf>) -> Self {
+        self.policy_map = policy_map;
+        self
+    }
+
+    #[must_use]
+    pub fn with_workers(mut self, workers: usize) -> Self {
+        self.workers = workers;
+        self
+    }
+
+    #[must_use]
+    pub fn with_force_rescan(mut self, force_rescan: bool) -> Self {
+        self.force_rescan = force_rescan;
+        self
+    }
+}
+
+/// Response returned by the application-level process launcher.
+#[derive(Debug, Clone, serde::Serialize)]
+#[non_exhaustive]
+pub struct ProcessRunLaunchResponse {
+    pub run_id: String,
+    pub message: String,
+}
+
+impl ProcessRunLaunchResponse {
+    #[must_use]
+    pub fn new(run_id: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            run_id: run_id.into(),
+            message: message.into(),
+        }
+    }
+}
+
+/// Application-level process launcher injected by the CLI binary.
+pub trait ProcessRunLauncher: Send + Sync {
+    /// Launch a confirmed process run.
+    ///
+    /// # Errors
+    /// Returns a user-facing message when the launch request cannot be queued
+    /// or started.
+    fn launch(&self, request: ProcessRunLaunchRequest) -> Result<ProcessRunLaunchResponse, String>;
+}
+
 /// Events broadcast via SSE to connected clients.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", content = "data")]
@@ -73,6 +151,7 @@ pub struct AppState {
     pub sse_client_count: Arc<AtomicU32>,
     pub plugin_info: Arc<Vec<crate::api::plugins::PluginInfoResponse>>,
     pub data_dir: Option<std::path::PathBuf>,
+    pub process_runner: Option<Arc<dyn ProcessRunLauncher>>,
 }
 
 impl AppState {
@@ -96,6 +175,7 @@ impl AppState {
             sse_client_count: Arc::new(AtomicU32::new(0)),
             plugin_info: Arc::new(Vec::new()),
             data_dir,
+            process_runner: None,
         }
     }
 
@@ -117,6 +197,13 @@ impl AppState {
     #[must_use]
     pub fn with_plugin_info(mut self, info: Vec<crate::api::plugins::PluginInfoResponse>) -> Self {
         self.plugin_info = Arc::new(info);
+        self
+    }
+
+    /// Set the process runner used by `/api/process-runs`.
+    #[must_use]
+    pub fn with_process_runner(mut self, runner: Arc<dyn ProcessRunLauncher>) -> Self {
+        self.process_runner = Some(runner);
         self
     }
 

@@ -1,5 +1,6 @@
 //! Integration tests for the web server REST API.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum_test::TestServer;
@@ -80,6 +81,33 @@ fn make_server_with_auth(store: InMemoryStore, auth_token: Option<String>) -> Te
     let templates = voom_web_server::server::embedded_templates().unwrap();
     let state =
         voom_web_server::state::AppState::new_with_default_sse(store, templates, auth_token, None);
+    let router = voom_web_server::router::build_router(state);
+    TestServer::new(router).unwrap()
+}
+
+#[derive(Default)]
+struct CountingProcessRunner {
+    calls: AtomicUsize,
+}
+
+impl voom_web_server::state::ProcessRunLauncher for CountingProcessRunner {
+    fn launch(
+        &self,
+        _request: voom_web_server::state::ProcessRunLaunchRequest,
+    ) -> Result<voom_web_server::state::ProcessRunLaunchResponse, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(voom_web_server::state::ProcessRunLaunchResponse::new(
+            "test-run", "started",
+        ))
+    }
+}
+
+fn make_server_with_runner(store: InMemoryStore, runner: Arc<CountingProcessRunner>) -> TestServer {
+    let store = Arc::new(store);
+    let templates = voom_web_server::server::embedded_templates().unwrap();
+    let state =
+        voom_web_server::state::AppState::new_with_default_sse(store, templates, None, None)
+            .with_process_runner(runner);
     let router = voom_web_server::router::build_router(state);
     TestServer::new(router).unwrap()
 }
@@ -247,6 +275,58 @@ async fn test_get_estimate_returns_detail_for_confirmation_dialog() {
     assert_eq!(body["net_loss_files"], 0);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn test_unconfirmed_process_run_returns_estimate_without_dispatch() {
+    let store = InMemoryStore::new();
+    let estimate = make_estimate_run();
+    let estimate_id = estimate.id;
+    store.insert_estimate_run(&estimate).unwrap();
+    let runner = Arc::new(CountingProcessRunner::default());
+    let server = make_server_with_runner(store, runner.clone());
+
+    let resp = server
+        .post("/api/process-runs")
+        .json(&json!({
+            "paths": ["/media/movie.mkv"],
+            "policy": "/policies/archive.voom",
+            "estimate_id": estimate_id,
+            "confirmed": false
+        }))
+        .await;
+
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["requires_confirmation"], true);
+    assert_eq!(body["estimate"]["id"], estimate_id.to_string());
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_confirmed_process_run_dispatches_after_estimate_confirmation() {
+    let store = InMemoryStore::new();
+    let estimate = make_estimate_run();
+    let estimate_id = estimate.id;
+    store.insert_estimate_run(&estimate).unwrap();
+    let runner = Arc::new(CountingProcessRunner::default());
+    let server = make_server_with_runner(store, runner.clone());
+
+    let resp = server
+        .post("/api/process-runs")
+        .json(&json!({
+            "paths": ["/media/movie.mkv"],
+            "policy": "/policies/archive.voom",
+            "estimate_id": estimate_id,
+            "confirmed": true
+        }))
+        .await;
+
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["requires_confirmation"], false);
+    assert_eq!(body["run_id"], "test-run");
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+}
+
 // === Plugin API Tests ===
 
 #[tokio::test(flavor = "multi_thread")]
@@ -394,6 +474,10 @@ async fn test_estimates_page() {
     let body = resp.text();
     assert!(body.contains("Recent Estimates"));
     assert!(body.contains("/api/estimates"));
+    assert!(body.contains("/api/process-runs"));
+    assert!(body.contains("Confirm Run"));
+    assert!(body.contains("Phase Breakdown"));
+    assert!(body.contains("Cancel"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

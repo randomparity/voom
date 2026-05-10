@@ -61,6 +61,17 @@ voom process /media/movies \
 Files below the threshold are skipped before `PlanCreated` is dispatched, so
 executor plugins do not run for those plans.
 
+## Web UI
+
+The Web UI exposes persisted estimate records at `/estimates`. Open a record
+with **Review**, enter the target media path and policy path, then choose
+**Confirm Run**. The UI reloads the persisted estimate and shows the final
+confirmation summary before dispatching any processing work.
+
+Use **Cancel** from either dialog to leave the estimate as a what-if record.
+No `PlanCreated` events are dispatched until the final **Start Run** action is
+confirmed.
+
 ## Confidence
 
 High uncertainty means the estimator had fewer than five matching samples or
