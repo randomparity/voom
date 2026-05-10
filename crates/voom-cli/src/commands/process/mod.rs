@@ -28,7 +28,8 @@ use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{
     Event, IntrospectSessionCompletedEvent, JobCompletedEvent, JobProgressEvent, JobStartedEvent,
 };
-use voom_domain::utils::format::format_size;
+use voom_domain::storage::CostModelSampleFilters;
+use voom_domain::utils::format::{format_duration, format_size};
 use voom_job_manager::progress::{CompositeReporter, ProgressReporter};
 use voom_job_manager::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
 
@@ -70,8 +71,9 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         );
     }
 
+    let estimate_mode = args.estimate || args.estimate_only;
     let plan_only = args.plan_only;
-    let dry_run = args.dry_run || plan_only;
+    let dry_run = args.dry_run || plan_only || estimate_mode;
 
     let config = config::load_config()?;
     let app::BootstrapResult {
@@ -241,6 +243,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         let animation_detection_mode = config.animation_detection_mode();
         let counters_for_summary = counters.clone();
         let kernel_for_completion = kernel.clone();
+        let store_for_summary = store.clone();
         let _results = pool
             .process_batch(
                 items,
@@ -260,6 +263,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
                             store,
                             dry_run,
                             plan_only,
+                            estimate_mode,
                             flag_size_increase,
                             flag_duration_shrink,
                             force_rescan,
@@ -286,7 +290,9 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
 
         print_run_results(&RunResultsContext {
             counters: &counters_for_summary,
+            store: store_for_summary.as_ref(),
             plan_only,
+            estimate_mode,
             quiet,
             cancelled: token.is_cancelled(),
             pool: &pool,
@@ -359,7 +365,9 @@ fn build_reporter(
 #[allow(clippy::struct_excessive_bools)]
 struct RunResultsContext<'a> {
     counters: &'a RunCounters,
+    store: &'a dyn voom_domain::storage::StorageTrait,
     plan_only: bool,
+    estimate_mode: bool,
     quiet: bool,
     cancelled: bool,
     pool: &'a WorkerPool,
@@ -376,6 +384,24 @@ fn print_run_results(ctx: &RunResultsContext<'_>) -> Result<()> {
         let plans = ctx.counters.plan_collector.lock();
         let output = serde_json::to_string_pretty(&*plans).context("failed to serialize plans")?;
         println!("{output}");
+        return Ok(());
+    }
+
+    if ctx.estimate_mode {
+        let plans = ctx.counters.estimate_plans.lock().clone();
+        let samples = ctx
+            .store
+            .list_cost_model_samples(&CostModelSampleFilters::default())
+            .context("failed to load estimate cost model samples")?;
+        let model = voom_domain::EstimateModel::from_samples(samples);
+        let estimate = voom_domain::estimate_plans(
+            voom_domain::EstimateInput::new(plans, ctx.effective_workers, chrono::Utc::now()),
+            &model,
+        );
+        ctx.store
+            .insert_estimate_run(&estimate)
+            .context("failed to persist estimate run")?;
+        print_estimate(&estimate);
         return Ok(());
     }
 
@@ -415,6 +441,49 @@ fn print_run_results(ctx: &RunResultsContext<'_>) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_estimate(estimate: &voom_domain::EstimateRun) {
+    println!(
+        "Estimating cost for {} planned file phases...",
+        estimate.file_count
+    );
+    println!();
+    println!("Total wall time:     ~{}", format_ms(estimate.wall_time_ms));
+    println!(
+        "Total compute time:  ~{}",
+        format_ms(estimate.compute_time_ms)
+    );
+    println!("Bytes in:            {}", format_size(estimate.bytes_in));
+    println!(
+        "Bytes out:           {} (estimated)",
+        format_size(estimate.bytes_out)
+    );
+    println!(
+        "Bytes saved:         {}",
+        format_signed_size(estimate.bytes_saved)
+    );
+    println!();
+    println!(
+        "Files where transcoding net loses bytes: {}",
+        estimate.net_loss_files
+    );
+    println!(
+        "Files where estimate uncertainty is high: {}",
+        estimate.high_uncertainty_files
+    );
+}
+
+fn format_ms(ms: u64) -> String {
+    format_duration(ms as f64 / 1_000.0)
+}
+
+fn format_signed_size(bytes: i64) -> String {
+    if bytes >= 0 {
+        format_size(bytes.unsigned_abs())
+    } else {
+        format!("-{}", format_size(bytes.unsigned_abs()))
+    }
 }
 
 /// Build a `PolicyResolver` from CLI args and config.
@@ -689,6 +758,7 @@ pub(super) struct RunCounters {
     pub(super) backup_bytes: Arc<AtomicU64>,
     pub(super) phase_stats: PhaseStatsMap,
     pub(super) plan_collector: Arc<Mutex<Vec<serde_json::Value>>>,
+    pub(super) estimate_plans: Arc<Mutex<Vec<voom_domain::Plan>>>,
     pub(super) session_id: uuid::Uuid,
 }
 
@@ -699,6 +769,7 @@ impl RunCounters {
             backup_bytes: Arc::new(AtomicU64::new(0)),
             phase_stats: Arc::new(Mutex::new(HashMap::new())),
             plan_collector: Arc::new(Mutex::new(Vec::new())),
+            estimate_plans: Arc::new(Mutex::new(Vec::new())),
             session_id: uuid::Uuid::new_v4(),
         }
     }
@@ -712,6 +783,7 @@ pub(super) struct ProcessContext<'a> {
     pub(super) store: Arc<dyn voom_domain::storage::StorageTrait>,
     pub(super) dry_run: bool,
     pub(super) plan_only: bool,
+    pub(super) estimate_mode: bool,
     pub(super) flag_size_increase: bool,
     pub(super) flag_duration_shrink: bool,
     /// When true, bypass the introspection cache and force a fresh ffprobe pass.
@@ -1080,6 +1152,7 @@ mod tests {
                 store,
                 dry_run: false,
                 plan_only: false,
+                estimate_mode: false,
                 flag_size_increase: false,
                 flag_duration_shrink: false,
                 force_rescan: false,

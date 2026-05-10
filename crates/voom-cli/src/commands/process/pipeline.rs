@@ -183,6 +183,13 @@ fn process_single_file_dry_run(
         }
     }
 
+    if ctx.estimate_mode {
+        ctx.counters
+            .estimate_plans
+            .lock()
+            .extend(result.plans.iter().cloned());
+    }
+
     let plan_summaries: Vec<serde_json::Value> = result
         .plans
         .iter()
