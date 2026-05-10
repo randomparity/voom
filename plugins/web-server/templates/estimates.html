@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+
+{% block title %}Estimates — VOOM{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>Estimates</h1>
+    <p>Pre-flight policy run records</p>
+</div>
+
+<div x-data="estimateRecords()" x-init="refresh()" class="card">
+    <div class="card-header">
+        <h2>Recent Estimates</h2>
+        <button class="btn btn-secondary btn-sm" type="button" @click="refresh()">Refresh</button>
+    </div>
+
+    <template x-if="error">
+        <p class="text-danger">Estimate records unavailable.</p>
+    </template>
+
+    <template x-if="!error && estimates.length === 0">
+        <div class="empty-state">
+            <p>No estimate records found.</p>
+        </div>
+    </template>
+
+    <template x-if="estimates.length > 0">
+        <table>
+            <thead>
+                <tr>
+                    <th>Run</th>
+                    <th>Files</th>
+                    <th>Wall</th>
+                    <th>Compute</th>
+                    <th>Bytes Saved</th>
+                    <th>Uncertain</th>
+                    <th>Net Loss</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="estimate in estimates" :key="estimate.id">
+                    <tr>
+                        <td>
+                            <span class="mono truncate" :title="estimate.id" x-text="estimate.id.slice(0, 12)"></span>
+                        </td>
+                        <td x-text="estimate.file_count"></td>
+                        <td x-text="formatDurationMs(estimate.wall_time_ms)"></td>
+                        <td x-text="formatDurationMs(estimate.compute_time_ms)"></td>
+                        <td :class="estimate.bytes_saved < 0 ? 'text-danger-strong' : 'text-success-strong'"
+                            x-text="formatSignedSize(estimate.bytes_saved)"></td>
+                        <td x-text="estimate.high_uncertainty_files"></td>
+                        <td x-text="estimate.net_loss_files"></td>
+                        <td>
+                            <button class="btn btn-secondary btn-sm" type="button" @click="openDetail(estimate.id)">
+                                Review
+                            </button>
+                        </td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </template>
+
+    <div x-show="detail" x-cloak
+         style="position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; padding: 1rem;">
+        <section style="width: min(760px, 100%); max-height: 90vh; overflow: auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem;">
+            <div class="card-header">
+                <h2>Estimate Review</h2>
+                <button class="btn btn-secondary btn-sm" type="button" @click="detail = null">Close</button>
+            </div>
+            <template x-if="detail">
+                <div>
+                    <div class="card-grid">
+                        <div class="stat-card success">
+                            <div class="stat-value" x-text="formatSignedSize(detail.bytes_saved)"></div>
+                            <div class="stat-label">Bytes Saved</div>
+                        </div>
+                        <div class="stat-card info">
+                            <div class="stat-value" x-text="formatDurationMs(detail.wall_time_ms)"></div>
+                            <div class="stat-label">Wall Time</div>
+                        </div>
+                        <div class="stat-card warning">
+                            <div class="stat-value" x-text="detail.high_uncertainty_files"></div>
+                            <div class="stat-label">Uncertain</div>
+                        </div>
+                        <div class="stat-card danger">
+                            <div class="stat-value" x-text="detail.net_loss_files"></div>
+                            <div class="stat-label">Net Loss</div>
+                        </div>
+                    </div>
+
+                    <table>
+                        <tbody>
+                            <tr><td>Files</td><td x-text="detail.file_count"></td></tr>
+                            <tr><td>Bytes In</td><td x-text="formatSize(detail.bytes_in)"></td></tr>
+                            <tr><td>Bytes Out</td><td x-text="formatSize(detail.bytes_out)"></td></tr>
+                            <tr><td>Compute Time</td><td x-text="formatDurationMs(detail.compute_time_ms)"></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </template>
+        </section>
+    </div>
+</div>
+
+<script nonce="{{ csp_nonce }}">
+function estimateRecords() {
+    return {
+        estimates: [],
+        detail: null,
+        error: null,
+        refresh() {
+            fetch('/api/estimates')
+                .then(r => {
+                    if (!r.ok) throw new Error('request failed');
+                    return r.json();
+                })
+                .then(d => { this.estimates = d.estimates || []; this.error = null; })
+                .catch(() => { this.error = 'unavailable'; });
+        },
+        openDetail(id) {
+            fetch('/api/estimates/' + id)
+                .then(r => {
+                    if (!r.ok) throw new Error('request failed');
+                    return r.json();
+                })
+                .then(d => { this.detail = d; this.error = null; })
+                .catch(() => { this.error = 'unavailable'; });
+        }
+    };
+}
+
+function formatDurationMs(ms) {
+    return formatDuration(Math.round((ms || 0) / 1000));
+}
+
+function formatSize(bytes) {
+    const absolute = Math.abs(bytes || 0);
+    if (absolute === 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.min(Math.floor(Math.log(absolute) / Math.log(1024)), units.length - 1);
+    return (absolute / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
+}
+
+function formatSignedSize(bytes) {
+    if ((bytes || 0) < 0) return '-' + formatSize(bytes);
+    return formatSize(bytes);
+}
+</script>
+{% endblock %}

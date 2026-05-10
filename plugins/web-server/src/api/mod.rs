@@ -1,5 +1,6 @@
 //! REST API handlers (JSON).
 
+pub mod estimates;
 pub mod files;
 pub mod health;
 pub mod jobs;

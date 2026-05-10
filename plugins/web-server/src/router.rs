@@ -21,6 +21,8 @@ static ALPINE_JS: &[u8] = include_bytes!("../static/alpine-3.14.8.min.js");
 pub fn build_router(state: AppState) -> Router {
     let api_routes = Router::new()
         .route("/files", get(api::files::list_files))
+        .route("/estimates", get(api::estimates::list_estimates))
+        .route("/estimates/:id", get(api::estimates::get_estimate))
         .route(
             "/files/:id",
             get(api::files::get_file).delete(api::files::delete_file),
@@ -54,6 +56,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/library", get(templates::library))
         .route("/files/:id", get(templates::file_detail))
         .route("/integrity", get(templates::integrity))
+        .route("/estimates", get(templates::estimates))
         .route("/policies", get(templates::policies))
         .route("/policies/:name/edit", get(templates::policy_editor))
         .route("/jobs", get(templates::jobs))
