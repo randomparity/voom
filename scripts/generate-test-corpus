@@ -358,6 +358,7 @@ def build_video_feature_specs():
             "expect": {"bad_file": False, "container": "mkv", "crop": "letterbox"},
             "video": {
                 "codec": "libx264",
+                "source": "mandelbrot_zoom",
                 "size": "1920x1080",
                 "active_size": "1920x816",
                 "fps": 24,
@@ -374,6 +375,7 @@ def build_video_feature_specs():
             "expect": {"bad_file": False, "container": "mkv", "crop": "pillarbox"},
             "video": {
                 "codec": "libx264",
+                "source": "mandelbrot_zoom",
                 "size": "1920x1080",
                 "active_size": "1440x1080",
                 "fps": 24,
@@ -433,7 +435,12 @@ def build_container_feature_specs():
             "profiles": ["coverage", "stress"],
             "covers": ["video.codec.hevc", "video.resolution.4k", "video.hdr.hdr10"],
             "expect": {"bad_file": False, "container": "mkv", "is_hdr": True},
-            "video": {"codec": "libx265", "size": "3840x2160", "fps": 24},
+            "video": {
+                "codec": "libx265",
+                "source": "mandelbrot_zoom",
+                "size": "3840x2160",
+                "fps": 24,
+            },
             "audio": [{"codec": "eac3", "channels": 6}],
             "subs": [{"format": "ass", "lang": "eng"}],
             "special": ["hdr10"],
@@ -463,7 +470,12 @@ def build_container_feature_specs():
             "profiles": ["coverage"],
             "covers": ["video.frame_rate.variable", "video.codec.h264"],
             "expect": {"bad_file": False, "container": "mp4"},
-            "video": {"codec": "libx264", "size": "1280x720", "fps": 30},
+            "video": {
+                "codec": "libx264",
+                "source": "mandelbrot_zoom",
+                "size": "1280x720",
+                "fps": 30,
+            },
             "audio": [{"codec": "aac", "channels": 2}],
             "subs": [],
             "special": ["vfr"],
@@ -993,6 +1005,36 @@ def write_minimal_png(path):
 # ---------------------------------------------------------------------------
 
 
+def build_video_input(video, duration, specials):
+    """Build a lavfi video input expression for a fixture."""
+    source = video.get("source", "testsrc2")
+    active_size = video.get("active_size", video["size"])
+    active_w, active_h = active_size.split("x", 1)
+    fps = video["fps"]
+
+    if source == "mandelbrot_zoom":
+        video_input = (
+            f"mandelbrot=size={active_size}:rate={fps}:"
+            "start_x=-0.7436438870371587:start_y=0.131825904205312:"
+            "start_scale=3:end_scale=0.0008"
+            f",trim=duration={duration},setpts=PTS-STARTPTS"
+        )
+        if active_size != video["size"]:
+            video_input += f",scale={active_w}:{active_h}"
+    elif source == "testsrc2":
+        video_input = f"testsrc2=duration={duration}:size={active_size}:rate={fps}"
+    else:
+        raise ValueError(f"unsupported video source '{source}'")
+
+    if "vfr" in specials:
+        video_input += ",setpts='PTS+0.003*sin(N*0.15)/TB'"
+    if "black_bars" in specials:
+        output_size = video["size"].replace("x", ":")
+        video_input += f",pad={output_size}:(ow-iw)/2:(oh-ih)/2:black"
+
+    return video_input
+
+
 def build_input_options(spec, duration, tmpdir):
     """Return ffmpeg input and stream mapping options for a file spec."""
     cmd = []
@@ -1001,14 +1043,7 @@ def build_input_options(spec, duration, tmpdir):
     audios = spec["audio"]
     subs = spec.get("subs", [])
 
-    active_size = video.get("active_size", video["size"])
-    video_input = f"testsrc2=duration={duration}:size={active_size}:rate={video['fps']}"
-    if "vfr" in specials:
-        video_input += ",setpts='PTS+0.003*sin(N*0.15)/TB'"
-    if "black_bars" in specials:
-        output_size = video["size"].replace("x", ":")
-        video_input += f",pad={output_size}:(ow-iw)/2:(oh-ih)/2:black"
-    cmd += ["-f", "lavfi", "-i", video_input]
+    cmd += ["-f", "lavfi", "-i", build_video_input(video, duration, specials)]
 
     # Audio inputs (one sine per audio track)
     for i, audio in enumerate(audios):

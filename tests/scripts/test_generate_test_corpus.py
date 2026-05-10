@@ -204,3 +204,29 @@ def test_select_and_corrupt_reports_final_filenames_and_sizes(tmp_path):
     for result in corruptions:
         entry = entries_by_name[result["filename"]]
         assert entry["size"] == result["size"]
+
+
+def test_build_video_input_uses_mandelbrot_source_and_black_bars():
+    generator = load_generator()
+    video = {
+        "source": "mandelbrot_zoom",
+        "size": "1920x1080",
+        "active_size": "1920x816",
+        "fps": 24,
+    }
+
+    source = generator.build_video_input(video, duration=2, specials={"black_bars"})
+
+    assert source.startswith("mandelbrot=")
+    assert "rate=24" in source
+    assert "scale=1920:816" in source
+    assert "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black" in source
+
+
+def test_build_video_input_keeps_testsrc_for_smoke_fixture():
+    generator = load_generator()
+    video = {"source": "testsrc2", "size": "1280x720", "fps": 24}
+
+    source = generator.build_video_input(video, duration=2, specials=set())
+
+    assert source == "testsrc2=duration=2:size=1280x720:rate=24"
