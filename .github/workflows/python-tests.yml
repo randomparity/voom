@@ -1,0 +1,33 @@
+name: Python Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python-tests:
+    name: Python Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Create Python virtual environment
+        run: python3 -m venv .venv
+
+      - name: Install Python test dependencies
+        run: |
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install pytest u-msgpack-python
+
+      - name: Run Python tests
+        run: |
+          .venv/bin/python -m pytest \
+            tests/scripts/test_generate_test_corpus.py \
+            wasm-plugins/tvdb-metadata/tests
