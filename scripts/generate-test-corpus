@@ -505,7 +505,58 @@ def build_manifest():
     ]
 
 
-def build_random_specs(count, seed, duration_range):
+def build_random_audio(file_rng):
+    """Build randomized audio tracks for a random corpus spec."""
+    audio_codecs = ["aac", "ac3", "mp3", "flac"]
+    audio_channels = [1, 2, 6]
+    audio = []
+    for j in range(file_rng.randint(1, 3)):
+        codec = file_rng.choice(audio_codecs)
+        # flac/mp3 don't support this generator's 6-channel settings.
+        if codec in {"flac", "mp3"}:
+            ch = file_rng.choice([1, 2])
+        else:
+            ch = file_rng.choice(audio_channels)
+        track = {"codec": codec, "channels": ch}
+        if j > 0:
+            track["lang"] = file_rng.choice(LANG_POOL)
+            track["title"] = file_rng.choice(AUDIO_TITLE_POOL)
+        audio.append(track)
+    return audio
+
+
+def build_random_subtitles(file_rng, ext):
+    """Build randomized subtitle tracks for a random corpus spec."""
+    sub_formats = ["srt", "ass"]
+    num_subs = file_rng.randint(0, 2) if ext == "mkv" else 0
+    subs = []
+    for _ in range(num_subs):
+        sub = {
+            "format": file_rng.choice(sub_formats),
+            "lang": file_rng.choice(LANG_POOL),
+        }
+        if file_rng.random() < 0.10:
+            sub["forced"] = True
+        subs.append(sub)
+    return subs
+
+
+def random_spec_signature(duration, video, ext, audio, subs):
+    """Return the uniqueness signature for a random corpus spec."""
+    audio_sig = tuple((track["codec"], track["channels"]) for track in audio)
+    sub_sig = tuple((sub["format"], sub.get("lang", "und")) for sub in subs)
+    return (
+        duration,
+        video["codec"],
+        video["size"],
+        video["fps"],
+        ext,
+        audio_sig,
+        sub_sig,
+    )
+
+
+def build_random_specs(count, seed, duration_range, profile="coverage"):
     """Generate `count` random file specs with unique names and varied properties.
 
     Uses only safe codecs (h264/h265, aac/ac3/mp3/flac) in MKV/MP4 containers.
@@ -517,9 +568,6 @@ def build_random_specs(count, seed, duration_range):
     video_codecs = ["libx264", "libx265"]
     resolutions = ["640x360", "854x480", "1280x720", "1920x1080", "3840x2160"]
     fps_choices = [24, 25, 30]
-    audio_codecs = ["aac", "ac3", "mp3", "flac"]
-    audio_channels = [1, 2, 6]
-    sub_formats = ["srt", "ass"]
     containers = ["mkv", "mp4"]
     dur_min, dur_max = duration_range
 
@@ -529,73 +577,20 @@ def build_random_specs(count, seed, duration_range):
 
         ext = file_rng.choice(containers)
         stem = generate_filename(file_rng, used_names)
-
-        # Video
         video = {
             "codec": file_rng.choice(video_codecs),
             "size": file_rng.choice(resolutions),
             "fps": file_rng.choice(fps_choices),
         }
-
-        # Audio: 1-3 tracks
-        num_audio = file_rng.randint(1, 3)
-        audio = []
-        for j in range(num_audio):
-            codec = file_rng.choice(audio_codecs)
-            # flac/mp3 don't support this generator's 6-channel settings.
-            if codec in {"flac", "mp3"}:
-                ch = file_rng.choice([1, 2])
-            else:
-                ch = file_rng.choice(audio_channels)
-            track = {"codec": codec, "channels": ch}
-            if j > 0:
-                track["lang"] = file_rng.choice(LANG_POOL)
-                track["title"] = file_rng.choice(AUDIO_TITLE_POOL)
-            audio.append(track)
-
-        # Subtitles: 0-2 tracks (only for MKV; MP4 subtitle support is limited)
-        if ext == "mkv":
-            num_subs = file_rng.randint(0, 2)
-        else:
-            num_subs = 0
-        subs = []
-        for j in range(num_subs):
-            sub = {
-                "format": file_rng.choice(sub_formats),
-                "lang": file_rng.choice(LANG_POOL),
-            }
-            if file_rng.random() < 0.10:
-                sub["forced"] = True
-            subs.append(sub)
-
-        # Duration for this file (stored on spec, used in generation loop)
+        audio = build_random_audio(file_rng)
+        subs = build_random_subtitles(file_rng, ext)
         duration = file_rng.randint(dur_min, dur_max)
-
-        # Build content signature for hash uniqueness
-        audio_sig = tuple((t["codec"], t["channels"]) for t in audio)
-        sub_sig = tuple((s["format"], s.get("lang", "und")) for s in subs)
-        signature = (
-            duration,
-            video["codec"],
-            video["size"],
-            video["fps"],
-            ext,
-            audio_sig,
-            sub_sig,
-        )
+        signature = random_spec_signature(duration, video, ext, audio, subs)
 
         while signature in used_signatures:
             # Bump duration until we find an unused signature
             duration = duration + 1
-            signature = (
-                duration,
-                video["codec"],
-                video["size"],
-                video["fps"],
-                ext,
-                audio_sig,
-                sub_sig,
-            )
+            signature = random_spec_signature(duration, video, ext, audio, subs)
 
         used_signatures.add(signature)
 
@@ -607,6 +602,7 @@ def build_random_specs(count, seed, duration_range):
                 "audio": audio,
                 "subs": subs,
                 "special": [],
+                "profiles": [profile],
                 "duration_override": duration,
             }
         )
@@ -843,108 +839,108 @@ SUB_WRITERS = {
 # ---------------------------------------------------------------------------
 
 
+MINIMAL_JPEG_BYTES = bytes(
+    [
+        # SOI
+        0xFF,
+        0xD8,
+        # APP0 (JFIF marker)
+        0xFF,
+        0xE0,
+        0x00,
+        0x10,
+        0x4A,
+        0x46,
+        0x49,
+        0x46,
+        0x00,
+        0x01,
+        0x01,
+        0x00,
+        0x00,
+        0x01,
+        0x00,
+        0x01,
+        0x00,
+        0x00,
+        # DQT (quantization table, all ones)
+        0xFF,
+        0xDB,
+        0x00,
+        0x43,
+        0x00,
+        *([0x01] * 64),
+        # SOF0 (1x1, 8-bit, 1 component)
+        0xFF,
+        0xC0,
+        0x00,
+        0x0B,
+        0x08,
+        0x00,
+        0x01,
+        0x00,
+        0x01,
+        0x01,
+        0x01,
+        0x11,
+        0x00,
+        # DHT (Huffman table)
+        0xFF,
+        0xC4,
+        0x00,
+        0x1F,
+        0x00,
+        0x00,
+        0x01,
+        0x05,
+        0x01,
+        0x01,
+        0x01,
+        0x01,
+        0x01,
+        0x01,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x01,
+        0x02,
+        0x03,
+        0x04,
+        0x05,
+        0x06,
+        0x07,
+        0x08,
+        0x09,
+        0x0A,
+        0x0B,
+        # SOS + compressed data
+        0xFF,
+        0xDA,
+        0x00,
+        0x08,
+        0x01,
+        0x01,
+        0x00,
+        0x00,
+        0x3F,
+        0x00,
+        0x7B,
+        0x40,
+        # EOI
+        0xFF,
+        0xD9,
+    ]
+)
+
+
 def write_minimal_jpeg(path):
     """Write a minimal valid 1x1 white JPEG file (~125 bytes)."""
-    # SOI + JFIF APP0 + quantization table + SOF0 + DHT + SOS + data + EOI
-    path.write_bytes(
-        bytes(
-            [
-                # SOI
-                0xFF,
-                0xD8,
-                # APP0 (JFIF marker)
-                0xFF,
-                0xE0,
-                0x00,
-                0x10,
-                0x4A,
-                0x46,
-                0x49,
-                0x46,
-                0x00,
-                0x01,
-                0x01,
-                0x00,
-                0x00,
-                0x01,
-                0x00,
-                0x01,
-                0x00,
-                0x00,
-                # DQT (quantization table, all ones)
-                0xFF,
-                0xDB,
-                0x00,
-                0x43,
-                0x00,
-                *([0x01] * 64),
-                # SOF0 (1x1, 8-bit, 1 component)
-                0xFF,
-                0xC0,
-                0x00,
-                0x0B,
-                0x08,
-                0x00,
-                0x01,
-                0x00,
-                0x01,
-                0x01,
-                0x01,
-                0x11,
-                0x00,
-                # DHT (Huffman table)
-                0xFF,
-                0xC4,
-                0x00,
-                0x1F,
-                0x00,
-                0x00,
-                0x01,
-                0x05,
-                0x01,
-                0x01,
-                0x01,
-                0x01,
-                0x01,
-                0x01,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x01,
-                0x02,
-                0x03,
-                0x04,
-                0x05,
-                0x06,
-                0x07,
-                0x08,
-                0x09,
-                0x0A,
-                0x0B,
-                # SOS + compressed data
-                0xFF,
-                0xDA,
-                0x00,
-                0x08,
-                0x01,
-                0x01,
-                0x00,
-                0x00,
-                0x3F,
-                0x00,
-                0x7B,
-                0x40,
-                # EOI
-                0xFF,
-                0xD9,
-            ]
-        )
-    )
+    path.write_bytes(MINIMAL_JPEG_BYTES)
 
 
 def write_minimal_png(path):
@@ -1388,7 +1384,12 @@ def main():
     # Generate random specs if --count is set
     random_specs = []
     if args.count > 0:
-        random_specs = build_random_specs(args.count, args.seed, dur_range)
+        random_specs = build_random_specs(
+            args.count,
+            args.seed,
+            dur_range,
+            profile=args.profile,
+        )
         specs.extend(random_specs)
 
     if not specs and args.count == 0:
