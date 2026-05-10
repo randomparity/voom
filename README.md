@@ -151,6 +151,9 @@ third-party WASM plugins with `voom plugin install <path.wasm>`.
 ## Quick Start
 
 ```bash
+# First-time developer setup
+just setup
+
 # Build
 cargo build
 
@@ -175,6 +178,28 @@ cargo run -- env check
 
 # Start the web UI
 cargo run -- serve
+```
+
+## Development Setup
+
+Run `just setup` before local development. It checks the Rust toolchain,
+creates `.venv`, installs Python test dependencies (`pytest`, `pre-commit`, and
+the Python TVDB WASM plugin runtime dependency), installs git hooks, and verifies
+media/runtime tools used by tests and scripts.
+
+The setup recipe can install missing packages when supported by the host package
+manager. It recognizes Homebrew on macOS, `dnf`/`yum` on Fedora/RHEL-family
+systems, and `apt-get` on Debian/Ubuntu-family systems. Use
+`VOOM_SETUP_INSTALL=1 just setup` for non-interactive installs, or
+`VOOM_SETUP_INSTALL=0 just setup` / `just setup-check` to only report missing
+dependencies.
+
+Useful local checks after setup:
+
+```bash
+just python-test
+just ci
+voom env check
 ```
 
 ## CLI Commands

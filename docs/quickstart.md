@@ -5,16 +5,29 @@
 - **Rust** (2021 edition, stable toolchain)
 - **ffprobe** and **ffmpeg** (for media introspection and transcoding)
 - **mkvtoolnix** (mkvpropedit + mkvmerge, for MKV operations)
+- **Python 3.11+** with VOOM's setup-managed `.venv` for Python scripts/tests
 - Optional: **mediainfo** (additional metadata)
 
 Verify your tools:
 
 ```bash
+just setup-check
 cargo --version
 ffprobe -version
 ffmpeg -version
 mkvmerge --version
 ```
+
+For first-time development setup, run:
+
+```bash
+just setup
+```
+
+`just setup` installs or verifies the Rust helper tools, media/runtime tools,
+pre-commit hooks, and Python test dependencies. It supports Homebrew on macOS,
+`dnf`/`yum` on Fedora/RHEL-family systems, and `apt-get` on Debian/Ubuntu-family
+systems.
 
 ## Building from Source
 
