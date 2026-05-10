@@ -50,6 +50,43 @@ kernel=$(uname -sr)
 cpu=$(awk -F': ' '/^model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null || echo "unknown")
 gpu=$(command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name --format=csv,noheader,nounits 2>/dev/null | head -1 || echo "none")
 
+env_dir="${run_dir}/env"
+mkdir -p "${env_dir}"
+
+capture_env_command() {
+    local out="$1"
+    shift
+    {
+        printf '$'
+        printf ' %q' "$@"
+        printf '\n\n'
+        "$@"
+    } >"${env_dir}/${out}" 2>&1 || true
+}
+
+capture_env_command ffmpeg-version.txt ffmpeg -hide_banner -version
+capture_env_command ffmpeg-hwaccels.txt ffmpeg -hide_banner -hwaccels
+capture_env_command ffmpeg-encoders.txt ffmpeg -hide_banner -encoders
+capture_env_command ffprobe-version.txt ffprobe -hide_banner -version
+capture_env_command mkvmerge-version.txt mkvmerge --version
+
+if command -v nvidia-smi >/dev/null 2>&1; then
+    capture_env_command nvidia-smi.txt nvidia-smi
+    capture_env_command nvidia-smi-query.csv nvidia-smi \
+        --query-gpu=index,name,driver_version,cuda_version,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory \
+        --format=csv
+fi
+
+git -C "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" status --short --branch \
+    >"${env_dir}/git-status.txt" 2>&1 || true
+cp "${policy_path}" "${env_dir}/policy.voom" 2>/dev/null || true
+
+config_file="${config_dir}/config.toml"
+if [[ -r "${config_file}" ]]; then
+    sed -E 's/(password|token|secret|key|credential)([[:space:]]*=[[:space:]]*).*/\1\2"<redacted>"/I' \
+        "${config_file}" >"${env_dir}/voom-config.redacted.toml" || true
+fi
+
 jq -n \
     --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg voom_version "${voom_version}" \
@@ -68,6 +105,7 @@ jq -n \
         policy: { path: $policy_path, sha256: $policy_sha256 },
         library: $library,
         host: { kernel: $kernel, cpu: $cpu, gpu: $gpu },
+        env_dir: "env",
         stages: {}
     }' >"${run_dir}/manifest.json"
 

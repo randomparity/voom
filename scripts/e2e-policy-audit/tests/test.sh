@@ -78,6 +78,132 @@ EOF
 
 run_summary_failed_phase_test
 
+run_failure_clusters_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  cat >"${actual}/failed-plans.tsv" <<'EOF'
+plan_id	file_id	phase	result
+plan-1	file-1	transcode-video	{"detail":{"exit_code":187,"command":"ffmpeg -i '/lib/show/S01E01.mkv' out.mkv","stderr_tail":"cuCtxCreate failed -> CUDA_ERROR_OUT_OF_MEMORY: out of memory"},"error":"ffmpeg exited with exit status: 187"}
+plan-2	file-2	transcode-video	{"detail":null,"error":"storage error: failed to insert transcode outcome: FOREIGN KEY constraint failed"}
+EOF
+
+  cat >"${actual}/files.tsv" <<'EOF'
+id	path
+file-1	/lib/show/S01E01.mkv
+file-2	/lib/show/S01E02.mkv
+EOF
+
+  cat >"${actual}/ffprobe.ndjson" <<'EOF'
+{"path":"/lib/show/S01E01.mkv","container":"mkv","video":[{"index":0,"codec":"h264","width":1920,"height":1080}],"audio":[{"index":1}]}
+{"path":"/lib/show/S01E02.mkv","container":"mkv","video":[{"index":0,"codec":"mpeg4","width":640,"height":480}],"audio":[]}
+EOF
+
+  "lib/failure-clusters.py" \
+    "${actual}/failed-plans.tsv" \
+    "${actual}/failure-clusters.tsv" \
+    "${actual}/failure-clusters.md" \
+    --files-tsv "${actual}/files.tsv" \
+    --pre-ffprobe "${actual}/ffprobe.ndjson"
+
+  cat >"${actual}/expected-clusters.tsv" <<'EOF'
+phase	signature	exit_code	container	video_codec	count	top_resolution	sample_path	sample_plan_id	sample_error
+transcode-video	cuda-context-oom	187	mkv	h264	1	1920x1080	/lib/show/S01E01.mkv	plan-1	ffmpeg exited with exit status: 187 | cuCtxCreate failed -> CUDA_ERROR_OUT_OF_MEMORY: out of memory
+transcode-video	storage-fk-transcode-outcome		mkv	mpeg4	1	640x480	/lib/show/S01E02.mkv	plan-2	storage error: failed to insert transcode outcome: FOREIGN KEY constraint failed
+EOF
+
+  assert_match "${actual}/failure-clusters.tsv" "${actual}/expected-clusters.tsv"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_failure_clusters_test
+
+run_diff_class_summary_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  cat >"${actual}/diff.tsv" <<'EOF'
+path	side	change-class	details
+/lib/a.mkv	both	subtitle	#2.is_default:False→True
+/lib/b.mkv	both	video	#0.codec:h264→hevc; +#4(png)
+/lib/b.mkv	both	attachment	-#4(png)
+/lib/c.mkv	both	audio	#1.language:und→eng
+EOF
+
+  "lib/diff-class-summary.py" \
+    "${actual}/diff.tsv" \
+    "${actual}/summary.tsv" \
+    "${actual}/summary.md"
+
+  cat >"${actual}/expected.tsv" <<'EOF'
+change-class	signature	rows	files	sample_path
+attachment	png-attachment-removed	1	1	/lib/b.mkv
+audio	language-detected-from-und	1	1	/lib/c.mkv
+subtitle	subtitle-default-enabled	1	1	/lib/a.mkv
+video	attachment-promoted-to-png-video	1	1	/lib/b.mkv
+EOF
+
+  assert_match "${actual}/summary.tsv" "${actual}/expected.tsv"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_diff_class_summary_test
+
+run_repro_set_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/repro" "${actual}/diffs"
+
+  cat >"${actual}/manifest.json" <<'EOF'
+{"library":"/lib"}
+EOF
+
+  cat >"${actual}/repro/failed-plan-files.tsv" <<'EOF'
+path	phase	signature	exit_code	container	video_codec	resolution	plan_id	file_id
+/lib/show/S01E01.mkv	transcode-video	cuda-context-oom	187	mkv	h264	1920x1080	plan-1	file-1
+/lib/show/S01E02.mkv	transcode-video	cuda-context-oom	187	mkv	h264	1920x1080	plan-2	file-2
+EOF
+
+  cat >"${actual}/diffs/db-vs-ffprobe-post.tsv" <<'EOF'
+path	side	change-class	details
+/lib/show/S01E03.mkv	both	subtitle	#2.is_default:False→True
+/lib/show/S01E04.mkv	both	subtitle	#2.is_default:False→True
+/lib/show/S01E05.mkv	both	video	+#4(png)
+EOF
+
+  "lib/build-repro-set.py" "${actual}" --cap-per-signature 1
+
+  cat >"${actual}/expected-minimal.tsv" <<'EOF'
+path	relative_path	source	signature	phase	detail
+/lib/show/S01E01.mkv	show/S01E01.mkv	failed-plan	cuda-context-oom	transcode-video	plan-1
+/lib/show/S01E03.mkv	show/S01E03.mkv	db-vs-ffprobe-post	subtitle-default-enabled		#2.is_default:False→True
+/lib/show/S01E05.mkv	show/S01E05.mkv	db-vs-ffprobe-post	attachment-promoted-to-png-video		+#4(png)
+EOF
+
+  assert_match "${actual}/repro/minimal-covering-set.tsv" "${actual}/expected-minimal.tsv"
+
+  cat >"${actual}/expected-relative-paths" <<'EOF'
+show/S01E01.mkv
+show/S01E03.mkv
+show/S01E05.mkv
+EOF
+  assert_match \
+    "${actual}/repro/minimal-covering-set.relative-paths" \
+    "${actual}/expected-relative-paths"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_repro_set_test
+
 raw_actual=$(mktemp -d)
 trap 'rm -rf "${raw_actual}"' EXIT
 

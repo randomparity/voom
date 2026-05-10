@@ -26,7 +26,13 @@ transcode-video	3	1	1	1
 
 ## Anomaly section
 
-### Failed plans (first 50)
+### Failure clusters
+```
+phase	signature	exit_code	container	video_codec	count	top_resolution	sample_path	sample_plan_id	sample_error
+transcode-video	unknown				1			plan-4	encoder failed
+```
+
+### Failed plans (first 20)
 ```
 plan_id	file_id	phase	result
 plan-4	file-4	transcode-video	{"error":"encoder failed"}
@@ -40,10 +46,17 @@ plan-4	file-4	transcode-video	{"error":"encoder failed"}
 
 ### First 50 db-vs-ffprobe-post divergences (introspection bugs)
 
+### Top db-vs-ffprobe-post diff classes
+(not generated)
+
+### Top ffprobe pre-vs-post diff classes
+(not generated)
+
 ## Linked artifacts
 
 - [diffs/](diffs/)
 - [logs/](logs/)
 - [reports/](reports/)
 - [db-export/](db-export/)
+- [repro/](repro/)
 - [web-smoke/](web-smoke/)
