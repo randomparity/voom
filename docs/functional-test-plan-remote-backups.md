@@ -88,8 +88,24 @@ XDG_CONFIG_HOME=/tmp/voom-remote-config cargo run -p voom-cli -- process \
 ```
 
 Expected: processing succeeds, local `.vbak` files are retained because the
-policy sets `keep_backups: true`, and `/tmp/voom-remote-backup-target` contains
-remote backup copies under `fake_voom/<uuid>/`.
+policy sets `keep_backups: true`, `/tmp/voom-remote-backup-target` contains
+remote backup copies under `fake_voom/<uuid>/`, and the remote inventory file
+exists at:
+
+```text
+/tmp/voom-remote-config/voom/data/backup-manager/remote-backups.jsonl
+```
+
+List the remote inventory:
+
+```sh
+XDG_CONFIG_HOME=/tmp/voom-remote-config cargo run -p voom-cli -- backup list \
+  --destination fake-offsite \
+  --format json
+```
+
+Expected: JSON output contains at least one record with
+`"destination_name": "fake-offsite"` and `"status": "verified"`.
 
 ## Failure Blocks Destructive Work
 

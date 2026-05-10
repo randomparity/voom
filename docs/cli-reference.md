@@ -812,12 +812,13 @@ for rclone, S3, SFTP, and WebDAV examples.
 List backups (`.vbak` files) in one or more directories.
 
 ```
-voom backup list <PATH>... [OPTIONS]
+voom backup list [PATH]... [OPTIONS]
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `<PATH>...` | *required* | Directories to search for backups (one or more) |
+| `<PATH>...` | none | Directories to search for local `.vbak` files |
+| `--destination <DESTINATION>` | none | List persistent remote backup inventory for one destination |
 | `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
 
 #### `voom backup restore`
@@ -851,6 +852,7 @@ voom backup cleanup <PATH>... [OPTIONS]
 ```bash
 voom backup list /media/movies
 voom backup list /media/movies /media/tv --format json
+voom backup list --destination offsite
 voom backup restore /media/movies/film.mkv.vbak
 voom backup restore /media/movies/film.mkv.vbak --yes
 voom backup cleanup /media/movies --yes

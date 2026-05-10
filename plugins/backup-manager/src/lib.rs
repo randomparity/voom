@@ -10,6 +10,7 @@
 
 pub mod backup;
 pub mod destination;
+pub mod inventory;
 pub mod space;
 
 use std::collections::HashMap;
@@ -25,6 +26,9 @@ use voom_domain::events::{Event, EventResult};
 use voom_kernel::Plugin;
 
 use crate::destination::{BackupDestinationConfig, BackupDestinationsConfig, RemoteBackupRecord};
+use crate::inventory::{
+    RemoteBackupInventory, RemoteBackupInventoryRecord, RemoteBackupInventoryStatus,
+};
 
 /// Create a `VoomError::Plugin` for the backup-manager plugin.
 pub(crate) fn plugin_err(message: impl Into<String>) -> VoomError {
@@ -124,6 +128,7 @@ pub struct BackupManagerPlugin {
     config: BackupConfig,
     /// Active backup records indexed by original path.
     records: Mutex<HashMap<PathBuf, BackupRecord>>,
+    inventory: Option<RemoteBackupInventory>,
 }
 
 impl BackupManagerPlugin {
@@ -133,6 +138,7 @@ impl BackupManagerPlugin {
             capabilities: vec![Capability::Backup],
             config: BackupConfig::default(),
             records: Mutex::new(HashMap::new()),
+            inventory: None,
         }
     }
 
@@ -142,7 +148,19 @@ impl BackupManagerPlugin {
             capabilities: vec![Capability::Backup],
             config,
             records: Mutex::new(HashMap::new()),
+            inventory: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_inventory_path(mut self, path: PathBuf) -> Self {
+        self.inventory = Some(RemoteBackupInventory::new(path));
+        self
+    }
+
+    #[must_use]
+    pub fn remote_inventory(&self) -> Option<&RemoteBackupInventory> {
+        self.inventory.as_ref()
     }
 
     fn records(&self) -> Result<MutexGuard<'_, HashMap<PathBuf, BackupRecord>>> {
@@ -162,7 +180,34 @@ impl BackupManagerPlugin {
         let mut records = self.records()?;
         records.insert(path.to_path_buf(), record.clone());
 
+        self.persist_remote_inventory(&record)?;
+
         Ok(record)
+    }
+
+    fn persist_remote_inventory(&self, record: &BackupRecord) -> Result<()> {
+        let Some(inventory) = &self.inventory else {
+            return Ok(());
+        };
+        for remote in &record.remote_backups {
+            let now = Utc::now();
+            inventory.append(&RemoteBackupInventoryRecord {
+                backup_id: record.id,
+                original_path: record.original_path.clone(),
+                local_backup_path: record.backup_path.clone(),
+                destination_name: remote.destination_name.clone(),
+                remote_path: remote.remote_path.clone(),
+                size: record.size,
+                uploaded_at: now,
+                verified_at: remote.verified.then_some(now),
+                status: if remote.verified {
+                    RemoteBackupInventoryStatus::Verified
+                } else {
+                    RemoteBackupInventoryStatus::Uploaded
+                },
+            })?;
+        }
+        Ok(())
     }
 
     /// Restore a file from its backup.
@@ -276,6 +321,9 @@ impl Plugin for BackupManagerPlugin {
         let config: BackupConfig = ctx.parse_config()?;
         config.validate()?;
         self.config = config;
+        self.inventory = Some(RemoteBackupInventory::new(
+            RemoteBackupInventory::default_path(&ctx.data_dir),
+        ));
         Ok(Vec::new())
     }
 
@@ -385,6 +433,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     fn create_test_file(dir: &Path, name: &str, content: &[u8]) -> PathBuf {
@@ -392,6 +441,12 @@ mod tests {
         let mut f = fs::File::create(&path).unwrap();
         f.write_all(content).unwrap();
         path
+    }
+
+    fn make_executable(path: &Path) {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
     }
 
     #[test]
@@ -727,6 +782,69 @@ mod tests {
         let data = result.data.unwrap();
 
         assert_eq!(data["remote_backups"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn test_backup_file_persists_remote_inventory_records() {
+        let dir = TempDir::new().unwrap();
+        let file_path = create_test_file(dir.path(), "movie.mkv", b"movie data");
+        let rclone_path = dir.path().join("fake-rclone");
+        let target_dir = dir.path().join("remote");
+        fs::write(
+            &rclone_path,
+            format!(
+                "#!/usr/bin/env bash\n\
+                 set -euo pipefail\n\
+                 cmd=\"$1\"\n\
+                 shift\n\
+                 case \"$cmd\" in\n\
+                   copyto)\n\
+                     target=\"{}/$2\"\n\
+                     mkdir -p \"$(dirname \"$target\")\"\n\
+                     cp \"$1\" \"$target\"\n\
+                     ;;\n\
+                   size)\n\
+                     shift\n\
+                     target=\"{}/$1\"\n\
+                     bytes=\"$(wc -c < \"$target\" | tr -d ' ')\"\n\
+                     printf '{{\"bytes\":%s,\"count\":1}}\\n' \"$bytes\"\n\
+                     ;;\n\
+                 esac\n",
+                target_dir.display(),
+                target_dir.display(),
+            ),
+        )
+        .unwrap();
+        make_executable(&rclone_path);
+        let inventory_path = dir.path().join("inventory.jsonl");
+
+        let config = BackupConfig {
+            backup_dir: Some(dir.path().join("backups")),
+            use_global_dir: true,
+            min_free_space: 0,
+            rclone_path: rclone_path.display().to_string(),
+            destinations: vec![crate::destination::BackupDestinationConfig::rclone(
+                "offsite",
+                "fake:voom",
+            )],
+            ..BackupConfig::default()
+        };
+        let plugin = BackupManagerPlugin::from_config(config).with_inventory_path(inventory_path);
+
+        plugin.backup_file(&file_path).unwrap();
+
+        let records = plugin
+            .remote_inventory()
+            .unwrap()
+            .list(Some("offsite"))
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].original_path, file_path);
+        assert_eq!(records[0].destination_name, "offsite");
+        assert_eq!(
+            records[0].status,
+            crate::inventory::RemoteBackupInventoryStatus::Verified
+        );
     }
 
     #[test]

@@ -618,8 +618,11 @@ pub enum BackupCommands {
     /// List backup files
     List {
         /// Directories to scan for backups
-        #[arg(required = true, num_args = 1..)]
+        #[arg(num_args = 0..)]
         paths: Vec<PathBuf>,
+        /// Remote destination inventory to list
+        #[arg(long)]
+        destination: Option<String>,
         /// Output format
         #[arg(short, long, default_value = "table")]
         format: OutputFormat,
@@ -2101,16 +2104,28 @@ mod tests {
     fn test_backup_list() {
         let cli = parse(&["voom", "backup", "list", "/media"]);
         match cli.command {
-            Commands::Backup(BackupCommands::List { paths, .. }) => {
+            Commands::Backup(BackupCommands::List {
+                paths, destination, ..
+            }) => {
                 assert_eq!(paths, vec![PathBuf::from("/media")]);
+                assert_eq!(destination, None);
             }
             _ => panic!("expected Backup List"),
         }
     }
 
     #[test]
-    fn test_backup_list_requires_path() {
-        assert!(try_parse(&["voom", "backup", "list"]).is_err());
+    fn test_backup_list_accepts_destination_without_path() {
+        let cli = parse(&["voom", "backup", "list", "--destination", "offsite"]);
+        match cli.command {
+            Commands::Backup(BackupCommands::List {
+                paths, destination, ..
+            }) => {
+                assert!(paths.is_empty());
+                assert_eq!(destination.as_deref(), Some("offsite"));
+            }
+            _ => panic!("expected Backup List"),
+        }
     }
 
     #[test]
