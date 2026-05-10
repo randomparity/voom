@@ -62,10 +62,10 @@ Implemented surface:
 
 The following work is still needed for the full issue 207 acceptance list:
 
-- Remote backup inventory and `voom backup list --destination`.
-- Remote restore through `voom backup restore <file-path> --from <destination>`.
-- Standalone remote verification through `voom backup verify --destination`.
-- `voom health check` coverage for backup destinations.
-- Cost-aware retention guards for providers with minimum storage durations.
-- Optional native S3 backend if direct AWS SDK support remains desired after
-  rclone-backed S3 is available.
+- #319: Remote backup inventory and `voom backup list --destination`.
+- #320: Remote restore through `voom backup restore <file-path> --from <destination>`.
+- #321: Standalone remote verification through `voom backup verify --destination`.
+- #322: `voom health check` coverage for backup destinations.
+- #323: Cost-aware retention guards for providers with minimum storage durations.
+- #324: Optional native S3 backend if direct AWS SDK support remains desired
+  after rclone-backed S3 is available.
