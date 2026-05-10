@@ -481,6 +481,15 @@ fn print_estimate(estimate: &voom_domain::EstimateRun) {
         "Files where estimate uncertainty is high: {}",
         estimate.high_uncertainty_files
     );
+    if estimate.high_uncertainty_files > 0 {
+        println!(
+            "High-uncertainty range: bytes saved {} to {}, compute time {} to {}",
+            format_signed_size(scale_i64(estimate.bytes_saved, 0.5)),
+            format_signed_size(scale_i64(estimate.bytes_saved, 1.5)),
+            format_ms(scale_u64(estimate.compute_time_ms, 0.5)),
+            format_ms(scale_u64(estimate.compute_time_ms, 1.5)),
+        );
+    }
 }
 
 fn print_estimate_breakdowns(estimate: &voom_domain::EstimateRun) {
@@ -527,6 +536,14 @@ fn print_estimate_breakdowns(estimate: &voom_domain::EstimateRun) {
 
 fn format_ms(ms: u64) -> String {
     format_duration(ms as f64 / 1_000.0)
+}
+
+fn scale_u64(value: u64, multiplier: f64) -> u64 {
+    (value as f64 * multiplier).round() as u64
+}
+
+fn scale_i64(value: i64, multiplier: f64) -> i64 {
+    (value as f64 * multiplier).round() as i64
 }
 
 fn format_signed_size(bytes: i64) -> String {
