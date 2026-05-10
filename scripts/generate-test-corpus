@@ -308,8 +308,8 @@ def select_specs(specs, profile, only, skip):
     return selected
 
 
-def build_manifest():
-    """Return the list of file specs to generate."""
+def build_basic_manifest_specs():
+    """Return baseline and audio-focused fixture specs."""
     return [
         {
             "stem": "basic-h264-aac",
@@ -344,6 +344,12 @@ def build_manifest():
             "subs": [],
             "special": ["loudness"],
         },
+    ]
+
+
+def build_video_feature_specs():
+    """Return video-feature and common codec fixture specs."""
+    return [
         {
             "stem": "letterbox-h264",
             "ext": "mkv",
@@ -415,6 +421,12 @@ def build_manifest():
             "subs": [{"format": "webvtt", "lang": "eng"}],
             "special": [],
         },
+    ]
+
+
+def build_container_feature_specs():
+    """Return HDR, container, and optional codec fixture specs."""
+    return [
         {
             "stem": "4k-hevc-hdr10",
             "ext": "mkv",
@@ -503,6 +515,15 @@ def build_manifest():
             "requires_encoder": "truehd",
         },
     ]
+
+
+def build_manifest():
+    """Return the list of file specs to generate."""
+    return (
+        build_basic_manifest_specs()
+        + build_video_feature_specs()
+        + build_container_feature_specs()
+    )
 
 
 def build_random_audio(file_rng):
@@ -972,81 +993,14 @@ def write_minimal_png(path):
 # ---------------------------------------------------------------------------
 
 
-def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
-    """Build the ffmpeg command list for a given file spec.
-
-    Returns (cmd_list, temp_files_to_cleanup).
-    """
-    outfile = dest / f"{spec['stem']}.{spec['ext']}"
-    cmd = ["ffmpeg", "-y", "-hide_banner"]
-
+def build_input_options(spec, duration, tmpdir):
+    """Return ffmpeg input and stream mapping options for a file spec."""
+    cmd = []
     specials = set(spec.get("special", []))
     video = spec["video"]
     audios = spec["audio"]
     subs = spec.get("subs", [])
 
-    # --- Video input ---
-    vf_filters = [
-        f"testsrc2=duration={duration}:size={video['size']}:rate={video['fps']}"
-    ]
-    if "vfr" in specials:
-        # Vary PTS to create variable frame rate
-        vf_filters.append("setpts='PTS+0.002*sin(N*0.1)/TB'")
-    cmd += ["-f", "lavfi", "-i", ",".join(vf_filters)]
-
-    # --- Audio inputs ---
-    for i, audio in enumerate(audios):
-        ch = audio["channels"]
-        if ch <= 2:
-            cmd += [
-                "-f",
-                "lavfi",
-                "-i",
-                f"sine=frequency={440 + i * 110}:duration={duration}:sample_rate=48000",
-            ]
-        else:
-            # Generate 5.1/7.1 by merging multiple sine sources
-            freqs = [220, 330, 440, 550, 660, 770, 880, 990][:ch]
-            filter_parts = []
-            for j, freq in enumerate(freqs):
-                filter_parts.append(
-                    f"sine=frequency={freq}:duration={duration}:sample_rate=48000"
-                )
-            amerge_input = "|".join(filter_parts)
-            cmd += ["-f", "lavfi", "-i", f"amovie='{amerge_input}'" if False else ""]
-            # Actually, use a complex filter approach — replace last two args
-            cmd = cmd[:-2]
-            cmd += [
-                "-f",
-                "lavfi",
-                "-i",
-                f"sine=frequency=440:duration={duration}:sample_rate=48000",
-            ]
-
-    # --- Subtitle inputs ---
-    sub_files = []
-    for i, sub in enumerate(subs):
-        fmt = sub["format"]
-        ext = "vtt" if fmt == "webvtt" else fmt
-        sub_path = Path(tmpdir) / f"sub_{spec['stem']}_{i}.{ext}"
-        SUB_WRITERS[fmt](sub_path, min(duration, 59))
-        sub_files.append(sub_path)
-        cmd += ["-i", str(sub_path)]
-
-    # --- Map streams ---
-    cmd += ["-map", "0:v"]
-    for i in range(len(audios)):
-        cmd += ["-map", f"{1 if audios[0]['channels'] <= 2 or i == 0 else 1}:a"]
-        # For multi-channel that fell back to mono input, we'll handle below
-    # For multi-audio with >2 channels, we generated a single sine for all.
-    # Remap: all audio inputs are at indices 1..len(audios)
-    # Actually, let's simplify: generate one sine input per audio track
-    # and use pan filter for multichannel.
-
-    # --- Rebuild command cleanly ---
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
-
-    # Video input
     active_size = video.get("active_size", video["size"])
     video_input = f"testsrc2=duration={duration}:size={active_size}:rate={video['fps']}"
     if "vfr" in specials:
@@ -1088,7 +1042,11 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
         cmd += ["-map", f"{stream_idx}"]
         stream_idx += 1
 
-    # --- Video codec ---
+    return cmd
+
+
+def add_video_codec_options(cmd, video, specials):
+    """Append video codec and HDR options. Return whether HDR bitstream is needed."""
     vcodec = video["codec"]
     cmd += ["-c:v", vcodec]
     if vcodec == "libx264":
@@ -1120,8 +1078,11 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
                 "max-cll=1000,400",
             ]
             needs_hevc_hdr_bsf = True
+    return needs_hevc_hdr_bsf
 
-    # --- Audio codecs ---
+
+def add_audio_codec_options(cmd, audios):
+    """Append audio codec options."""
     for i, audio in enumerate(audios):
         cmd += [f"-c:a:{i}", audio["codec"]]
         ch = audio["channels"]
@@ -1145,7 +1106,9 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
             # truehd encoder doesn't take bitrate; set sample format
             cmd += ["-strict", "-2"]
 
-    # --- Subtitle codecs ---
+
+def add_subtitle_codec_options(cmd, spec, subs):
+    """Append subtitle codec options."""
     for i, sub in enumerate(subs):
         fmt = sub["format"]
         if spec["ext"] == "mkv":
@@ -1160,17 +1123,19 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
         elif spec["ext"] == "webm":
             cmd += [f"-c:s:{i}", "webvtt"]
 
-    # --- Container-level metadata ---
+
+def add_container_metadata(cmd, rng):
+    """Append container-level metadata."""
     cmd += ["-metadata", f"title={rng.choice(TITLE_POOL)}"]
     cmd += ["-metadata", f"encoder={rng.choice(ENCODER_POOL)}"]
     cmd += ["-metadata", f"creation_time={random_timestamp(rng)}"]
 
-    # --- Track-level metadata & dispositions ---
-    # Video track is stream 0
+
+def add_track_metadata(cmd, audios, subs, rng):
+    """Append track-level metadata and dispositions."""
     cmd += ["-metadata:s:v:0", f"handler_name={rng.choice(HANDLER_POOL)}"]
     cmd += ["-metadata:s:v:0", f"language={rng.choice(LANG_POOL)}"]
 
-    # Audio tracks
     for i, audio in enumerate(audios):
         lang = audio.get("lang", rng.choice(LANG_POOL))
         title = audio.get("title", rng.choice(AUDIO_TITLE_POOL))
@@ -1193,7 +1158,9 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
         elif i == 0:
             cmd += [f"-disposition:s:{i}", "default"]
 
-    # --- Attachments ---
+
+def add_attachments(cmd, specials, tmpdir):
+    """Append attachment options and create temporary attachment files."""
     if "attachment" in specials:
         # Font attachment
         font_path = Path(tmpdir) / "DummyFont.ttf"
@@ -1241,6 +1208,27 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
             "-metadata:s:t:0",
             "filename=cover.jpg",
         ]
+
+
+def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
+    """Build the ffmpeg command list for a given file spec.
+
+    Returns (cmd_list, temp_files_to_cleanup).
+    """
+    outfile = dest / f"{spec['stem']}.{spec['ext']}"
+    specials = set(spec.get("special", []))
+    audios = spec["audio"]
+    subs = spec.get("subs", [])
+
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    cmd += build_input_options(spec, duration, tmpdir)
+
+    needs_hevc_hdr_bsf = add_video_codec_options(cmd, spec["video"], specials)
+    add_audio_codec_options(cmd, audios)
+    add_subtitle_codec_options(cmd, spec, subs)
+    add_container_metadata(cmd, rng)
+    add_track_metadata(cmd, audios, subs, rng)
+    add_attachments(cmd, specials, tmpdir)
 
     if needs_hevc_hdr_bsf:
         cmd += [
