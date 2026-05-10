@@ -26,8 +26,27 @@ Seed local calibration samples:
 voom estimate calibrate
 ```
 
-Calibration records conservative codec/backend samples in the VOOM database.
-The estimator uses matching samples before falling back to built-in defaults.
+Without extra flags, calibration records conservative codec/backend samples in
+the VOOM database. To measure this machine against generated fixtures, create a
+corpus and pass it to calibration:
+
+```sh
+scripts/generate-test-corpus /tmp/voom-estimate-corpus \
+  --profile smoke \
+  --count 0 \
+  --seed 310 \
+  --duration 1
+
+voom estimate calibrate \
+  --benchmark-corpus /tmp/voom-estimate-corpus \
+  --max-fixtures 3
+```
+
+Corpus-backed calibration reads `manifest.json`, transcodes the first generated
+video fixtures through a bounded HEVC software benchmark, and records measured
+pixels/second plus output-size ratios. It prints an estimate-vs-actual summary
+for the benchmarked fixtures before persisting samples. The estimator uses
+matching samples before falling back to built-in defaults.
 
 ## Savings Gate
 

@@ -256,6 +256,14 @@ pub struct EstimateArgs {
     /// Re-introspect every file from scratch before estimating
     #[arg(long)]
     pub force_rescan: bool,
+
+    /// Existing generated corpus to benchmark during `estimate calibrate`
+    #[arg(long)]
+    pub benchmark_corpus: Option<PathBuf>,
+
+    /// Maximum generated corpus fixtures to benchmark during calibration
+    #[arg(long, default_value_t = 3)]
+    pub max_fixtures: usize,
 }
 
 fn parse_size_bytes(value: &str) -> std::result::Result<u64, String> {
@@ -1216,6 +1224,27 @@ mod tests {
             Commands::Estimate(args) => {
                 assert_eq!(args.paths, vec![PathBuf::from("/media")]);
                 assert_eq!(args.policy, Some(PathBuf::from("p.voom")));
+            }
+            _ => panic!("expected Estimate"),
+        }
+    }
+
+    #[test]
+    fn test_estimate_calibrate_benchmark_flags() {
+        let cli = parse(&[
+            "voom",
+            "estimate",
+            "calibrate",
+            "--benchmark-corpus",
+            "/tmp/corpus",
+            "--max-fixtures",
+            "2",
+        ]);
+        match cli.command {
+            Commands::Estimate(args) => {
+                assert_eq!(args.paths, vec![PathBuf::from("calibrate")]);
+                assert_eq!(args.benchmark_corpus, Some(PathBuf::from("/tmp/corpus")));
+                assert_eq!(args.max_fixtures, 2);
             }
             _ => panic!("expected Estimate"),
         }

@@ -1,4 +1,7 @@
-use anyhow::Result;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use anyhow::{bail, Context, Result};
 use tokio_util::sync::CancellationToken;
 
 use crate::app;
@@ -6,7 +9,7 @@ use crate::cli::{ErrorHandling, EstimateArgs, ProcessArgs};
 
 pub async fn run(args: EstimateArgs, quiet: bool, token: CancellationToken) -> Result<()> {
     if args.is_calibration_request() {
-        return calibrate().await;
+        return calibrate(&args).await;
     }
     crate::commands::process::run(args.into_process_args(), quiet, token).await
 }
@@ -14,7 +17,7 @@ pub async fn run(args: EstimateArgs, quiet: bool, token: CancellationToken) -> R
 impl EstimateArgs {
     fn is_calibration_request(&self) -> bool {
         self.paths.len() == 1
-            && self.paths[0] == std::path::Path::new("calibrate")
+            && self.paths[0] == Path::new("calibrate")
             && self.policy.is_none()
             && self.policy_map.is_none()
     }
@@ -41,11 +44,17 @@ impl EstimateArgs {
     }
 }
 
-async fn calibrate() -> Result<()> {
+async fn calibrate(args: &EstimateArgs) -> Result<()> {
     let config = crate::config::load_config()?;
     let app::BootstrapResult { store, .. } = crate::app::bootstrap_kernel_with_store(&config)?;
     let completed_at = chrono::Utc::now();
-    let samples = default_calibration_samples(completed_at);
+    let samples = if let Some(corpus) = &args.benchmark_corpus {
+        let result = benchmark_calibration_samples(corpus, args.max_fixtures)?;
+        print_accuracy_report(&result.accuracy);
+        result.samples
+    } else {
+        default_calibration_samples(completed_at)
+    };
     for sample in &samples {
         store.insert_cost_model_sample(sample)?;
     }
@@ -79,4 +88,355 @@ fn default_calibration_samples(
             completed_at,
         ),
     ]
+}
+
+#[derive(Clone)]
+struct CalibrationBenchmarkResult {
+    width: u32,
+    height: u32,
+    duration_seconds: f64,
+    input_bytes: u64,
+    output_bytes: u64,
+    elapsed_ms: u64,
+    completed_at: chrono::DateTime<chrono::Utc>,
+}
+
+fn cost_model_sample_from_benchmark(
+    result: CalibrationBenchmarkResult,
+) -> voom_domain::CostModelSample {
+    let pixels = f64::from(result.width) * f64::from(result.height) * result.duration_seconds;
+    let elapsed_seconds = (result.elapsed_ms as f64 / 1_000.0).max(0.001);
+    let output_size_ratio = result.output_bytes as f64 / result.input_bytes.max(1) as f64;
+
+    voom_domain::CostModelSample::new(
+        voom_domain::EstimateOperationKey::transcode("video", "hevc", "slow", "software"),
+        pixels / elapsed_seconds,
+        output_size_ratio,
+        0,
+        result.completed_at,
+    )
+}
+
+struct CalibrationBenchmarkSamples {
+    samples: Vec<voom_domain::CostModelSample>,
+    accuracy: EstimateAccuracyReport,
+}
+
+struct EstimateAccuracyReport {
+    fixtures: usize,
+    max_bytes_error: f64,
+    max_time_error: f64,
+}
+
+fn benchmark_calibration_samples(
+    corpus: &Path,
+    max_fixtures: usize,
+) -> Result<CalibrationBenchmarkSamples> {
+    if max_fixtures == 0 {
+        bail!("--max-fixtures must be greater than zero");
+    }
+    let fixtures = corpus_media_files(corpus, max_fixtures)?;
+    if fixtures.is_empty() {
+        bail!(
+            "no generated media fixtures found in {}; run scripts/generate-test-corpus first",
+            corpus.display()
+        );
+    }
+
+    let mut samples = Vec::with_capacity(fixtures.len());
+    let mut max_bytes_error = 0.0_f64;
+    let mut max_time_error = 0.0_f64;
+    for fixture in fixtures {
+        let result = run_calibration_benchmark(&fixture)
+            .with_context(|| format!("failed to benchmark {}", fixture.display()))?;
+        max_bytes_error = max_bytes_error.max(bytes_error_ratio(&result));
+        max_time_error = max_time_error.max(time_error_ratio(&result));
+        samples.push(cost_model_sample_from_benchmark(result));
+    }
+    Ok(CalibrationBenchmarkSamples {
+        accuracy: EstimateAccuracyReport {
+            fixtures: samples.len(),
+            max_bytes_error,
+            max_time_error,
+        },
+        samples,
+    })
+}
+
+fn bytes_error_ratio(result: &CalibrationBenchmarkResult) -> f64 {
+    let sample = cost_model_sample_from_benchmark(result.clone());
+    let estimated_bytes = (result.input_bytes as f64 * sample.output_size_ratio).round();
+    ratio_error(estimated_bytes, result.output_bytes as f64)
+}
+
+fn time_error_ratio(result: &CalibrationBenchmarkResult) -> f64 {
+    let sample = cost_model_sample_from_benchmark(result.clone());
+    let pixels = f64::from(result.width) * f64::from(result.height) * result.duration_seconds;
+    let estimated_ms = pixels / sample.pixels_per_second * 1_000.0;
+    ratio_error(estimated_ms, result.elapsed_ms as f64)
+}
+
+fn ratio_error(estimated: f64, actual: f64) -> f64 {
+    if actual <= 0.0 {
+        return 0.0;
+    }
+    (estimated - actual).abs() / actual
+}
+
+fn print_accuracy_report(report: &EstimateAccuracyReport) {
+    println!(
+        "Benchmark estimate accuracy: {} fixtures, max bytes error {:.1}%, max time error {:.1}%",
+        report.fixtures,
+        report.max_bytes_error * 100.0,
+        report.max_time_error * 100.0
+    );
+}
+
+fn corpus_media_files(corpus: &Path, max_fixtures: usize) -> Result<Vec<PathBuf>> {
+    if !corpus.is_dir() {
+        bail!("benchmark corpus is not a directory: {}", corpus.display());
+    }
+
+    let manifest = corpus.join("manifest.json");
+    if manifest.exists() {
+        return corpus_media_files_from_manifest(corpus, &manifest, max_fixtures);
+    }
+
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(corpus)
+        .with_context(|| format!("failed to read corpus directory {}", corpus.display()))?
+    {
+        let path = entry?.path();
+        if is_media_file(&path) {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files.truncate(max_fixtures);
+    Ok(files)
+}
+
+fn corpus_media_files_from_manifest(
+    corpus: &Path,
+    manifest: &Path,
+    max_fixtures: usize,
+) -> Result<Vec<PathBuf>> {
+    let text = std::fs::read_to_string(manifest)
+        .with_context(|| format!("failed to read {}", manifest.display()))?;
+    let manifest: CorpusManifest = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {}", manifest.display()))?;
+    let mut files = Vec::new();
+    for entry in manifest.generated.into_iter().take(max_fixtures) {
+        let path = corpus.join(entry.filename);
+        if is_media_file(&path) {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
+fn is_media_file(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "avi" | "flv" | "mkv" | "mov" | "mp4" | "ts" | "webm" | "wmv"
+    )
+}
+
+fn run_calibration_benchmark(path: &Path) -> Result<CalibrationBenchmarkResult> {
+    let probe = probe_video(path)?;
+    let benchmark_duration = benchmark_duration_seconds(probe.duration_seconds);
+    let input_bytes = path
+        .metadata()
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .len();
+    let output = std::env::temp_dir().join(format!("voom-calibrate-{}.mkv", uuid::Uuid::new_v4()));
+    let args = vec![
+        "-y".to_string(),
+        "-v".to_string(),
+        "error".to_string(),
+        "-i".to_string(),
+        path.display().to_string(),
+        "-map".to_string(),
+        "0:v:0".to_string(),
+        "-t".to_string(),
+        benchmark_duration.to_string(),
+        "-an".to_string(),
+        "-c:v".to_string(),
+        "libx265".to_string(),
+        "-preset".to_string(),
+        "slow".to_string(),
+        output.display().to_string(),
+    ];
+
+    let start = Instant::now();
+    let command_output = voom_process::run_with_timeout("ffmpeg", &args, Duration::from_secs(300))?;
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    if !command_output.status.success() {
+        let stderr = String::from_utf8_lossy(&command_output.stderr);
+        bail!("ffmpeg calibration transcode failed: {}", stderr.trim());
+    }
+
+    let output_bytes = output
+        .metadata()
+        .with_context(|| format!("failed to stat calibration output {}", output.display()))?
+        .len();
+    std::fs::remove_file(&output)
+        .with_context(|| format!("failed to remove calibration output {}", output.display()))?;
+
+    Ok(CalibrationBenchmarkResult {
+        width: probe.width,
+        height: probe.height,
+        duration_seconds: benchmark_duration,
+        input_bytes,
+        output_bytes,
+        elapsed_ms,
+        completed_at: chrono::Utc::now(),
+    })
+}
+
+fn benchmark_duration_seconds(duration_seconds: f64) -> f64 {
+    if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+        return 0.1;
+    }
+    duration_seconds.clamp(0.1, 2.0)
+}
+
+fn probe_video(path: &Path) -> Result<VideoProbe> {
+    let args = vec![
+        "-v".to_string(),
+        "error".to_string(),
+        "-select_streams".to_string(),
+        "v:0".to_string(),
+        "-show_entries".to_string(),
+        "stream=width,height:format=duration".to_string(),
+        "-of".to_string(),
+        "json".to_string(),
+        path.display().to_string(),
+    ];
+    let output = voom_process::run_with_timeout("ffprobe", &args, Duration::from_secs(30))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("ffprobe failed for {}: {}", path.display(), stderr.trim());
+    }
+    let probe: FfprobeOutput = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("failed to parse ffprobe JSON for {}", path.display()))?;
+    let stream = probe
+        .streams
+        .first()
+        .context("ffprobe did not return a video stream")?;
+    let duration_seconds = probe
+        .format
+        .duration
+        .as_deref()
+        .unwrap_or("0")
+        .parse::<f64>()
+        .context("ffprobe returned invalid duration")?;
+
+    Ok(VideoProbe {
+        width: stream.width,
+        height: stream.height,
+        duration_seconds,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct CorpusManifest {
+    generated: Vec<CorpusManifestEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct CorpusManifestEntry {
+    filename: String,
+}
+
+struct VideoProbe {
+    width: u32,
+    height: u32,
+    duration_seconds: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct FfprobeOutput {
+    streams: Vec<FfprobeStream>,
+    format: FfprobeFormat,
+}
+
+#[derive(serde::Deserialize)]
+struct FfprobeStream {
+    width: u32,
+    height: u32,
+}
+
+#[derive(serde::Deserialize)]
+struct FfprobeFormat {
+    duration: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+
+    use crate::commands::estimate::{cost_model_sample_from_benchmark, CalibrationBenchmarkResult};
+
+    #[test]
+    fn calibration_benchmark_records_measured_speed_and_ratio() {
+        let completed_at = chrono::Utc
+            .with_ymd_and_hms(2026, 5, 10, 12, 0, 0)
+            .single()
+            .expect("valid timestamp");
+        let result = CalibrationBenchmarkResult {
+            width: 1920,
+            height: 1080,
+            duration_seconds: 2.0,
+            input_bytes: 1_000_000,
+            output_bytes: 420_000,
+            elapsed_ms: 1_036,
+            completed_at,
+        };
+
+        let sample = cost_model_sample_from_benchmark(result);
+
+        assert_eq!(sample.key.phase_name, "video");
+        assert_eq!(sample.key.codec, "hevc");
+        assert_eq!(sample.key.preset, "slow");
+        assert_eq!(sample.key.backend, "software");
+        assert_eq!(sample.output_size_ratio, 0.42);
+        assert_eq!(sample.fixed_overhead_ms, 0);
+        assert_eq!(sample.pixels_per_second.round() as u64, 4_003_089);
+    }
+
+    #[test]
+    fn calibration_accuracy_report_compares_estimate_to_actual() {
+        let result = CalibrationBenchmarkResult {
+            width: 1280,
+            height: 720,
+            duration_seconds: 1.0,
+            input_bytes: 1_000_000,
+            output_bytes: 500_000,
+            elapsed_ms: 500,
+            completed_at: chrono::Utc::now(),
+        };
+
+        assert_eq!(crate::commands::estimate::bytes_error_ratio(&result), 0.0);
+        assert_eq!(crate::commands::estimate::time_error_ratio(&result), 0.0);
+    }
+
+    #[test]
+    fn benchmark_duration_stays_bounded_for_invalid_probe_values() {
+        assert_eq!(
+            crate::commands::estimate::benchmark_duration_seconds(5.0),
+            2.0
+        );
+        assert_eq!(
+            crate::commands::estimate::benchmark_duration_seconds(0.05),
+            0.1
+        );
+        assert_eq!(
+            crate::commands::estimate::benchmark_duration_seconds(f64::NAN),
+            0.1
+        );
+    }
 }
