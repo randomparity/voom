@@ -292,6 +292,15 @@ fn example_transcode_hevc_parses() {
 }
 
 #[test]
+fn example_containerize_then_transcode_parses_and_validates() {
+    let input = include_str!("../../../docs/examples/containerize-then-transcode.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "containerize-then-transcode");
+    assert_eq!(ast.phases.len(), 2);
+    voom_dsl::validate(&ast).unwrap();
+}
+
+#[test]
 fn example_hdr_archival_parses_and_validates() {
     let input = include_str!("../../../docs/examples/hdr-archival.voom");
     let ast = parse_policy(input).unwrap();

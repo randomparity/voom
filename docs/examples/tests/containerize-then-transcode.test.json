@@ -1,0 +1,13 @@
+{
+  "policy": "../containerize-then-transcode.voom",
+  "cases": [
+    {
+      "name": "containerizes mp4 before transcode",
+      "fixture": "movie-mp4.json",
+      "expect": {
+        "phases_run": ["containerize", "transcode-video"],
+        "video_codec": "hevc"
+      }
+    }
+  ]
+}
