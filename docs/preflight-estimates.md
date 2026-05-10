@@ -45,8 +45,10 @@ voom estimate calibrate \
 Corpus-backed calibration reads `manifest.json`, transcodes the first generated
 video fixtures through a bounded HEVC software benchmark, and records measured
 pixels/second plus output-size ratios. It prints an estimate-vs-actual summary
-for the benchmarked fixtures before persisting samples. The estimator uses
-matching samples before falling back to built-in defaults.
+using holdout fixtures, so each validation fixture is estimated from samples
+measured from other fixtures. Run with at least two fixtures; a single fixture is
+recorded for calibration but is not enough to report holdout accuracy. The
+estimator uses matching samples before falling back to built-in defaults.
 
 ## Savings Gate
 

@@ -124,6 +124,10 @@ struct CalibrationBenchmarkSamples {
 
 struct EstimateAccuracyReport {
     fixtures: usize,
+    validation_fixtures: usize,
+    total_savings_error: f64,
+    total_bytes_error: f64,
+    total_time_error: f64,
     max_bytes_error: f64,
     max_time_error: f64,
 }
@@ -143,37 +147,95 @@ fn benchmark_calibration_samples(
         );
     }
 
-    let mut samples = Vec::with_capacity(fixtures.len());
-    let mut max_bytes_error = 0.0_f64;
-    let mut max_time_error = 0.0_f64;
+    let mut results = Vec::with_capacity(fixtures.len());
     for fixture in fixtures {
         let result = run_calibration_benchmark(&fixture)
             .with_context(|| format!("failed to benchmark {}", fixture.display()))?;
-        max_bytes_error = max_bytes_error.max(bytes_error_ratio(&result));
-        max_time_error = max_time_error.max(time_error_ratio(&result));
-        samples.push(cost_model_sample_from_benchmark(result));
+        results.push(result);
     }
-    Ok(CalibrationBenchmarkSamples {
-        accuracy: EstimateAccuracyReport {
-            fixtures: samples.len(),
-            max_bytes_error,
-            max_time_error,
-        },
-        samples,
-    })
+    let samples = results
+        .iter()
+        .cloned()
+        .map(cost_model_sample_from_benchmark)
+        .collect();
+    let accuracy = accuracy_report_from_benchmarks(&results);
+    Ok(CalibrationBenchmarkSamples { accuracy, samples })
 }
 
-fn bytes_error_ratio(result: &CalibrationBenchmarkResult) -> f64 {
-    let sample = cost_model_sample_from_benchmark(result.clone());
-    let estimated_bytes = (result.input_bytes as f64 * sample.output_size_ratio).round();
-    ratio_error(estimated_bytes, result.output_bytes as f64)
+fn accuracy_report_from_benchmarks(
+    results: &[CalibrationBenchmarkResult],
+) -> EstimateAccuracyReport {
+    if results.len() < 2 {
+        return EstimateAccuracyReport {
+            fixtures: results.len(),
+            validation_fixtures: 0,
+            total_savings_error: 0.0,
+            total_bytes_error: 0.0,
+            total_time_error: 0.0,
+            max_bytes_error: 0.0,
+            max_time_error: 0.0,
+        };
+    }
+
+    let mut estimated_bytes = 0.0_f64;
+    let mut actual_bytes = 0.0_f64;
+    let mut input_bytes = 0.0_f64;
+    let mut estimated_ms = 0.0_f64;
+    let mut actual_ms = 0.0_f64;
+    let mut max_bytes_error = 0.0_f64;
+    let mut max_time_error = 0.0_f64;
+    for index in 0..results.len() {
+        let samples = holdout_samples(results, index);
+        let bytes = estimate_bytes(&results[index], &samples);
+        let time = estimate_ms(&results[index], &samples);
+        estimated_bytes += bytes;
+        actual_bytes += results[index].output_bytes as f64;
+        input_bytes += results[index].input_bytes as f64;
+        estimated_ms += time;
+        actual_ms += results[index].elapsed_ms as f64;
+        max_bytes_error =
+            max_bytes_error.max(ratio_error(bytes, results[index].output_bytes as f64));
+        max_time_error = max_time_error.max(ratio_error(time, results[index].elapsed_ms as f64));
+    }
+
+    EstimateAccuracyReport {
+        fixtures: results.len(),
+        validation_fixtures: results.len(),
+        total_savings_error: ratio_error(input_bytes - estimated_bytes, input_bytes - actual_bytes),
+        total_bytes_error: ratio_error(estimated_bytes, actual_bytes),
+        total_time_error: ratio_error(estimated_ms, actual_ms),
+        max_bytes_error,
+        max_time_error,
+    }
 }
 
-fn time_error_ratio(result: &CalibrationBenchmarkResult) -> f64 {
-    let sample = cost_model_sample_from_benchmark(result.clone());
+fn holdout_samples(
+    results: &[CalibrationBenchmarkResult],
+    holdout_index: usize,
+) -> Vec<voom_domain::CostModelSample> {
+    results
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != holdout_index)
+        .map(|(_, result)| cost_model_sample_from_benchmark(result.clone()))
+        .collect()
+}
+
+fn estimate_bytes(
+    result: &CalibrationBenchmarkResult,
+    samples: &[voom_domain::CostModelSample],
+) -> f64 {
+    let output_size_ratio = median_f64(samples.iter().map(|sample| sample.output_size_ratio));
+    (result.input_bytes as f64 * output_size_ratio).round()
+}
+
+fn estimate_ms(
+    result: &CalibrationBenchmarkResult,
+    samples: &[voom_domain::CostModelSample],
+) -> f64 {
+    let pixels_per_second = median_f64(samples.iter().map(|sample| sample.pixels_per_second));
     let pixels = f64::from(result.width) * f64::from(result.height) * result.duration_seconds;
-    let estimated_ms = pixels / sample.pixels_per_second * 1_000.0;
-    ratio_error(estimated_ms, result.elapsed_ms as f64)
+    pixels / pixels_per_second * 1_000.0
 }
 
 fn ratio_error(estimated: f64, actual: f64) -> f64 {
@@ -184,12 +246,31 @@ fn ratio_error(estimated: f64, actual: f64) -> f64 {
 }
 
 fn print_accuracy_report(report: &EstimateAccuracyReport) {
+    if report.validation_fixtures == 0 {
+        println!(
+            "Benchmark estimate accuracy: insufficient holdout fixtures \
+             ({} fixture); run with --max-fixtures 2 or more",
+            report.fixtures
+        );
+        return;
+    }
     println!(
-        "Benchmark estimate accuracy: {} fixtures, max bytes error {:.1}%, max time error {:.1}%",
-        report.fixtures,
+        "Benchmark estimate accuracy: {} fixtures, total savings error {:.1}%, \
+         total bytes error {:.1}%, total time error {:.1}%, max file bytes error {:.1}%, \
+         max file time error {:.1}%",
+        report.validation_fixtures,
+        report.total_savings_error * 100.0,
+        report.total_bytes_error * 100.0,
+        report.total_time_error * 100.0,
         report.max_bytes_error * 100.0,
         report.max_time_error * 100.0
     );
+}
+
+fn median_f64(values: impl Iterator<Item = f64>) -> f64 {
+    let mut values: Vec<f64> = values.collect();
+    values.sort_by(f64::total_cmp);
+    values[values.len() / 2]
 }
 
 fn corpus_media_files(corpus: &Path, max_fixtures: usize) -> Result<Vec<PathBuf>> {
@@ -379,7 +460,10 @@ struct FfprobeFormat {
 mod tests {
     use chrono::TimeZone;
 
-    use crate::commands::estimate::{cost_model_sample_from_benchmark, CalibrationBenchmarkResult};
+    use crate::commands::estimate::{
+        accuracy_report_from_benchmarks, cost_model_sample_from_benchmark,
+        CalibrationBenchmarkResult,
+    };
 
     #[test]
     fn calibration_benchmark_records_measured_speed_and_ratio() {
@@ -409,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn calibration_accuracy_report_compares_estimate_to_actual() {
+    fn calibration_accuracy_reports_insufficient_single_fixture_holdout() {
         let result = CalibrationBenchmarkResult {
             width: 1280,
             height: 720,
@@ -420,8 +504,82 @@ mod tests {
             completed_at: chrono::Utc::now(),
         };
 
-        assert_eq!(crate::commands::estimate::bytes_error_ratio(&result), 0.0);
-        assert_eq!(crate::commands::estimate::time_error_ratio(&result), 0.0);
+        let report = accuracy_report_from_benchmarks(&[result]);
+
+        assert_eq!(report.fixtures, 1);
+        assert_eq!(report.validation_fixtures, 0);
+        assert_eq!(report.total_savings_error, 0.0);
+        assert_eq!(report.total_bytes_error, 0.0);
+        assert_eq!(report.total_time_error, 0.0);
+        assert_eq!(report.max_bytes_error, 0.0);
+        assert_eq!(report.max_time_error, 0.0);
+    }
+
+    #[test]
+    fn calibration_accuracy_uses_holdout_fixtures() {
+        let first = CalibrationBenchmarkResult {
+            width: 1280,
+            height: 720,
+            duration_seconds: 1.0,
+            input_bytes: 1_000_000,
+            output_bytes: 500_000,
+            elapsed_ms: 500,
+            completed_at: chrono::Utc::now(),
+        };
+        let second = CalibrationBenchmarkResult {
+            width: 1280,
+            height: 720,
+            duration_seconds: 1.0,
+            input_bytes: 1_000_000,
+            output_bytes: 250_000,
+            elapsed_ms: 1_000,
+            completed_at: chrono::Utc::now(),
+        };
+
+        let report = accuracy_report_from_benchmarks(&[first, second]);
+
+        assert_eq!(report.fixtures, 2);
+        assert!(report.max_bytes_error > 0.0);
+        assert!(report.max_time_error > 0.0);
+    }
+
+    #[test]
+    fn calibration_accuracy_reports_total_holdout_error() {
+        let completed_at = chrono::Utc::now();
+        let first = CalibrationBenchmarkResult {
+            width: 1280,
+            height: 720,
+            duration_seconds: 1.0,
+            input_bytes: 1_000_000,
+            output_bytes: 500_000,
+            elapsed_ms: 500,
+            completed_at,
+        };
+        let second = CalibrationBenchmarkResult {
+            width: 1280,
+            height: 720,
+            duration_seconds: 1.0,
+            input_bytes: 1_000_000,
+            output_bytes: 250_000,
+            elapsed_ms: 1_000,
+            completed_at,
+        };
+        let third = CalibrationBenchmarkResult {
+            width: 1280,
+            height: 720,
+            duration_seconds: 1.0,
+            input_bytes: 1_000_000,
+            output_bytes: 250_000,
+            elapsed_ms: 1_000,
+            completed_at,
+        };
+
+        let report = accuracy_report_from_benchmarks(&[first, second, third]);
+
+        assert_eq!(report.validation_fixtures, 3);
+        assert_eq!(report.total_savings_error, 0.125);
+        assert_eq!(report.total_bytes_error, 0.25);
+        assert!(report.total_time_error > 0.0);
     }
 
     #[test]
