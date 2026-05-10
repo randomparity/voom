@@ -544,7 +544,7 @@ def build_corrupt_fixture_specs():
     return [
         {
             "stem": "corrupt-truncated-tail",
-            "ext": "mkv",
+            "ext": "mp4",
             "profiles": ["coverage"],
             "covers": ["bad_file.truncated_tail"],
             "expect": {"bad_file": True, "corruption": "truncated_tail"},
@@ -556,7 +556,7 @@ def build_corrupt_fixture_specs():
         },
         {
             "stem": "corrupt-zero-length",
-            "ext": "mkv",
+            "ext": "mp4",
             "profiles": ["coverage"],
             "covers": ["bad_file.zero_length"],
             "expect": {"bad_file": True, "corruption": "zero_length"},
@@ -568,7 +568,7 @@ def build_corrupt_fixture_specs():
         },
         {
             "stem": "corrupt-header-damage",
-            "ext": "mkv",
+            "ext": "mp4",
             "profiles": ["coverage"],
             "covers": ["bad_file.header_damage"],
             "expect": {"bad_file": True, "corruption": "header_damage"},
@@ -580,7 +580,7 @@ def build_corrupt_fixture_specs():
         },
         {
             "stem": "corrupt-midstream-bitrot",
-            "ext": "mkv",
+            "ext": "mp4",
             "profiles": ["coverage"],
             "covers": ["bad_file.mid_stream"],
             "expect": {"bad_file": True, "corruption": "mid_stream"},
@@ -604,7 +604,7 @@ def build_corrupt_fixture_specs():
         },
         {
             "stem": "corrupt-container-metadata",
-            "ext": "mkv",
+            "ext": "mp4",
             "profiles": ["coverage"],
             "covers": ["bad_file.container_metadata"],
             "expect": {"bad_file": True, "corruption": "container_metadata"},
@@ -1814,7 +1814,10 @@ def main():
     # Summary
     print()
     if args.dry_run:
-        print(f"Dry run complete: {ok_count} files would be generated")
+        action = (
+            "generated/materialized" if deterministic_corrupt_specs else "generated"
+        )
+        print(f"Dry run complete: {ok_count} files would be {action}")
     else:
         parts = [f"{ok_count} generated"]
         if skip_count:
