@@ -3,6 +3,7 @@
 //! Computes sha256 of the full file. Compared against the previous hash
 //! record for the same file (passed in by the caller) to detect bit-rot.
 
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
@@ -80,7 +81,15 @@ fn compute_sha256(path: &Path) -> Result<String> {
         hasher.update(&buf[..n]);
     }
     let digest = hasher.finalize();
-    Ok(format!("{digest:x}"))
+    Ok(hex_encode(digest.as_slice()))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut hex, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    hex
 }
 
 #[cfg(test)]

@@ -87,7 +87,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rmp-serde = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 
 # DateTime & IDs
 chrono = { version = "0.4", features = ["serde"] }
@@ -105,7 +105,7 @@ thiserror = "2"
 anyhow = "1"
 
 # Versioning
-semver = "1.0.27"
+semver = "1.0.28"
 
 # Logging
 tracing = "0.1"
@@ -113,10 +113,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-test = "0.2"
 
 # WASM
-wasmtime = { version = "36", features = ["component-model"] }
+wasmtime = { version = "44", features = ["component-model"] }
 
 # Config
-toml = "0.8"
+toml = "0.9"
 
 # Database
 rusqlite = { version = "0.31", features = ["bundled"] }
@@ -129,7 +129,7 @@ rayon = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 # HTTP
-ureq = "2"
+ureq = "3"
 
 # Subprocess & cleanup
 wait-timeout = "0.2"

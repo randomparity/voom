@@ -22,18 +22,18 @@ pub fn build_router(state: AppState) -> Router {
     let api_routes = Router::new()
         .route("/files", get(api::files::list_files))
         .route("/estimates", get(api::estimates::list_estimates))
-        .route("/estimates/:id", get(api::estimates::get_estimate))
+        .route("/estimates/{id}", get(api::estimates::get_estimate))
         .route(
-            "/files/:id",
+            "/files/{id}",
             get(api::files::get_file).delete(api::files::delete_file),
         )
         .route(
-            "/files/:id/transitions",
+            "/files/{id}/transitions",
             get(api::transitions::list_transitions),
         )
         .route("/jobs", get(api::jobs::list_jobs))
         .route("/jobs/stats", get(api::jobs::get_job_stats))
-        .route("/jobs/:id", get(api::jobs::get_job))
+        .route("/jobs/{id}", get(api::jobs::get_job))
         .route("/plugins", get(api::plugins::list_plugins))
         .route("/stats/loudness", get(api::stats::get_loudness_stats))
         .route("/stats/library", get(api::stats::get_library_stats))
@@ -49,17 +49,20 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/health", get(api::health::get_health))
         .route("/verify", get(api::verify::list_verifications))
-        .route("/verify/:file_id", get(api::verify::get_file_verifications))
+        .route(
+            "/verify/{file_id}",
+            get(api::verify::get_file_verifications),
+        )
         .route("/integrity-summary", get(api::verify::integrity_summary));
 
     let page_routes = Router::new()
         .route("/", get(templates::dashboard))
         .route("/library", get(templates::library))
-        .route("/files/:id", get(templates::file_detail))
+        .route("/files/{id}", get(templates::file_detail))
         .route("/integrity", get(templates::integrity))
         .route("/estimates", get(templates::estimates))
         .route("/policies", get(templates::policies))
-        .route("/policies/:name/edit", get(templates::policy_editor))
+        .route("/policies/{name}/edit", get(templates::policy_editor))
         .route("/jobs", get(templates::jobs))
         .route("/plugins", get(templates::plugins))
         .route("/settings", get(templates::settings));
