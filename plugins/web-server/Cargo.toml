@@ -17,7 +17,7 @@ voom-dsl.workspace = true
 voom-report.workspace = true
 
 # Web framework
-axum = { version = "0.7", features = ["tokio", "json"] }
+axum = { version = "0.8", features = ["tokio", "json"] }
 tower = { version = "0.5", features = ["util", "limit", "timeout"] }
 tower-http = { version = "0.6", features = ["cors", "fs", "set-header", "trace"] }
 
@@ -57,4 +57,4 @@ workspace = true
 voom-domain = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
-axum-test = "16"
+axum-test = "20"

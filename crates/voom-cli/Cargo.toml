@@ -45,8 +45,8 @@ clap_complete = "4"
 
 # Output formatting
 comfy-table = "7"
-console = "0.15"
-indicatif = "0.17"
+console = "0.16"
+indicatif = "0.18"
 
 # Async
 tokio.workspace = true
@@ -71,7 +71,7 @@ rayon.workspace = true
 # Other
 uuid.workspace = true
 chrono.workspace = true
-dirs = "5"
+dirs = "6"
 fs2 = { workspace = true }
 toml = { workspace = true }
 
