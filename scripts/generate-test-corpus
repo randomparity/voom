@@ -8,6 +8,7 @@ select-test-corpus for functional testing when no real library exists.
 """
 
 import argparse
+import json
 import os
 import random
 import subprocess
@@ -51,6 +52,10 @@ HANDLER_POOL = [
     "VideoHandler", "SoundHandler", "Apple Video Media Handler",
     "GPAC ISO Video Handler", "GPAC ISO Audio Handler",
 ]
+
+SCHEMA_VERSION = 1
+PROFILE_CHOICES = ("smoke", "coverage", "stress", "all")
+ALL_PROFILE_MEMBERS = {"smoke", "coverage", "stress"}
 
 # ---------------------------------------------------------------------------
 # Naming pools for random file generation
@@ -181,12 +186,43 @@ def random_timestamp(rng):
 # File manifest
 # ---------------------------------------------------------------------------
 
+def fixture_filename(spec):
+    """Return the output filename for a fixture spec."""
+    return f"{spec['stem']}.{spec['ext']}"
+
+
+def profile_matches(spec, profile):
+    """Return whether a fixture belongs to the selected profile."""
+    profiles = set(spec.get("profiles", ["coverage"]))
+    if profile == "all":
+        return bool(profiles & ALL_PROFILE_MEMBERS)
+    return profile in profiles
+
+
+def select_specs(specs, profile, only, skip):
+    """Filter fixture specs by profile, --only, and --skip."""
+    selected = []
+    for spec in specs:
+        stem = spec["stem"]
+        if not profile_matches(spec, profile):
+            continue
+        if only is not None and stem not in only:
+            continue
+        if stem in skip:
+            continue
+        selected.append(spec)
+    return selected
+
+
 def build_manifest():
     """Return the list of file specs to generate."""
     return [
         {
             "stem": "basic-h264-aac",
             "ext": "mp4",
+            "profiles": ["smoke", "coverage"],
+            "covers": ["video.codec.h264", "audio.codec.aac"],
+            "expect": {"bad_file": False, "container": "mp4"},
             "video": {"codec": "libx264", "size": "1920x1080", "fps": 24},
             "audio": [{"codec": "aac", "channels": 2}],
             "subs": [],
@@ -195,6 +231,9 @@ def build_manifest():
         {
             "stem": "loudness-quiet-dialogue",
             "ext": "mkv",
+            "profiles": ["smoke", "coverage"],
+            "covers": ["audio.loudness.quiet_dialogue", "video.codec.h264"],
+            "expect": {"bad_file": False, "container": "mkv", "audio_tracks": 1},
             "video": {"codec": "libx264", "size": "1280x720", "fps": 24},
             "audio": [{"codec": "aac", "channels": 2, "volume": 0.12, "lang": "eng"}],
             "subs": [],
@@ -203,6 +242,9 @@ def build_manifest():
         {
             "stem": "loudness-hot-mix",
             "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["audio.loudness.hot_mix", "video.codec.h264"],
+            "expect": {"bad_file": False, "container": "mkv", "audio_tracks": 1},
             "video": {"codec": "libx264", "size": "1280x720", "fps": 24},
             "audio": [{"codec": "aac", "channels": 2, "volume": 1.8, "lang": "eng"}],
             "subs": [],
@@ -211,6 +253,9 @@ def build_manifest():
         {
             "stem": "letterbox-h264",
             "ext": "mkv",
+            "profiles": ["smoke", "coverage"],
+            "covers": ["video.crop.letterbox", "video.codec.h264"],
+            "expect": {"bad_file": False, "container": "mkv", "crop": "letterbox"},
             "video": {
                 "codec": "libx264",
                 "size": "1920x1080",
@@ -224,6 +269,9 @@ def build_manifest():
         {
             "stem": "pillarbox-h264",
             "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["video.crop.pillarbox", "video.codec.h264"],
+            "expect": {"bad_file": False, "container": "mkv", "crop": "pillarbox"},
             "video": {
                 "codec": "libx264",
                 "size": "1920x1080",
@@ -237,6 +285,9 @@ def build_manifest():
         {
             "stem": "hevc-surround",
             "ext": "mkv",
+            "profiles": ["smoke", "coverage"],
+            "covers": ["video.codec.hevc", "audio.channels.5_1", "subtitle.forced"],
+            "expect": {"bad_file": False, "container": "mkv", "audio_tracks": 2},
             "video": {"codec": "libx265", "size": "1920x1080", "fps": 24},
             "audio": [
                 {"codec": "ac3", "channels": 6},
@@ -251,6 +302,9 @@ def build_manifest():
         {
             "stem": "sd-mpeg2",
             "ext": "avi",
+            "profiles": ["coverage"],
+            "covers": ["video.codec.mpeg2", "video.resolution.sd", "audio.codec.mp3"],
+            "expect": {"bad_file": False, "container": "avi"},
             "video": {"codec": "mpeg2video", "size": "720x480", "fps": 30},
             "audio": [{"codec": "mp3", "channels": 1}],
             "subs": [],
@@ -259,6 +313,9 @@ def build_manifest():
         {
             "stem": "vp9-opus",
             "ext": "webm",
+            "profiles": ["smoke", "coverage"],
+            "covers": ["video.codec.vp9", "audio.codec.opus", "subtitle.format.webvtt"],
+            "expect": {"bad_file": False, "container": "webm"},
             "video": {"codec": "libvpx-vp9", "size": "1280x720", "fps": 24},
             "audio": [{"codec": "libopus", "channels": 2}],
             "subs": [{"format": "webvtt", "lang": "eng"}],
@@ -267,6 +324,9 @@ def build_manifest():
         {
             "stem": "4k-hevc-hdr10",
             "ext": "mkv",
+            "profiles": ["coverage", "stress"],
+            "covers": ["video.codec.hevc", "video.resolution.4k", "video.hdr.hdr10"],
+            "expect": {"bad_file": False, "container": "mkv", "is_hdr": True},
             "video": {"codec": "libx265", "size": "3840x2160", "fps": 24},
             "audio": [{"codec": "eac3", "channels": 6}],
             "subs": [{"format": "ass", "lang": "eng"}],
@@ -275,6 +335,9 @@ def build_manifest():
         {
             "stem": "multichannel-flac",
             "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["audio.codec.flac", "audio.channels.stereo", "audio.commentary"],
+            "expect": {"bad_file": False, "container": "mkv", "audio_tracks": 2},
             "video": {"codec": "libx264", "size": "1920x1080", "fps": 24},
             "audio": [
                 {"codec": "flac", "channels": 2},
@@ -287,6 +350,9 @@ def build_manifest():
         {
             "stem": "vfr-h264",
             "ext": "mp4",
+            "profiles": ["coverage"],
+            "covers": ["video.frame_rate.variable", "video.codec.h264"],
+            "expect": {"bad_file": False, "container": "mp4"},
             "video": {"codec": "libx264", "size": "1280x720", "fps": 30},
             "audio": [{"codec": "aac", "channels": 2}],
             "subs": [],
@@ -295,6 +361,9 @@ def build_manifest():
         {
             "stem": "attachment",
             "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["container.attachment.font", "container.attachment.image"],
+            "expect": {"bad_file": False, "container": "mkv", "attachments": True},
             "video": {"codec": "libx264", "size": "1280x720", "fps": 24},
             "audio": [{"codec": "aac", "channels": 2}],
             "subs": [{"format": "srt", "lang": "eng"}],
@@ -303,6 +372,9 @@ def build_manifest():
         {
             "stem": "cover-art",
             "ext": "mkv",
+            "profiles": ["coverage"],
+            "covers": ["container.attachment.cover_art"],
+            "expect": {"bad_file": False, "container": "mkv", "cover_art": True},
             "video": {"codec": "libx264", "size": "1920x1080", "fps": 24},
             "audio": [{"codec": "aac", "channels": 2}],
             "subs": [],
@@ -311,6 +383,9 @@ def build_manifest():
         {
             "stem": "av1-opus",
             "ext": "mp4",
+            "profiles": ["coverage", "stress"],
+            "covers": ["video.codec.av1", "audio.codec.opus", "encoder.optional"],
+            "expect": {"bad_file": False, "container": "mp4"},
             "video": {"codec": "libsvtav1", "size": "1280x720", "fps": 24},
             "audio": [{"codec": "libopus", "channels": 2}],
             "subs": [],
@@ -320,6 +395,9 @@ def build_manifest():
         {
             "stem": "hevc-truehd",
             "ext": "mkv",
+            "profiles": ["coverage", "stress"],
+            "covers": ["video.codec.hevc", "audio.codec.truehd", "encoder.optional"],
+            "expect": {"bad_file": False, "container": "mkv"},
             "video": {"codec": "libx265", "size": "1920x1080", "fps": 24},
             "audio": [{"codec": "truehd", "channels": 2}],
             "subs": [{"format": "srt", "lang": "eng", "forced": True}],
@@ -943,6 +1021,12 @@ def main():
         help="Comma-separated list of file stems to skip",
     )
     parser.add_argument(
+        "--profile",
+        choices=PROFILE_CHOICES,
+        default="coverage",
+        help="Named deterministic fixture profile to generate (default: coverage)",
+    )
+    parser.add_argument(
         "--seed", type=int, default=42, metavar="N",
         help="RNG seed for metadata randomization (default: 42)",
     )
@@ -995,14 +1079,7 @@ def main():
     # Filter manifest
     only = set(args.only.split(",")) if args.only else None
     skip = set(args.skip.split(",")) if args.skip else set()
-
-    specs = []
-    for spec in manifest:
-        if only and spec["stem"] not in only:
-            continue
-        if spec["stem"] in skip:
-            continue
-        specs.append(spec)
+    specs = select_specs(manifest, args.profile, only, skip)
 
     # Generate random specs if --count is set
     random_specs = []
