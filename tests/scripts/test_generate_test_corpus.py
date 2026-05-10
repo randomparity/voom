@@ -125,3 +125,68 @@ def test_build_run_manifest_records_generated_skipped_failed_and_corruptions():
     assert manifest["generated"][0]["covers"] == ["video.codec.h264"]
     assert manifest["skipped"][0]["covers"] == ["video.codec.av1"]
     assert manifest["failed"][0]["covers"] == ["audio.codec.truehd"]
+
+
+def test_select_and_corrupt_reports_final_filenames_and_sizes(tmp_path):
+    generator = load_generator()
+    specs = [
+        {"stem": "zero-case", "ext": "mkv"},
+        {"stem": "truncated-case", "ext": "mkv"},
+        {"stem": "rename-case", "ext": "mp4"},
+    ]
+
+    for spec in specs:
+        path = tmp_path / f"{spec['stem']}.{spec['ext']}"
+        path.write_bytes(bytes(range(256)) * 8)
+
+    corruptions = []
+    original_types = generator.CORRUPTION_TYPES
+    try:
+        for index, corruption_type in enumerate(
+            ["zero_length", "truncated", "wrong_extension"]
+        ):
+            generator.CORRUPTION_TYPES = [corruption_type]
+            corruptions.extend(
+                generator.select_and_corrupt(
+                    tmp_path,
+                    [specs[index]],
+                    corrupt_count=1,
+                    seed=12,
+                )
+            )
+    finally:
+        generator.CORRUPTION_TYPES = original_types
+
+    assert {result["type"] for result in corruptions} == {
+        "zero_length",
+        "truncated",
+        "wrong_extension",
+    }
+
+    for result in corruptions:
+        final_path = tmp_path / result["filename"]
+        assert final_path.exists()
+        assert result["size"] == final_path.stat().st_size
+
+    renamed = next(result for result in corruptions if result["type"] == "wrong_extension")
+    assert renamed["original_filename"] == "rename-case.mp4"
+    assert renamed["filename"] == "rename-case.mkv"
+    assert not (tmp_path / renamed["original_filename"]).exists()
+
+    zeroed = next(result for result in corruptions if result["type"] == "zero_length")
+    assert zeroed["size"] == 0
+
+    generated_entries = [
+        {
+            "filename": f"{spec['stem']}.{spec['ext']}",
+            "size": 2048,
+        }
+        for spec in specs
+    ]
+
+    generator.update_generated_entries_for_corruptions(generated_entries, corruptions)
+
+    entries_by_name = {entry["filename"]: entry for entry in generated_entries}
+    for result in corruptions:
+        entry = entries_by_name[result["filename"]]
+        assert entry["size"] == result["size"]

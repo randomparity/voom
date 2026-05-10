@@ -633,6 +633,16 @@ def select_and_corrupt(dest, random_specs, corrupt_count, seed):
     return results
 
 
+def update_generated_entries_for_corruptions(generated_entries, corrupt_results):
+    """Update generated entries with final filenames and sizes after corruption."""
+    generated_by_filename = {entry["filename"]: entry for entry in generated_entries}
+    for result in corrupt_results:
+        entry = generated_by_filename.get(result["original_filename"])
+        if entry is not None:
+            entry["filename"] = result["filename"]
+            entry["size"] = result["size"]
+
+
 # ---------------------------------------------------------------------------
 # Encoder availability
 # ---------------------------------------------------------------------------
@@ -1270,17 +1280,12 @@ def main():
     corrupt_results = []
     if corrupt_count > 0 and not args.dry_run:
         corrupt_results = select_and_corrupt(dest, random_specs, corrupt_count, args.seed)
-        generated_by_filename = {entry["filename"]: entry for entry in generated_entries}
+        update_generated_entries_for_corruptions(generated_entries, corrupt_results)
         for result in corrupt_results:
             filename = result["filename"]
             ctype = result["type"]
             desc = result["description"]
             print(f"  CORRUPTED {filename} — {ctype}: {desc}")
-
-            entry = generated_by_filename.get(result["original_filename"])
-            if entry is not None:
-                entry["filename"] = filename
-                entry["size"] = result["size"]
 
     corruption_entries = [
         {
