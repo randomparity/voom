@@ -51,3 +51,22 @@ def test_select_specs_all_includes_coverage_and_stress():
         "stress-case",
         "smoke-case",
     ]
+
+
+def test_build_manifest_smoke_profile_is_expected_fast_subset():
+    generator = load_generator()
+
+    selected = generator.select_specs(
+        generator.build_manifest(),
+        profile="smoke",
+        only=None,
+        skip=set(),
+    )
+
+    assert [spec["stem"] for spec in selected] == [
+        "basic-h264-aac",
+        "loudness-quiet-dialogue",
+        "letterbox-h264",
+        "hevc-surround",
+        "vp9-opus",
+    ]

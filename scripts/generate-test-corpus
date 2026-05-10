@@ -8,8 +8,6 @@ select-test-corpus for functional testing when no real library exists.
 """
 
 import argparse
-import json
-import os
 import random
 import subprocess
 import sys
@@ -412,7 +410,6 @@ def build_random_specs(count, seed, duration_range):
 
     Uses only safe codecs (h264/h265, aac/ac3/mp3/flac) in MKV/MP4 containers.
     """
-    rng = random.Random(seed)
     used_names = set()
     used_signatures = set()
     specs = []
@@ -762,10 +759,6 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
             cmd += ["-f", "lavfi", "-i", f"amovie='{amerge_input}'" if False else ""]
             # Actually, use a complex filter approach — replace last two args
             cmd = cmd[:-2]
-            sine_filter = ";".join(
-                f"sine=frequency={freq}:duration={duration}:sample_rate=48000"
-                for freq in freqs
-            )
             cmd += ["-f", "lavfi", "-i",
                     f"sine=frequency=440:duration={duration}:sample_rate=48000"]
 
@@ -885,7 +878,7 @@ def build_ffmpeg_cmd(spec, dest, duration, rng, tmpdir):
             cmd += [f"-b:a:{i}", "128k"]
         elif audio["codec"] == "truehd":
             # truehd encoder doesn't take bitrate; set sample format
-            cmd += [f"-strict", "-2"]
+            cmd += ["-strict", "-2"]
 
     # --- Subtitle codecs ---
     for i, sub in enumerate(subs):
@@ -1073,7 +1066,6 @@ def main():
         sys.exit(1)
 
     dest = Path(args.dest)
-    rng = random.Random(args.seed)
     manifest = build_manifest()
 
     # Filter manifest

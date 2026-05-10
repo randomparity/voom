@@ -89,18 +89,12 @@ def test_select_specs_all_includes_coverage_and_stress():
 Run:
 
 ```bash
-uv run pytest -q tests/scripts/test_generate_test_corpus.py
+uv run --with pytest pytest -q tests/scripts/test_generate_test_corpus.py
 ```
 
 Expected: fails with `AttributeError: module 'generate_test_corpus' has no attribute 'select_specs'`.
 
 - [ ] **Step 3: Implement profile constants, metadata defaults, and selection**
-
-In `scripts/generate-test-corpus`, add `json` to imports because later tasks use it:
-
-```python
-import json
-```
 
 Add constants after the metadata pools:
 
@@ -175,7 +169,7 @@ specs = select_specs(manifest, args.profile, only, skip)
 Run:
 
 ```bash
-uv run pytest -q tests/scripts/test_generate_test_corpus.py
+uv run --with pytest pytest -q tests/scripts/test_generate_test_corpus.py
 ```
 
 Expected: both tests pass.
@@ -247,7 +241,7 @@ def test_build_run_manifest_records_generated_skipped_failed_and_corruptions():
 Run:
 
 ```bash
-uv run pytest -q tests/scripts/test_generate_test_corpus.py::test_build_run_manifest_records_generated_skipped_failed_and_corruptions
+uv run --with pytest pytest -q tests/scripts/test_generate_test_corpus.py::test_build_run_manifest_records_generated_skipped_failed_and_corruptions
 ```
 
 Expected: fails with missing `build_run_manifest`.
@@ -359,7 +353,7 @@ if not args.dry_run:
 Run:
 
 ```bash
-uv run pytest -q tests/scripts/test_generate_test_corpus.py
+uv run --with pytest pytest -q tests/scripts/test_generate_test_corpus.py
 ```
 
 Expected: all tests pass.
@@ -425,7 +419,7 @@ def test_build_video_input_keeps_testsrc_for_smoke_fixture():
 Run:
 
 ```bash
-uv run pytest -q tests/scripts/test_generate_test_corpus.py::test_build_video_input_uses_mandelbrot_source_and_black_bars
+uv run --with pytest pytest -q tests/scripts/test_generate_test_corpus.py::test_build_video_input_uses_mandelbrot_source_and_black_bars
 ```
 
 Expected: fails with missing `build_video_input`.
@@ -487,7 +481,7 @@ Leave the smallest smoke-only fixture on `testsrc2`.
 Run:
 
 ```bash
-uv run pytest -q tests/scripts/test_generate_test_corpus.py
+uv run --with pytest pytest -q tests/scripts/test_generate_test_corpus.py
 scripts/generate-test-corpus /tmp/voom-corpus-dry --dry-run --profile coverage --only letterbox-h264
 ```
 
@@ -546,7 +540,7 @@ def test_collect_deterministic_corruptions_selects_profile_members():
 Run:
 
 ```bash
-uv run pytest -q tests/scripts/test_generate_test_corpus.py::test_collect_deterministic_corruptions_selects_profile_members
+uv run --with pytest pytest -q tests/scripts/test_generate_test_corpus.py::test_collect_deterministic_corruptions_selects_profile_members
 ```
 
 Expected: fails with missing `collect_deterministic_corruptions`.
@@ -641,7 +635,7 @@ Include deterministic corruptions in manifest corruption entries.
 Run:
 
 ```bash
-uv run pytest -q tests/scripts/test_generate_test_corpus.py
+uv run --with pytest pytest -q tests/scripts/test_generate_test_corpus.py
 scripts/generate-test-corpus /tmp/voom-corpus-dry --dry-run --profile coverage --only corrupt-truncated-tail
 ```
 
@@ -886,7 +880,7 @@ git commit -m "Expand corpus media coverage fixtures"
 Run:
 
 ```bash
-uv run pytest -q tests/scripts/test_generate_test_corpus.py
+uv run --with pytest pytest -q tests/scripts/test_generate_test_corpus.py
 ```
 
 Expected: all tests pass.
