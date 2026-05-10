@@ -2,6 +2,8 @@ use anyhow::Result;
 use console::style;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use uuid::Uuid;
+use voom_backup_manager::destination::{BackupDestinationConfig, DestinationKind};
 use voom_domain::storage::{HealthCheckFilters, HealthCheckRecord};
 use voom_ffmpeg_executor::hwaccel::{resolve_hw_config, HwAccelBackend};
 use voom_ffmpeg_executor::probe::{
@@ -11,6 +13,7 @@ use voom_ffmpeg_executor::probe::{
 
 use crate::app;
 use crate::cli::{EnvCommands, OutputFormat};
+use crate::commands::backup::backup_config_from_app_config;
 use crate::config;
 use crate::output::sanitize_for_display;
 use crate::tools::print_tool_status;
@@ -310,7 +313,17 @@ pub fn check(format: OutputFormat) -> Result<()> {
         print_hw_accel_status(&config, &ffmpeg_tool.path);
     }
 
-    // 5. Plugins
+    // 5. Backup destinations
+    let backup_destination_checks = backup_destination_health_checks(&config);
+    if print_human && !backup_destination_checks.is_empty() {
+        print_backup_destination_health(&backup_destination_checks);
+    }
+    issues += backup_destination_checks
+        .iter()
+        .filter(|check| !check.passed)
+        .count() as u32;
+
+    // 6. Plugins
     if print_human {
         println!();
         println!("{}", style("Plugins:").bold());
@@ -325,14 +338,25 @@ pub fn check(format: OutputFormat) -> Result<()> {
 
     let env_passed = config_ok && database_ok && issues == 0;
     if let Ok(app::BootstrapResult { store, .. }) = &kernel_result {
-        let record = env_snapshot_record(&libvmaf, env_passed);
+        for check in &backup_destination_checks {
+            let record =
+                HealthCheckRecord::new(&check.check_name, check.passed, check.details.clone());
+            if let Err(e) = store.insert_health_check(&record) {
+                tracing::warn!(
+                    check_name = %check.check_name,
+                    error = %e,
+                    "failed to persist backup destination health check"
+                );
+            }
+        }
+        let record = env_snapshot_record(&libvmaf, env_passed, &backup_destination_checks);
         if let Err(e) = store.insert_health_check(&record) {
             tracing::warn!(error = %e, "failed to persist env check snapshot");
         }
     }
 
     if matches!(format, OutputFormat::Json) {
-        let value = env_snapshot_json(&libvmaf, env_passed, issues);
+        let value = env_snapshot_json(&libvmaf, env_passed, issues, &backup_destination_checks);
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
@@ -352,6 +376,260 @@ pub fn check(format: OutputFormat) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BackupDestinationHealthCheck {
+    check_name: String,
+    destination_name: String,
+    kind: DestinationKind,
+    passed: bool,
+    status: BackupDestinationHealthStatus,
+    details: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackupDestinationHealthStatus {
+    Healthy,
+    ConfigInvalid,
+    RcloneUnavailable,
+    RemoteUnreachable,
+    ProbeFailed,
+}
+
+impl BackupDestinationHealthStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::ConfigInvalid => "config_invalid",
+            Self::RcloneUnavailable => "rclone_unavailable",
+            Self::RemoteUnreachable => "remote_unreachable",
+            Self::ProbeFailed => "probe_failed",
+        }
+    }
+}
+
+fn backup_destination_health_checks(
+    config: &config::AppConfig,
+) -> Vec<BackupDestinationHealthCheck> {
+    backup_destination_health_checks_with_runner(config, |program, args| {
+        run_backup_destination_probe_command(program, args)
+    })
+}
+
+fn backup_destination_health_checks_with_runner(
+    config: &config::AppConfig,
+    mut runner: impl FnMut(&str, &[String]) -> Result<()>,
+) -> Vec<BackupDestinationHealthCheck> {
+    let backup_config = match backup_config_from_app_config(config) {
+        Ok(config) => config,
+        Err(e) => {
+            return vec![backup_destination_config_failure(e.to_string())];
+        }
+    };
+    backup_config
+        .destinations
+        .iter()
+        .map(|destination| {
+            check_backup_destination(
+                destination,
+                &backup_config.rclone_path,
+                &config.data_dir,
+                &mut runner,
+            )
+        })
+        .collect()
+}
+
+fn backup_destination_config_failure(error: String) -> BackupDestinationHealthCheck {
+    BackupDestinationHealthCheck {
+        check_name: "backup_destinations_config".to_string(),
+        destination_name: "backup-manager".to_string(),
+        kind: DestinationKind::Local,
+        passed: false,
+        status: BackupDestinationHealthStatus::ConfigInvalid,
+        details: Some(format!("invalid backup destination configuration: {error}")),
+    }
+}
+
+fn check_backup_destination(
+    destination: &BackupDestinationConfig,
+    rclone_path: &str,
+    data_dir: &Path,
+    runner: &mut impl FnMut(&str, &[String]) -> Result<()>,
+) -> BackupDestinationHealthCheck {
+    let check_name = format!("backup_destination:{}", destination.name);
+    if !destination.kind.is_rclone_backed() {
+        return BackupDestinationHealthCheck {
+            check_name,
+            destination_name: destination.name.clone(),
+            kind: destination.kind,
+            passed: true,
+            status: BackupDestinationHealthStatus::Healthy,
+            details: Some("local backup destination does not require rclone".to_string()),
+        };
+    }
+    let Some(remote) = destination.remote.as_deref() else {
+        return backup_destination_failure(
+            destination,
+            check_name,
+            BackupDestinationHealthStatus::ConfigInvalid,
+            "remote is required for rclone-backed backup destination",
+        );
+    };
+    run_rclone_destination_checks(
+        destination,
+        check_name,
+        rclone_path,
+        remote,
+        data_dir,
+        runner,
+    )
+}
+
+fn run_rclone_destination_checks(
+    destination: &BackupDestinationConfig,
+    check_name: String,
+    rclone_path: &str,
+    remote: &str,
+    data_dir: &Path,
+    runner: &mut impl FnMut(&str, &[String]) -> Result<()>,
+) -> BackupDestinationHealthCheck {
+    if runner(rclone_path, &[String::from("version")]).is_err() {
+        return backup_destination_failure(
+            destination,
+            check_name,
+            BackupDestinationHealthStatus::RcloneUnavailable,
+            "rclone is unavailable for this backup destination",
+        );
+    }
+    if runner(
+        rclone_path,
+        &[
+            String::from("lsf"),
+            remote.to_string(),
+            String::from("--max-depth"),
+            String::from("1"),
+        ],
+    )
+    .is_err()
+    {
+        return backup_destination_failure(
+            destination,
+            check_name,
+            BackupDestinationHealthStatus::RemoteUnreachable,
+            "remote is unreachable for this backup destination",
+        );
+    }
+    run_backup_destination_write_probe(
+        destination,
+        check_name,
+        rclone_path,
+        remote,
+        data_dir,
+        runner,
+    )
+}
+
+fn run_backup_destination_write_probe(
+    destination: &BackupDestinationConfig,
+    check_name: String,
+    rclone_path: &str,
+    remote: &str,
+    data_dir: &Path,
+    runner: &mut impl FnMut(&str, &[String]) -> Result<()>,
+) -> BackupDestinationHealthCheck {
+    let probe_id = Uuid::new_v4();
+    let local_probe = data_dir.join(format!(".voom-backup-destination-health-{probe_id}.tmp"));
+    if let Err(e) = std::fs::write(&local_probe, b"voom backup destination health probe\n") {
+        return backup_destination_failure(
+            destination,
+            check_name,
+            BackupDestinationHealthStatus::ProbeFailed,
+            &format!("failed to create local probe file: {e}"),
+        );
+    }
+    let remote_probe = format!(
+        "{}/.voom-health/{probe_id}.tmp",
+        remote.trim_end_matches('/')
+    );
+    let copy_result = runner(
+        rclone_path,
+        &[
+            String::from("copyto"),
+            local_probe.display().to_string(),
+            remote_probe.clone(),
+        ],
+    );
+    let delete_result = if copy_result.is_ok() {
+        runner(rclone_path, &[String::from("deletefile"), remote_probe])
+    } else {
+        Ok(())
+    };
+    let _ = std::fs::remove_file(&local_probe);
+    if copy_result.is_err() || delete_result.is_err() {
+        return backup_destination_failure(
+            destination,
+            check_name,
+            BackupDestinationHealthStatus::ProbeFailed,
+            "write/delete probe failed for this backup destination",
+        );
+    }
+    BackupDestinationHealthCheck {
+        check_name,
+        destination_name: destination.name.clone(),
+        kind: destination.kind,
+        passed: true,
+        status: BackupDestinationHealthStatus::Healthy,
+        details: Some("remote reachable; write/delete probe succeeded".to_string()),
+    }
+}
+
+fn backup_destination_failure(
+    destination: &BackupDestinationConfig,
+    check_name: String,
+    status: BackupDestinationHealthStatus,
+    details: &str,
+) -> BackupDestinationHealthCheck {
+    BackupDestinationHealthCheck {
+        check_name,
+        destination_name: destination.name.clone(),
+        kind: destination.kind,
+        passed: false,
+        status,
+        details: Some(details.to_string()),
+    }
+}
+
+fn run_backup_destination_probe_command(program: &str, args: &[String]) -> Result<()> {
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = voom_process::run_with_timeout(program, &arg_refs, Duration::from_secs(10))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("backup destination probe command failed")
+    }
+}
+
+fn print_backup_destination_health(checks: &[BackupDestinationHealthCheck]) {
+    println!();
+    println!("{}", style("Backup destinations:").bold());
+    for check in checks {
+        let status = if check.passed {
+            style("OK").green()
+        } else {
+            style("FAIL").red()
+        };
+        println!(
+            "  {} ({}) ... {}",
+            sanitize_for_display(&check.destination_name),
+            check.kind.as_str(),
+            status
+        );
+        if let Some(details) = &check.details {
+            println!("    {}", style(details).dim());
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -480,22 +758,48 @@ fn print_libvmaf_status(report: &LibvmafReport) {
     }
 }
 
-fn env_snapshot_record(report: &LibvmafReport, passed: bool) -> HealthCheckRecord {
+fn env_snapshot_record(
+    report: &LibvmafReport,
+    passed: bool,
+    backup_checks: &[BackupDestinationHealthCheck],
+) -> HealthCheckRecord {
     HealthCheckRecord::new(
         "env_check",
         passed && !matches!(report.model_status, VmafModelStatus::Missing),
-        Some(env_snapshot_json(report, passed, 0).to_string()),
+        Some(env_snapshot_json(report, passed, 0, backup_checks).to_string()),
     )
 }
 
-fn env_snapshot_json(report: &LibvmafReport, passed: bool, issue_count: u32) -> serde_json::Value {
+fn env_snapshot_json(
+    report: &LibvmafReport,
+    passed: bool,
+    issue_count: u32,
+    backup_checks: &[BackupDestinationHealthCheck],
+) -> serde_json::Value {
     serde_json::json!({
         "passed": passed && !matches!(report.model_status, VmafModelStatus::Missing),
         "issue_count": issue_count,
         "vmaf_supported": report.supported,
         "vmaf_model_dir": report.model_dir.as_ref().map(|p| p.display().to_string()),
         "vmaf_model_status": report.model_status.as_str(),
+        "backup_destinations": backup_checks_json(backup_checks),
     })
+}
+
+fn backup_checks_json(checks: &[BackupDestinationHealthCheck]) -> Vec<serde_json::Value> {
+    checks
+        .iter()
+        .map(|check| {
+            serde_json::json!({
+                "check_name": check.check_name,
+                "destination_name": check.destination_name,
+                "kind": check.kind.as_str(),
+                "passed": check.passed,
+                "status": check.status.as_str(),
+                "details": check.details,
+            })
+        })
+        .collect()
 }
 
 fn backend_label(backend: HwAccelBackend) -> &'static str {
@@ -763,7 +1067,12 @@ fn history(
 mod tests {
     use std::path::PathBuf;
 
+    use anyhow::bail;
     use voom_domain::storage::HealthCheckRecord;
+
+    fn app_config(toml: &str) -> crate::config::AppConfig {
+        toml::from_str(toml).expect("app config")
+    }
 
     #[test]
     fn test_tool_detector_creation() {
@@ -812,7 +1121,7 @@ mod tests {
             Some(PathBuf::from("/opt/homebrew/share/libvmaf/model")),
         );
 
-        let record = super::env_snapshot_record(&report, true);
+        let record = super::env_snapshot_record(&report, true, &[]);
         let details = record.details.expect("snapshot details");
         let value: serde_json::Value = serde_json::from_str(&details).expect("json details");
 
@@ -826,7 +1135,7 @@ mod tests {
     fn env_snapshot_record_fails_when_model_is_missing() {
         let report = super::LibvmafReport::from_probe(true, None);
 
-        let record: HealthCheckRecord = super::env_snapshot_record(&report, true);
+        let record: HealthCheckRecord = super::env_snapshot_record(&report, true, &[]);
 
         assert!(!record.passed);
         assert!(record
@@ -834,6 +1143,149 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("\"vmaf_model_status\":\"missing\""));
+    }
+
+    #[test]
+    fn backup_destination_health_reports_healthy_destination() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = app_config(&format!(
+            r#"
+data_dir = "{}"
+
+[plugin.backup-manager]
+rclone_path = "/bin/rclone"
+
+[[plugin.backup-manager.destinations]]
+name = "offsite"
+kind = "rclone"
+remote = "s3:bucket/secret-path"
+"#,
+            dir.path().display()
+        ));
+        let mut commands = Vec::new();
+
+        let checks =
+            super::backup_destination_health_checks_with_runner(&config, |_program, args| {
+                commands.push(args.to_vec());
+                Ok(())
+            });
+
+        assert_eq!(checks.len(), 1);
+        assert!(checks[0].passed);
+        assert_eq!(checks[0].check_name, "backup_destination:offsite");
+        assert_eq!(
+            checks[0].status,
+            super::BackupDestinationHealthStatus::Healthy
+        );
+        assert!(!checks[0]
+            .details
+            .as_deref()
+            .unwrap_or_default()
+            .contains("secret-path"));
+        assert!(commands.iter().any(|args| args[0] == "copyto"));
+        assert!(commands.iter().any(|args| args[0] == "deletefile"));
+    }
+
+    #[test]
+    fn backup_destination_health_reports_missing_rclone() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = app_config(&format!(
+            r#"
+data_dir = "{}"
+
+[plugin.backup-manager]
+rclone_path = "/missing/rclone"
+
+[[plugin.backup-manager.destinations]]
+name = "offsite"
+kind = "rclone"
+remote = "s3:bucket"
+"#,
+            dir.path().display()
+        ));
+
+        let checks =
+            super::backup_destination_health_checks_with_runner(&config, |_program, args| {
+                if args[0] == "version" {
+                    bail!("missing rclone");
+                }
+                Ok(())
+            });
+
+        assert_eq!(
+            checks[0].status,
+            super::BackupDestinationHealthStatus::RcloneUnavailable
+        );
+        assert!(!checks[0].passed);
+    }
+
+    #[test]
+    fn backup_destination_health_reports_unreachable_remote() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = app_config(&format!(
+            r#"
+data_dir = "{}"
+
+[plugin.backup-manager]
+rclone_path = "/bin/rclone"
+
+[[plugin.backup-manager.destinations]]
+name = "offsite"
+kind = "rclone"
+remote = "s3:bucket"
+"#,
+            dir.path().display()
+        ));
+
+        let checks =
+            super::backup_destination_health_checks_with_runner(&config, |_program, args| {
+                if args[0] == "lsf" {
+                    bail!("unreachable");
+                }
+                Ok(())
+            });
+
+        assert_eq!(
+            checks[0].status,
+            super::BackupDestinationHealthStatus::RemoteUnreachable
+        );
+        assert!(!checks[0].passed);
+    }
+
+    #[test]
+    fn backup_destination_health_reports_duplicate_destination_names() {
+        let config = app_config(
+            r#"
+[plugin.backup-manager]
+rclone_path = "/bin/rclone"
+
+[[plugin.backup-manager.destinations]]
+name = "offsite"
+kind = "rclone"
+remote = "s3:bucket-a"
+
+[[plugin.backup-manager.destinations]]
+name = "offsite"
+kind = "rclone"
+remote = "s3:bucket-b"
+"#,
+        );
+
+        let checks =
+            super::backup_destination_health_checks_with_runner(&config, |_program, _args| Ok(()));
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].check_name, "backup_destinations_config");
+        assert_eq!(
+            checks[0].status,
+            super::BackupDestinationHealthStatus::ConfigInvalid
+        );
+        assert!(!checks[0].passed);
+        assert!(checks[0]
+            .details
+            .as_deref()
+            .unwrap_or_default()
+            .contains("duplicate backup destination"));
     }
 }
 

@@ -536,7 +536,7 @@ fn restore_remote(
     Ok(())
 }
 
-fn backup_config_from_app_config(
+pub(crate) fn backup_config_from_app_config(
     config: &config::AppConfig,
 ) -> Result<voom_backup_manager::BackupConfig> {
     let value = config.plugin.get("backup-manager").map_or_else(
