@@ -383,3 +383,67 @@ def test_build_video_input_keeps_testsrc_for_smoke_fixture():
     source = generator.build_video_input(video, duration=2, specials=set())
 
     assert source == "testsrc2=duration=2:size=1280x720:rate=24"
+
+
+def test_build_video_input_dark_edges_adds_vignette_without_black_bars():
+    generator = load_generator()
+    video = {
+        "source": "mandelbrot_zoom",
+        "size": "1920x1080",
+        "fps": 24,
+    }
+
+    source = generator.build_video_input(video, duration=2, specials={"dark_edges"})
+
+    assert "vignette=PI/5" in source
+    assert "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black" not in source
+
+
+def test_build_audio_input_dynamic_bursts_uses_aevalsrc_expression():
+    generator = load_generator()
+
+    source = generator.build_audio_input(
+        {"source": "dynamic_bursts"},
+        index=0,
+        duration=2,
+    )
+
+    assert source.startswith("aevalsrc=")
+    assert "between(mod(t,1),0,0.15)" in source
+    assert "0.9*sin(2*PI*880*t)" in source
+    assert "0.04*sin(2*PI*220*t)" in source
+
+
+def test_build_ffmpeg_cmd_adds_loudnorm_filter_for_target_fixture(tmp_path):
+    generator = load_generator()
+    spec = next(
+        spec
+        for spec in generator.build_manifest()
+        if spec["stem"] == "loudness-normalized-target"
+    )
+
+    cmd, _ = generator.build_ffmpeg_cmd(
+        spec,
+        tmp_path,
+        duration=2,
+        rng=random.Random(1),
+        tmpdir=tmp_path,
+    )
+
+    assert "-af:a:0" in cmd
+    assert cmd[cmd.index("-af:a:0") + 1] == "loudnorm=I=-23:TP=-2:LRA=11"
+
+
+def test_add_audio_codec_options_sets_explicit_stereo_for_two_channels():
+    generator = load_generator()
+    cmd = []
+
+    generator.add_audio_codec_options(
+        cmd,
+        [{"codec": "aac", "channels": 2}],
+    )
+
+    assert "-ac:a:0" in cmd
+    assert cmd[cmd.index("-ac:a:0") + 1] == "2"
+    assert "-channel_layout:a:0" in cmd
+    assert cmd[cmd.index("-channel_layout:a:0") + 1] == "stereo"

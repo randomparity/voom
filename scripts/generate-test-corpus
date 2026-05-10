@@ -1485,11 +1485,12 @@ def add_audio_codec_options(cmd, audios):
         ch = audio["channels"]
         if ch == 1:
             cmd += [f"-ac:a:{i}", "1"]
+        elif ch == 2:
+            cmd += [f"-ac:a:{i}", "2", f"-channel_layout:a:{i}", "stereo"]
         elif ch == 6:
             cmd += [f"-ac:a:{i}", "6", f"-channel_layout:a:{i}", "5.1"]
         elif ch == 8:
             cmd += [f"-ac:a:{i}", "8", f"-channel_layout:a:{i}", "7.1"]
-        # else stereo is default
 
         if audio["codec"] == "aac":
             cmd += [f"-b:a:{i}", "128k"]
