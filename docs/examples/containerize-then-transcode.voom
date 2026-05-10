@@ -1,0 +1,29 @@
+// Multi-phase containerize-then-transcode policy.
+//
+// Demonstrates a pipeline where a file may be remuxed to MKV and then
+// transcoded in the same process run. Downstream phases continue to use the
+// same persisted file identity after the container path changes.
+//
+// Designed for use with: mkvtoolnix-executor, ffmpeg-executor, backup-manager
+
+policy "containerize-then-transcode" {
+  config {
+    on_error: continue
+  }
+
+  phase containerize {
+    container mkv
+  }
+
+  phase transcode-video {
+    depends_on: [containerize]
+    skip when video.codec in [hevc, h265]
+
+    transcode video to hevc {
+      crf: 28
+      preset: medium
+      hw: auto
+      hw_fallback: true
+    }
+  }
+}

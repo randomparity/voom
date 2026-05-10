@@ -22,6 +22,13 @@ HEVC transcoding pipeline with hardware acceleration. `skip when` with field acc
 
 **Plugins used:** ffmpeg-executor, mkvtoolnix-executor, backup-manager
 
+### [containerize-then-transcode.voom](containerize-then-transcode.voom)
+Regression-focused multi-phase policy that remuxes to MKV before transcoding
+video. Useful for verifying that a container path change and a downstream
+transcode share the same persisted file identity.
+
+**Plugins used:** mkvtoolnix-executor, ffmpeg-executor, backup-manager
+
 ### [preflight-archive.voom](preflight-archive.voom)
 Archival policy for pre-flight cost estimates. Demonstrates container,
 video-transcode, and audio-transcode phases intended for `voom process --estimate`.
@@ -107,7 +114,7 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 | `order tracks` | movie-library, anime, strict, full |
 | `defaults` | movie-library, anime, strict, full |
 | `actions` (video/audio/subtitle) | movie-library, anime, strict, full |
-| `transcode` (video/audio) | transcode, preflight-archive, preflight-size-gate, hdr-archival, hdr-sdr-mobile, full |
+| `transcode` (video/audio) | transcode, containerize-then-transcode, preflight-archive, preflight-size-gate, hdr-archival, hdr-sdr-mobile, full |
 | `preserve_hdr` / `tonemap` | hdr-archival, hdr10plus-preserve, dolby-vision-rpu, hdr-sdr-mobile |
 | `crop: auto` | transcode |
 | `synthesize` | transcode, full |
