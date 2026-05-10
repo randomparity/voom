@@ -5,7 +5,7 @@ mod plan_outcome;
 mod safeguards;
 mod transitions;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
@@ -457,6 +457,7 @@ fn print_estimate(estimate: &voom_domain::EstimateRun) {
         estimate.file_count
     );
     println!();
+    print_estimate_breakdowns(estimate);
     println!("Total wall time:     ~{}", format_ms(estimate.wall_time_ms));
     println!(
         "Total compute time:  ~{}",
@@ -480,6 +481,48 @@ fn print_estimate(estimate: &voom_domain::EstimateRun) {
         "Files where estimate uncertainty is high: {}",
         estimate.high_uncertainty_files
     );
+}
+
+fn print_estimate_breakdowns(estimate: &voom_domain::EstimateRun) {
+    let mut phases: BTreeMap<&str, (usize, u64)> = BTreeMap::new();
+    let mut transcodes: BTreeMap<(String, String), (usize, u64)> = BTreeMap::new();
+    for file in &estimate.files {
+        let phase = phases.entry(&file.phase_name).or_default();
+        phase.0 += 1;
+        phase.1 = phase.1.saturating_add(file.compute_time_ms);
+
+        for action in &file.actions {
+            let Some(codec) = action.codec.as_ref() else {
+                continue;
+            };
+            let backend = action.backend.as_deref().unwrap_or("software").to_string();
+            let bucket = transcodes.entry((codec.clone(), backend)).or_default();
+            bucket.0 += 1;
+            bucket.1 = bucket.1.saturating_add(action.compute_time_ms);
+        }
+    }
+
+    if !phases.is_empty() {
+        println!("Phase breakdown:");
+        for (phase, (count, compute_ms)) in phases {
+            println!(
+                "  {phase:<18} {count:>5} plans     ~{}",
+                format_ms(compute_ms)
+            );
+        }
+        println!();
+    }
+
+    if !transcodes.is_empty() {
+        println!("Transcode breakdown:");
+        for ((codec, backend), (count, compute_ms)) in transcodes {
+            println!(
+                "  {codec:<8} {backend:<12} {count:>5} plans     ~{}",
+                format_ms(compute_ms)
+            );
+        }
+        println!();
+    }
 }
 
 fn format_ms(ms: u64) -> String {
