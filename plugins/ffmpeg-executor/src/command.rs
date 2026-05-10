@@ -74,6 +74,22 @@ impl FfmpegCommand {
         self
     }
 
+    /// Copy global metadata from an input (`-map_metadata {input_index}`).
+    #[must_use]
+    pub fn map_metadata(mut self, input_index: u32) -> Self {
+        self.args.push("-map_metadata".to_string());
+        self.args.push(input_index.to_string());
+        self
+    }
+
+    /// Copy chapters from an input (`-map_chapters {input_index}`).
+    #[must_use]
+    pub fn map_chapters(mut self, input_index: u32) -> Self {
+        self.args.push("-map_chapters".to_string());
+        self.args.push(input_index.to_string());
+        self
+    }
+
     /// Copy all codecs (`-c copy`).
     #[must_use]
     pub fn codec_copy(mut self) -> Self {
@@ -714,6 +730,113 @@ fn action_allows_direct_hw_decode(
     hw_cfg.decoder_input_args(&track.codec)
 }
 
+#[derive(Debug, Clone)]
+struct OutputTrackMetadata {
+    output_index: u32,
+    input_index: u32,
+    language: String,
+    title: String,
+    is_default: bool,
+    is_forced: bool,
+}
+
+impl OutputTrackMetadata {
+    fn from_track(output_index: u32, track: &Track) -> Self {
+        Self {
+            output_index,
+            input_index: track.index,
+            language: track.language.clone(),
+            title: track.title.clone(),
+            is_default: track.is_default,
+            is_forced: track.is_forced,
+        }
+    }
+
+    fn disposition_value(&self) -> &'static str {
+        match (self.is_default, self.is_forced) {
+            (true, true) => "default+forced",
+            (true, false) => "default",
+            (false, true) => "forced",
+            (false, false) => "0",
+        }
+    }
+}
+
+fn output_track_metadata(file: &MediaFile, exclude_attachments: bool) -> Vec<OutputTrackMetadata> {
+    file.tracks
+        .iter()
+        .filter(|track| !(exclude_attachments && track.track_type == TrackType::Attachment))
+        .enumerate()
+        .map(|(output_index, track)| OutputTrackMetadata::from_track(output_index as u32, track))
+        .collect()
+}
+
+fn apply_track_metadata_actions(
+    streams: &mut [OutputTrackMetadata],
+    actions: &[&PlannedAction],
+) -> Result<()> {
+    for action in actions {
+        let Some(track_index) = action.track_index else {
+            continue;
+        };
+        let Some(stream) = streams
+            .iter_mut()
+            .find(|stream| stream.input_index == track_index)
+        else {
+            continue;
+        };
+
+        match action.operation {
+            OperationType::SetDefault => stream.is_default = true,
+            OperationType::ClearDefault => stream.is_default = false,
+            OperationType::SetForced => stream.is_forced = true,
+            OperationType::ClearForced => stream.is_forced = false,
+            OperationType::SetTitle => {
+                if let ActionParams::Title { title } = &action.parameters {
+                    validate_metadata_value(title)?;
+                    stream.title.clone_from(title);
+                }
+            }
+            OperationType::SetLanguage => {
+                if let ActionParams::Language { language } = &action.parameters {
+                    validate_metadata_value(language)?;
+                    stream.language.clone_from(language);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn apply_preserved_stream_metadata(
+    mut cmd: FfmpegCommand,
+    file: &MediaFile,
+    exclude_attachments: bool,
+    actions: &[&PlannedAction],
+) -> Result<FfmpegCommand> {
+    let mut streams = output_track_metadata(file, exclude_attachments);
+    if streams.is_empty() {
+        return Ok(cmd);
+    }
+
+    apply_track_metadata_actions(&mut streams, actions)?;
+
+    cmd = cmd.map_metadata(0).map_chapters(0);
+
+    for stream in streams {
+        validate_metadata_value(&stream.language)?;
+        validate_metadata_value(&stream.title)?;
+        cmd = cmd
+            .metadata(Some(stream.output_index), "language", &stream.language)
+            .metadata(Some(stream.output_index), "title", &stream.title)
+            .disposition(stream.output_index, stream.disposition_value());
+    }
+
+    Ok(cmd)
+}
+
 /// Build an `FFmpeg` command from a plan's actions.
 ///
 /// Groups all actions into a single `FFmpeg` invocation where possible.
@@ -757,11 +880,12 @@ pub fn build_ffmpeg_command(
         cmd = cmd.arg(&arg);
     }
 
-    cmd = cmd.input(&file.path);
-    if actions
+    let exclude_attachments = actions
         .iter()
-        .any(|action| action.operation == OperationType::TranscodeVideo)
-    {
+        .any(|action| action.operation == OperationType::TranscodeVideo);
+
+    cmd = cmd.input(&file.path);
+    if exclude_attachments {
         cmd = cmd.map_non_attachment_tracks(file);
     } else {
         cmd = cmd.map_all();
@@ -785,38 +909,13 @@ pub fn build_ffmpeg_command(
             OperationType::SynthesizeAudio => {
                 cmd = apply_synthesize_audio(cmd, action);
             }
-            OperationType::SetDefault => {
-                if let Some(stream) = action.track_index {
-                    cmd = cmd.disposition(stream, "default");
-                }
-            }
-            // Both clear operations use disposition "0" — ffmpeg clears all
-            // disposition flags on the stream when set to 0.
-            OperationType::ClearDefault | OperationType::ClearForced => {
-                if let Some(stream) = action.track_index {
-                    cmd = cmd.disposition(stream, "0");
-                }
-            }
-            OperationType::SetForced => {
-                if let Some(stream) = action.track_index {
-                    cmd = cmd.disposition(stream, "forced");
-                }
-            }
-            OperationType::SetTitle => {
-                if let Some(stream) = action.track_index {
-                    if let ActionParams::Title { title } = &action.parameters {
-                        validate_metadata_value(title)?;
-                        cmd = cmd.metadata(Some(stream), "title", title);
-                    }
-                }
-            }
-            OperationType::SetLanguage => {
-                if let Some(stream) = action.track_index {
-                    if let ActionParams::Language { language } = &action.parameters {
-                        validate_metadata_value(language)?;
-                        cmd = cmd.metadata(Some(stream), "language", language);
-                    }
-                }
+            OperationType::SetDefault
+            | OperationType::ClearDefault
+            | OperationType::SetForced
+            | OperationType::ClearForced
+            | OperationType::SetTitle
+            | OperationType::SetLanguage => {
+                // Applied once below after output stream indexes are known.
             }
             OperationType::SetContainerTag => {
                 if let ActionParams::SetTag { tag, value } = &action.parameters {
@@ -848,6 +947,8 @@ pub fn build_ffmpeg_command(
             }
         }
     }
+
+    cmd = apply_preserved_stream_metadata(cmd, file, exclude_attachments, actions)?;
 
     cmd = cmd.output(output_path);
     Ok(cmd.build())
@@ -911,6 +1012,29 @@ mod tests {
         file
     }
 
+    fn sample_mkv_with_stream_metadata() -> MediaFile {
+        let mut file = MediaFile::new(PathBuf::from("/media/video.mkv"));
+        file.container = Container::Mkv;
+        file.duration = 120.0;
+
+        let mut video = Track::new(0, TrackType::Video, "h264".into());
+        video.language = "und".into();
+        video.title = "Main Video".into();
+
+        let mut audio = Track::new(1, TrackType::AudioMain, "aac".into());
+        audio.language = "und".into();
+        audio.title = "Original Mix".into();
+        audio.is_default = true;
+
+        let mut subtitle = Track::new(2, TrackType::SubtitleForced, "srt".into());
+        subtitle.language = "eng".into();
+        subtitle.title = "Forced Signs".into();
+        subtitle.is_forced = true;
+
+        file.tracks = vec![video, audio, subtitle];
+        file
+    }
+
     fn sample_hdr10_file() -> MediaFile {
         let mut file = sample_mp4_file();
         let video = &mut file.tracks[0];
@@ -943,6 +1067,14 @@ mod tests {
         args.iter()
             .position(|arg| arg == needle)
             .unwrap_or_else(|| panic!("{needle} not found in {args:?}"))
+    }
+
+    fn assert_arg_pair(args: &[String], flag: &str, value: &str) {
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == flag && pair[1] == value),
+            "expected {flag} {value} in {args:?}"
+        );
     }
 
     #[test]
@@ -1036,6 +1168,63 @@ mod tests {
                 .any(|pair| pair[0] == "-map" && pair[1] == "0:2"),
             "attachment stream must not be mapped into ffmpeg transcode output: {args:?}"
         );
+    }
+
+    #[test]
+    fn test_build_command_preserves_stream_metadata_and_dispositions() {
+        let file = sample_mkv_with_stream_metadata();
+        let action = PlannedAction::file_op(
+            OperationType::ConvertContainer,
+            ActionParams::Container {
+                container: Container::Mp4,
+            },
+            "Convert MKV to MP4",
+        );
+        let output = Path::new("/tmp/output.mp4");
+
+        let args = build_ffmpeg_command(&file, &[&action], output, None).unwrap();
+
+        assert_arg_pair(&args, "-map_metadata", "0");
+        assert_arg_pair(&args, "-map_chapters", "0");
+        assert_arg_pair(&args, "-metadata:s:0", "language=und");
+        assert_arg_pair(&args, "-metadata:s:0", "title=Main Video");
+        assert_arg_pair(&args, "-disposition:0", "0");
+        assert_arg_pair(&args, "-metadata:s:1", "language=und");
+        assert_arg_pair(&args, "-metadata:s:1", "title=Original Mix");
+        assert_arg_pair(&args, "-disposition:1", "default");
+        assert_arg_pair(&args, "-metadata:s:2", "language=eng");
+        assert_arg_pair(&args, "-metadata:s:2", "title=Forced Signs");
+        assert_arg_pair(&args, "-disposition:2", "forced");
+    }
+
+    #[test]
+    fn test_build_command_preserves_metadata_after_policy_updates() {
+        let file = sample_mkv_with_stream_metadata();
+        let set_language = PlannedAction::track_op(
+            OperationType::SetLanguage,
+            1,
+            ActionParams::Language {
+                language: "fra".into(),
+            },
+            "Set audio language",
+        );
+        let clear_forced = PlannedAction::track_op(
+            OperationType::ClearForced,
+            2,
+            ActionParams::Empty,
+            "Clear forced",
+        );
+        let output = Path::new("/tmp/output.mkv");
+
+        let args =
+            build_ffmpeg_command(&file, &[&set_language, &clear_forced], output, None).unwrap();
+
+        assert_arg_pair(&args, "-metadata:s:1", "language=fra");
+        assert_arg_pair(&args, "-metadata:s:1", "title=Original Mix");
+        assert_arg_pair(&args, "-disposition:1", "default");
+        assert_arg_pair(&args, "-metadata:s:2", "language=eng");
+        assert_arg_pair(&args, "-metadata:s:2", "title=Forced Signs");
+        assert_arg_pair(&args, "-disposition:2", "0");
     }
 
     #[test]

@@ -328,6 +328,15 @@ fn example_transcode_video_drop_attachments_parses_and_validates() {
 }
 
 #[test]
+fn example_metadata_stable_transcode_parses_and_validates() {
+    let input = include_str!("../../../docs/examples/metadata-stable-transcode.voom");
+    let ast = parse_policy(input).unwrap();
+    assert_eq!(ast.name, "metadata-stable-transcode");
+    assert_eq!(ast.phases.len(), 1);
+    voom_dsl::validate(&ast).unwrap();
+}
+
+#[test]
 fn example_hdr_archival_parses_and_validates() {
     let input = include_str!("../../../docs/examples/hdr-archival.voom");
     let ast = parse_policy(input).unwrap();
