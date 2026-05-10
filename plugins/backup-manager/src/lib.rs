@@ -9,6 +9,7 @@
 //! - [`space`] — disk space validation via `statvfs`
 
 pub mod backup;
+pub mod destination;
 pub mod space;
 
 use std::collections::HashMap;
