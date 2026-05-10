@@ -22,7 +22,7 @@ policy "preflight-archive" {
 
   phase transcode-audio {
     depends_on: [containerize]
-    skip when not exists(audio where codec in [dts, ac3, mp3])
+    skip when not exists(audio where codec in [truehd, dts, ac3, mp3])
 
     transcode audio to aac {
       bitrate: 192k
