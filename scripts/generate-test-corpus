@@ -554,17 +554,17 @@ CORRUPTION_TYPES = ["truncated", "header_damage", "mid_stream", "zero_length", "
 
 
 def apply_corruption(file_path, corruption_type, rng):
-    """Corrupt a generated file in-place. Returns a description string."""
+    """Corrupt a generated file in-place. Returns (description, final_path)."""
     size = file_path.stat().st_size
     if size == 0:
-        return "skipped (already empty)"
+        return "skipped (already empty)", file_path
 
     if corruption_type == "truncated":
         cut_pct = rng.randint(10, 80)
         new_size = max(1, size * cut_pct // 100)
         data = file_path.read_bytes()[:new_size]
         file_path.write_bytes(data)
-        return f"truncated to {cut_pct}% ({new_size} bytes)"
+        return f"truncated to {cut_pct}% ({new_size} bytes)", file_path
 
     elif corruption_type == "header_damage":
         damage_size = min(rng.randint(64, 512), size)
@@ -572,7 +572,7 @@ def apply_corruption(file_path, corruption_type, rng):
         for i in range(damage_size):
             data[i] = rng.randint(0, 255)
         file_path.write_bytes(bytes(data))
-        return f"header damaged ({damage_size} bytes)"
+        return f"header damaged ({damage_size} bytes)", file_path
 
     elif corruption_type == "mid_stream":
         block_size = min(rng.randint(1024, 4096), size // 2)
@@ -582,11 +582,11 @@ def apply_corruption(file_path, corruption_type, rng):
         for i in range(min(block_size, len(data) - offset)):
             data[offset + i] = rng.randint(0, 255)
         file_path.write_bytes(bytes(data))
-        return f"mid-stream corruption ({block_size} bytes at offset {offset})"
+        return f"mid-stream corruption ({block_size} bytes at offset {offset})", file_path
 
     elif corruption_type == "zero_length":
         file_path.write_bytes(b"")
-        return "truncated to zero bytes"
+        return "truncated to zero bytes", file_path
 
     elif corruption_type == "wrong_extension":
         current_ext = file_path.suffix
@@ -598,15 +598,15 @@ def apply_corruption(file_path, corruption_type, rng):
             new_ext = ".mkv"
         new_path = file_path.with_suffix(new_ext)
         file_path.rename(new_path)
-        return f"extension changed {current_ext} -> {new_ext}"
+        return f"extension changed {current_ext} -> {new_ext}", new_path
 
-    return "unknown corruption type"
+    return "unknown corruption type", file_path
 
 
 def select_and_corrupt(dest, random_specs, corrupt_count, seed):
     """Select `corrupt_count` files from `random_specs` and corrupt them.
 
-    Returns list of (filename, corruption_type, description) tuples.
+    Returns corruption result dictionaries with final filenames and sizes.
     """
     if corrupt_count <= 0 or not random_specs:
         return []
@@ -621,8 +621,14 @@ def select_and_corrupt(dest, random_specs, corrupt_count, seed):
         if not filepath.exists():
             continue
         ctype = rng.choice(CORRUPTION_TYPES)
-        desc = apply_corruption(filepath, ctype, rng)
-        results.append((filename, ctype, desc))
+        desc, final_path = apply_corruption(filepath, ctype, rng)
+        results.append({
+            "original_filename": filename,
+            "filename": final_path.name,
+            "type": ctype,
+            "description": desc,
+            "size": final_path.stat().st_size,
+        })
 
     return results
 
@@ -1264,12 +1270,26 @@ def main():
     corrupt_results = []
     if corrupt_count > 0 and not args.dry_run:
         corrupt_results = select_and_corrupt(dest, random_specs, corrupt_count, args.seed)
-        for filename, ctype, desc in corrupt_results:
+        generated_by_filename = {entry["filename"]: entry for entry in generated_entries}
+        for result in corrupt_results:
+            filename = result["filename"]
+            ctype = result["type"]
+            desc = result["description"]
             print(f"  CORRUPTED {filename} — {ctype}: {desc}")
 
+            entry = generated_by_filename.get(result["original_filename"])
+            if entry is not None:
+                entry["filename"] = filename
+                entry["size"] = result["size"]
+
     corruption_entries = [
-        {"filename": filename, "type": ctype, "description": desc}
-        for filename, ctype, desc in corrupt_results
+        {
+            "filename": result["filename"],
+            "type": result["type"],
+            "description": result["description"],
+            "size": result["size"],
+        }
+        for result in corrupt_results
     ]
     if not args.dry_run:
         run_manifest = build_run_manifest(

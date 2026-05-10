@@ -83,13 +83,32 @@ def test_build_run_manifest_records_generated_skipped_failed_and_corruptions():
         generated=[
             {
                 "filename": "basic-h264-aac.mp4",
+                "stem": "basic-h264-aac",
                 "size": 1234,
+                "duration": 2,
+                "profiles": ["coverage"],
                 "covers": ["video.codec.h264"],
                 "expect": {"bad_file": False},
             }
         ],
-        skipped=[{"filename": "av1-opus.mp4", "reason": "encoder 'libsvtav1' not available"}],
-        failed=[{"filename": "bad.mkv", "reason": "ffmpeg failed"}],
+        skipped=[
+            {
+                "filename": "av1-opus.mp4",
+                "stem": "av1-opus",
+                "reason": "encoder 'libsvtav1' not available",
+                "covers": ["video.codec.av1"],
+                "expect": {"bad_file": False},
+            }
+        ],
+        failed=[
+            {
+                "filename": "bad.mkv",
+                "stem": "bad",
+                "reason": "ffmpeg failed",
+                "covers": ["audio.codec.truehd"],
+                "expect": {"bad_file": False},
+            }
+        ],
         corruptions=[{"filename": "corrupt-truncated-tail.mkv", "type": "truncated_tail"}],
     )
 
@@ -104,3 +123,5 @@ def test_build_run_manifest_records_generated_skipped_failed_and_corruptions():
         "corrupted": 1,
     }
     assert manifest["generated"][0]["covers"] == ["video.codec.h264"]
+    assert manifest["skipped"][0]["covers"] == ["video.codec.av1"]
+    assert manifest["failed"][0]["covers"] == ["audio.codec.truehd"]
