@@ -509,6 +509,17 @@ def build_video_feature_specs():
             "subs": [{"format": "webvtt", "lang": "eng"}],
             "special": [],
         },
+        {
+            "stem": "mp4-text-subtitle",
+            "ext": "mp4",
+            "profiles": ["coverage"],
+            "covers": ["video.codec.h264", "audio.codec.aac", "subtitle.format.mov_text"],
+            "expect": {"bad_file": False, "container": "mp4"},
+            "video": {"codec": "libx264", "size": "1280x720", "fps": 24},
+            "audio": [{"codec": "aac", "channels": 2}],
+            "subs": [{"format": "srt", "lang": "eng"}],
+            "special": [],
+        },
     ]
 
 
