@@ -282,10 +282,12 @@ mod tests {
 
         let parsed: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
         assert_eq!(parsed["event"], "file.discovered");
-        assert!(parsed["summary"]
-            .as_str()
-            .unwrap()
-            .contains("/media/test.mkv"));
+        assert!(
+            parsed["summary"]
+                .as_str()
+                .unwrap()
+                .contains("/media/test.mkv")
+        );
     }
 
     #[test]

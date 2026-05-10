@@ -1,10 +1,10 @@
 //! Worker pool for concurrent job processing using tokio tasks.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -465,7 +465,8 @@ impl WorkerPool {
         }
 
         for handle in handles {
-            if let Err(e) = handle.await {
+            let join_result = handle.await;
+            if let Err(e) = join_result {
                 tracing::error!(error = %e, "worker task join error");
             }
         }
@@ -485,21 +486,25 @@ async fn cancel_unstarted_jobs(queue: Arc<JobQueue>, job_ids: Vec<Uuid>) {
     }
 
     let cancelled = job_ids.len();
-    if let Err(e) = tokio::task::spawn_blocking(move || {
+    let cancel_result = tokio::task::spawn_blocking(move || {
         for job_id in job_ids {
-            if let Err(e) = queue.cancel(&job_id) {
+            let job_cancel_result = queue.cancel(&job_id);
+            if let Err(e) = job_cancel_result {
                 tracing::warn!(%job_id, error = %e, "failed to cancel unstarted job");
             }
         }
     })
-    .await
-    {
-        tracing::error!(error = %e, "failed to cancel unstarted jobs");
-    } else {
-        tracing::debug!(
-            cancelled,
-            "cancelled unstarted jobs after batch cancellation"
-        );
+    .await;
+    match cancel_result {
+        Err(e) => {
+            tracing::error!(error = %e, "failed to cancel unstarted jobs");
+        }
+        _ => {
+            tracing::debug!(
+                cancelled,
+                "cancelled unstarted jobs after batch cancellation"
+            );
+        }
     }
 }
 
@@ -864,9 +869,11 @@ mod tests {
             "entered"
         });
 
-        assert!(tokio::time::timeout(Duration::from_millis(20), entered_rx)
-            .await
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), entered_rx)
+                .await
+                .is_err()
+        );
 
         drop(first);
         assert_eq!(
@@ -1533,10 +1540,12 @@ mod tests {
         assert_eq!(processor_called.load(Ordering::SeqCst), 0);
         assert_eq!(pool.failed_count(), 1);
         assert_eq!(results.len(), 1);
-        assert!(results[0]
-            .outcome
-            .error()
-            .is_some_and(|error| error.contains("enqueue failed")));
+        assert!(
+            results[0]
+                .outcome
+                .error()
+                .is_some_and(|error| error.contains("enqueue failed"))
+        );
     }
 
     #[tokio::test]

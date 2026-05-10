@@ -16,6 +16,7 @@ setup:
     echo "=== VOOM Developer Setup ==="
     echo ""
     errors=0
+    rust_msrv="1.85.0"
 
     install_mode="${VOOM_SETUP_INSTALL:-prompt}"
     if [[ "$install_mode" != "0" && "$install_mode" != "1" && "$install_mode" != "prompt" ]]; then
@@ -29,6 +30,52 @@ setup:
 
     version_line() {
         "$@" 2>/dev/null | head -1 || true
+    }
+
+    parse_semver() {
+        line="$1"
+        if [[ "$line" =~ ([0-9]+)\.([0-9]+)(\.([0-9]+))? ]]; then
+            patch="${BASH_REMATCH[4]:-0}"
+            echo "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$patch"
+        fi
+    }
+
+    semver_ge() {
+        IFS=. read -r have_major have_minor have_patch <<< "$1"
+        IFS=. read -r want_major want_minor want_patch <<< "$2"
+        have_patch="${have_patch:-0}"
+        want_patch="${want_patch:-0}"
+
+        if (( have_major != want_major )); then
+            (( have_major > want_major ))
+            return
+        fi
+        if (( have_minor != want_minor )); then
+            (( have_minor > want_minor ))
+            return
+        fi
+        (( have_patch >= want_patch ))
+    }
+
+    check_rust_tool_version() {
+        command_name="$1"
+        label="$2"
+        line="$(version_line "$command_name" --version)"
+        version="$(parse_semver "$line")"
+        if [[ -z "$version" ]]; then
+            echo "✗ could not parse $label version from: $line"
+            errors=$((errors + 1))
+            return 1
+        fi
+        if semver_ge "$version" "$rust_msrv"; then
+            echo "✓ $line"
+            return 0
+        fi
+
+        echo "✗ $label $version is below VOOM's Rust MSRV $rust_msrv"
+        echo "  Suggested install: rustup update && rustup default stable"
+        errors=$((errors + 1))
+        return 1
     }
 
     package_manager() {
@@ -243,9 +290,16 @@ setup:
     fi
 
     if have cargo; then
-        echo "✓ $(cargo --version)"
+        check_rust_tool_version cargo cargo || true
     else
         echo "✗ cargo not found — install Rust via https://rustup.rs"
+        errors=$((errors + 1))
+    fi
+
+    if have rustc; then
+        check_rust_tool_version rustc rustc || true
+    else
+        echo "✗ rustc not found — install Rust via https://rustup.rs"
         errors=$((errors + 1))
     fi
 

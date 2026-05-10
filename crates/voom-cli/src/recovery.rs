@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::config::RecoveryConfig;
-use voom_domain::transition::TransitionSource;
 use voom_domain::FileTransition;
+use voom_domain::transition::TransitionSource;
 
 /// An orphaned backup file found on disk with no corresponding completion.
 #[derive(Debug)]
@@ -117,7 +117,8 @@ fn clean_stale_pending_ops(
             path = %op.file_path.display(),
             "stale pending operation with no backup — removing"
         );
-        if let Err(e) = store.delete_pending_op(&op.id) {
+        let delete_result = store.delete_pending_op(&op.id);
+        if let Err(e) = delete_result {
             tracing::warn!(
                 plan_id = %op.id,
                 path = %op.file_path.display(),
@@ -148,7 +149,8 @@ fn resolve_single_orphan(
                 .iter()
                 .filter(|op| *op.file_path.to_string_lossy() == path_str)
             {
-                if let Err(e) = store.delete_pending_op(&op.id) {
+                let delete_result = store.delete_pending_op(&op.id);
+                if let Err(e) = delete_result {
                     tracing::warn!(
                         plan_id = %op.id,
                         path = %op.file_path.display(),

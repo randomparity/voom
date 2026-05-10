@@ -70,11 +70,14 @@ impl PluginManifest {
         }
         if self.version.is_empty() {
             errors.push("plugin version cannot be empty".to_string());
-        } else if let Err(e) = semver::Version::parse(&self.version) {
-            errors.push(format!(
-                "plugin version '{}' is not valid semver: {e}",
-                self.version
-            ));
+        } else {
+            let parse_result = semver::Version::parse(&self.version);
+            if let Err(e) = parse_result {
+                errors.push(format!(
+                    "plugin version '{}' is not valid semver: {e}",
+                    self.version
+                ));
+            }
         }
         if self.capabilities.is_empty() && self.handles_events.is_empty() {
             errors.push("plugin must declare at least one capability or handled event".to_string());

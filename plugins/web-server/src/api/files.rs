@@ -1,14 +1,14 @@
 //! File-related API endpoints.
 
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use voom_domain::media::{Container, MediaFile};
 use voom_domain::storage::FileFilters;
 
-use crate::errors::{spawn_store_op, WebError};
+use crate::errors::{WebError, spawn_store_op};
 use crate::state::AppState;
 
 /// Shared filter fields used by both API and page handlers.

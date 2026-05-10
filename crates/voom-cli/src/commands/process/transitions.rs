@@ -6,8 +6,8 @@
 //! module.
 
 use super::ProcessContext;
-use voom_domain::errors::StorageErrorKind;
 use voom_domain::VoomError;
+use voom_domain::errors::StorageErrorKind;
 
 /// Grouped arguments for `record_file_transition`.
 pub(super) struct FileTransitionContext<'a> {

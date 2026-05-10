@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use rusqlite::params;
 use rusqlite::OptionalExtension;
+use rusqlite::params;
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
@@ -12,8 +12,8 @@ use voom_domain::storage::{FileTransitionStorage, PruneReport, RetentionPolicy};
 use voom_domain::transition::{FileTransition, TransitionSource};
 
 use super::{
-    checked_i64_to_u64, checked_optional_i64_to_u32, checked_optional_i64_to_u64, format_datetime,
-    storage_err, SqliteStore,
+    SqliteStore, checked_i64_to_u64, checked_optional_i64_to_u32, checked_optional_i64_to_u64,
+    format_datetime, storage_err,
 };
 
 /// Insert a `FileTransition` into `file_transitions`. Accepts any

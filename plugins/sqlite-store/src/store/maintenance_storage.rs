@@ -5,7 +5,7 @@ use rusqlite::params;
 use voom_domain::errors::Result;
 use voom_domain::storage::{MaintenanceStorage, PageStats};
 
-use super::{escape_like, storage_err, PruneTarget, SqliteStore};
+use super::{PruneTarget, SqliteStore, escape_like, storage_err};
 
 impl MaintenanceStorage for SqliteStore {
     fn vacuum(&self) -> Result<()> {
@@ -30,12 +30,10 @@ impl MaintenanceStorage for SqliteStore {
                 let mut stmt = conn
                     .prepare("SELECT id, path FROM bad_files WHERE path LIKE ?1 || '%' ESCAPE '\\'")
                     .map_err(storage_err("failed to prepare bad_files prune"))?;
-                let result = stmt
-                    .query_map(params![root_str], |row| Ok((row.get(0)?, row.get(1)?)))
+                stmt.query_map(params![root_str], |row| Ok((row.get(0)?, row.get(1)?)))
                     .map_err(storage_err("failed to query bad_files"))?
                     .collect::<rusqlite::Result<Vec<_>>>()
-                    .map_err(storage_err("failed to collect bad_files"))?;
-                result
+                    .map_err(storage_err("failed to collect bad_files"))?
             };
             let missing_bad_ids: Vec<&str> = bad_files
                 .iter()
@@ -52,12 +50,10 @@ impl MaintenanceStorage for SqliteStore {
                 .prepare("SELECT id, path FROM files WHERE status = 'active' AND path LIKE ?1 || '%' ESCAPE '\\'")
                 .map_err(storage_err("failed to prepare prune query"))?;
 
-            let result = stmt
-                .query_map(params![root_str], |row| Ok((row.get(0)?, row.get(1)?)))
+            stmt.query_map(params![root_str], |row| Ok((row.get(0)?, row.get(1)?)))
                 .map_err(storage_err("failed to query files"))?
                 .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(storage_err("failed to collect files"))?;
-            result
+                .map_err(storage_err("failed to collect files"))?
         };
 
         // Phase 2: Check filesystem (no connection held)

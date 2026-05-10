@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio_util::sync::CancellationToken;
 
 use crate::app;
@@ -461,8 +461,8 @@ mod tests {
     use chrono::TimeZone;
 
     use crate::commands::estimate::{
-        accuracy_report_from_benchmarks, cost_model_sample_from_benchmark,
-        CalibrationBenchmarkResult,
+        CalibrationBenchmarkResult, accuracy_report_from_benchmarks,
+        cost_model_sample_from_benchmark,
     };
 
     #[test]

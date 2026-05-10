@@ -1,7 +1,7 @@
 //! Shared application state for the web server.
 
-use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 use tokio::sync::broadcast;
 use voom_domain::storage::StorageTrait;

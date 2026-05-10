@@ -1,10 +1,10 @@
 //! Tool detection API endpoints.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde::{Deserialize, Serialize};
 
-use crate::errors::{spawn_store_op, WebError};
+use crate::errors::{WebError, spawn_store_op};
 use crate::state::AppState;
 
 /// Known tool names that the tool-detector plugin reports.

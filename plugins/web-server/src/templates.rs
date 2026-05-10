@@ -1,8 +1,8 @@
 //! Tera template rendering and page handlers.
 
+use axum::Extension;
 use axum::extract::{Path, Query, State};
 use axum::response::Html;
-use axum::Extension;
 use serde::Deserialize;
 use std::collections::HashSet;
 
@@ -11,10 +11,10 @@ use voom_domain::storage::{FileFilters, JobFilters};
 use voom_domain::verification::{VerificationFilters, VerificationOutcome};
 
 use crate::api::files::FileFilterParams;
-use crate::errors::{spawn_store_op, WebError};
+use crate::errors::{WebError, spawn_store_op};
 use crate::middleware::CspNonce;
 use crate::state::AppState;
-use crate::views::{file_views, transition_views, verification_views, IntegrityErrorView};
+use crate::views::{IntegrityErrorView, file_views, transition_views, verification_views};
 
 type HtmlResult = Result<Html<String>, WebError>;
 const FILE_VERIFICATION_LIMIT: u32 = 25;

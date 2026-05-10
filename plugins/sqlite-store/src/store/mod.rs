@@ -29,9 +29,9 @@ use voom_domain::errors::{Result, StorageErrorKind, VoomError};
 use voom_domain::media::Track;
 
 pub(crate) use row_mappers::{
-    checked_i64_to_u64, checked_optional_i64_to_u32, checked_optional_i64_to_u64,
+    FileRow, checked_i64_to_u64, checked_optional_i64_to_u32, checked_optional_i64_to_u64,
     parse_optional_datetime, parse_required_datetime, row_to_bad_file, row_to_file, row_to_job,
-    row_to_track, row_uuid, FileRow,
+    row_to_track, row_uuid,
 };
 
 use crate::schema;

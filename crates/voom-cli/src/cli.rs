@@ -1175,16 +1175,18 @@ mod tests {
 
     #[test]
     fn test_process_policy_and_map_conflict() {
-        assert!(try_parse(&[
-            "voom",
-            "process",
-            "/media",
-            "--policy",
-            "p.voom",
-            "--policy-map",
-            "map.toml"
-        ])
-        .is_err());
+        assert!(
+            try_parse(&[
+                "voom",
+                "process",
+                "/media",
+                "--policy",
+                "p.voom",
+                "--policy-map",
+                "map.toml"
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -2038,16 +2040,18 @@ mod tests {
 
     #[test]
     fn test_invalid_on_error_rejected() {
-        assert!(try_parse(&[
-            "voom",
-            "process",
-            "/m",
-            "--policy",
-            "p",
-            "--on-error",
-            "retry"
-        ])
-        .is_err());
+        assert!(
+            try_parse(&[
+                "voom",
+                "process",
+                "/m",
+                "--policy",
+                "p",
+                "--on-error",
+                "retry"
+            ])
+            .is_err()
+        );
     }
 
     // ── Tools subcommands ─────────────────────────────────────

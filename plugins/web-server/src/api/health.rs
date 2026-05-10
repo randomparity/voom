@@ -1,11 +1,11 @@
 //! Health check API endpoints.
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::errors::{spawn_store_op, WebError};
+use crate::errors::{WebError, spawn_store_op};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]

@@ -92,11 +92,7 @@ pub fn parse_progress(output: &str) -> Option<ProgressInfo> {
         }
     }
 
-    if found_any {
-        Some(info)
-    } else {
-        None
-    }
+    if found_any { Some(info) } else { None }
 }
 
 /// Calculate completion percentage given progress time and total duration.
@@ -194,11 +190,7 @@ fn extract_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
         .unwrap_or(rest.len());
 
     let value = rest[..end].trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 /// Parse a time string like `00:01:30.50` to microseconds.
@@ -270,8 +262,7 @@ progress=end
 
     #[test]
     fn test_parse_stderr_progress() {
-        let line =
-            "frame=  120 fps= 30 q=28.0 size=    1024kB time=00:00:04.00 bitrate=2097.2kbits/s speed=1.5x";
+        let line = "frame=  120 fps= 30 q=28.0 size=    1024kB time=00:00:04.00 bitrate=2097.2kbits/s speed=1.5x";
         let info = parse_stderr_progress(line).unwrap();
         assert_eq!(info.frame, Some(120));
         assert_eq!(info.fps, Some(30.0));

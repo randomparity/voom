@@ -7,8 +7,8 @@ use voom_domain::plan::{Plan, PlannedAction};
 use voom_domain::storage::{PlanPhaseStat, PlanStatus, PlanStorage, PlanSummary};
 
 use super::{
-    format_datetime, other_storage_err, parse_optional_datetime, row_uuid, storage_err,
-    OptionalExt, SqliteStore,
+    OptionalExt, SqliteStore, format_datetime, other_storage_err, parse_optional_datetime,
+    row_uuid, storage_err,
 };
 
 /// Internal DTO for mapping database rows. Not exposed outside this crate.
@@ -254,11 +254,11 @@ impl PlanStorage for SqliteStore {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use voom_domain::TranscodeSettings;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
     use voom_domain::plan::TranscodeChannels;
     use voom_domain::plan::{ActionParams, OperationType};
     use voom_domain::storage::FileStorage;
-    use voom_domain::TranscodeSettings;
 
     fn test_store() -> SqliteStore {
         SqliteStore::in_memory().expect("in-memory store")

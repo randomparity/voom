@@ -4,7 +4,7 @@ use rusqlite::params;
 use voom_domain::errors::Result;
 use voom_domain::storage::PluginDataStorage;
 
-use super::{format_datetime, storage_err, OptionalExt, SqliteStore};
+use super::{OptionalExt, SqliteStore, format_datetime, storage_err};
 
 impl PluginDataStorage for SqliteStore {
     fn plugin_data(&self, plugin: &str, key: &str) -> Result<Option<Vec<u8>>> {
@@ -121,10 +121,12 @@ mod tests {
 
         // Deleting one does not affect the other.
         store.delete_plugin_data("plugin-a", "shared-key").unwrap();
-        assert!(store
-            .plugin_data("plugin-a", "shared-key")
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .plugin_data("plugin-a", "shared-key")
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             store
                 .plugin_data("plugin-b", "shared-key")

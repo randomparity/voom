@@ -1,14 +1,14 @@
 //! Stats-related API endpoints.
 
-use axum::extract::{Query, State};
 use axum::Json;
+use axum::extract::{Query, State};
 use serde::Serialize;
 
 use voom_domain::errors::VoomError;
 use voom_domain::stats::LibrarySnapshot;
 use voom_report::{ReportPlugin, ReportRequest, ReportSection};
 
-use crate::errors::{spawn_store_op, WebError};
+use crate::errors::{WebError, spawn_store_op};
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]

@@ -13,8 +13,8 @@ use voom_domain::transition::{
 };
 
 use super::{
-    escape_like, format_datetime, other_storage_err, parse_datetime, row_to_file, storage_err,
-    FileRow, OptionalExt, SqlQuery, SqliteStore,
+    FileRow, OptionalExt, SqlQuery, SqliteStore, escape_like, format_datetime, other_storage_err,
+    parse_datetime, row_to_file, storage_err,
 };
 
 fn filename_string(path: &Path) -> String {
@@ -1300,10 +1300,12 @@ mod tests {
             .unwrap();
 
         // Old path no longer maps to a row
-        assert!(store
-            .file_by_path(Path::new("/media/movie.mp4"))
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .file_by_path(Path::new("/media/movie.mp4"))
+                .unwrap()
+                .is_none()
+        );
 
         // New path maps to the same row (same id, same hash, status untouched)
         let stored_after = store
@@ -1600,10 +1602,12 @@ mod tests {
             .unwrap();
 
         // 1. Path is renamed
-        assert!(store
-            .file_by_path(Path::new("/media/movie.mp4"))
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .file_by_path(Path::new("/media/movie.mp4"))
+                .unwrap()
+                .is_none()
+        );
         let renamed = store
             .file_by_path(Path::new("/media/movie.mkv"))
             .unwrap()

@@ -27,7 +27,8 @@ pub(crate) fn collect_lineage(store: &dyn FileStorage, start_id: Uuid) -> Vec<Uu
             break;
         }
 
-        match store.predecessor_id_of(&current) {
+        let predecessor_result = store.predecessor_id_of(&current);
+        match predecessor_result {
             Ok(Some(pred_id)) => {
                 if !seen.insert(pred_id) {
                     tracing::warn!("cycle detected in predecessor chain at {}", pred_id);
@@ -55,7 +56,8 @@ pub(crate) fn collect_lineage_transitions(
 ) -> Vec<FileTransition> {
     let mut all_transitions = Vec::new();
     for file_id in lineage {
-        match store.transitions_for_file(file_id) {
+        let transitions_result = store.transitions_for_file(file_id);
+        match transitions_result {
             Ok(transitions) => all_transitions.extend(transitions),
             Err(e) => {
                 tracing::warn!("failed to load transitions for {file_id}: {e}");

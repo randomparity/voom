@@ -1930,10 +1930,11 @@ mod tests {
         let ast = parse_policy(input).unwrap();
         let err = validate(&ast).unwrap_err();
 
-        assert!(err
-            .errors
-            .iter()
-            .any(|e| format!("{e}").contains("target_vmaf must be from 60 to 100")));
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("target_vmaf must be from 60 to 100"))
+        );
     }
 
     #[test]
@@ -1949,10 +1950,11 @@ mod tests {
         let ast = parse_policy(input).unwrap();
         let err = validate(&ast).unwrap_err();
 
-        assert!(err
-            .errors
-            .iter()
-            .any(|e| format!("{e}").contains("min_bitrate must be less")));
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("min_bitrate must be less"))
+        );
     }
 
     #[test]
@@ -1970,10 +1972,11 @@ mod tests {
         let ast = parse_policy(input).unwrap();
         let err = validate(&ast).unwrap_err();
 
-        assert!(err
-            .errors
-            .iter()
-            .any(|e| format!("{e}").contains("fallback.crf must be from 0 to 51")));
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| format!("{e}").contains("fallback.crf must be from 0 to 51"))
+        );
     }
 
     #[test]
@@ -2815,9 +2818,11 @@ mod tests {
         let (warnings, result) = validate_with_warnings(&ast);
         assert!(result.is_ok(), "typo in plugin name should not be an error");
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0]
-            .message
-            .contains("unknown plugin name \"radrr\""));
+        assert!(
+            warnings[0]
+                .message
+                .contains("unknown plugin name \"radrr\"")
+        );
         assert!(
             warnings[0].suggestion.as_ref().unwrap().contains("radarr"),
             "should suggest radarr, got: {:?}",
@@ -2871,9 +2876,11 @@ mod tests {
         let (warnings, result) = validate_with_warnings(&ast);
         assert!(result.is_ok());
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0]
-            .message
-            .contains("unknown plugin name \"sonar\""));
+        assert!(
+            warnings[0]
+                .message
+                .contains("unknown plugin name \"sonar\"")
+        );
         assert!(
             warnings[0].suggestion.is_some(),
             "close name should have suggestion"
@@ -3259,10 +3266,9 @@ mod tests {
 
     #[test]
     fn validate_filter_and_recurses_into_invalid_inner() {
-        let (errors, _) =
-            run_validate_filter(FilterNode::And(vec![FilterNode::LangIn(
-                vec!["xxx".into()],
-            )]));
+        let (errors, _) = run_validate_filter(FilterNode::And(vec![FilterNode::LangIn(vec![
+            "xxx".into(),
+        ])]));
         assert!(
             !errors.is_empty(),
             "expected And to recurse into LangIn and surface its error, got none"

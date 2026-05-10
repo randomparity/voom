@@ -8,8 +8,8 @@
 //! the grammar says they must be.
 #![allow(clippy::unwrap_used)]
 
-use pest::iterators::Pair;
 use pest::Parser;
+use pest::iterators::Pair;
 use pest_derive::Parser;
 
 use crate::ast::{
@@ -1302,9 +1302,11 @@ mod tests {
         assert_eq!(settings.len(), 6);
         assert!(settings.iter().any(|(key, _)| key == "target_vmaf"));
         assert!(settings.iter().any(|(key, _)| key == "fallback"));
-        assert!(settings
-            .iter()
-            .any(|(key, _)| key == "target_vmaf_when content.animation"));
+        assert!(
+            settings
+                .iter()
+                .any(|(key, _)| key == "target_vmaf_when content.animation")
+        );
     }
 
     #[test]

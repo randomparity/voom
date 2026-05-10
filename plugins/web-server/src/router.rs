@@ -1,15 +1,15 @@
 //! Axum router construction.
 
-use axum::http::{header, StatusCode};
+use axum::Router;
+use axum::http::{StatusCode, header};
 use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::Router;
 use tower::limit::ConcurrencyLimitLayer;
 
 use crate::api;
 use crate::errors::ApiError;
-use crate::middleware::{auth_middleware, RateLimitLayer, RequestIdLayer, SecurityHeadersLayer};
+use crate::middleware::{RateLimitLayer, RequestIdLayer, SecurityHeadersLayer, auth_middleware};
 use crate::sse;
 use crate::state::AppState;
 use crate::templates;

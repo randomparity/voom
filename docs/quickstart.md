@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Rust** (2021 edition, stable toolchain)
+- **Rust** (2024 edition, stable toolchain)
 - **ffprobe** and **ffmpeg** (for media introspection and transcoding)
 - **mkvtoolnix** (mkvpropedit + mkvmerge, for MKV operations)
 - **Python 3.11+** with VOOM's setup-managed `.venv` for Python scripts/tests

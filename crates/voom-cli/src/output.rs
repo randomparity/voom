@@ -453,11 +453,7 @@ fn print_format_section(formats: &[String]) {
 
 /// Truncate a hash to a 12-character preview for table display.
 pub fn hash_preview(hash: &str) -> &str {
-    if hash.len() >= 12 {
-        &hash[..12]
-    } else {
-        hash
-    }
+    if hash.len() >= 12 { &hash[..12] } else { hash }
 }
 
 /// Create a table with the standard VOOM style.

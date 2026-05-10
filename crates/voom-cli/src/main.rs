@@ -145,9 +145,10 @@ fn cleanup_wasm_temp_files_in(dir: &std::path::Path) {
             continue;
         };
         if modified < cutoff {
-            if let Err(e) = std::fs::remove_file(entry.path()) {
+            let path = entry.path();
+            if let Err(e) = std::fs::remove_file(&path) {
                 tracing::warn!(
-                    path = %entry.path().display(),
+                    path = %path.display(),
                     error = %e,
                     "failed to remove orphaned WASM temp file"
                 );

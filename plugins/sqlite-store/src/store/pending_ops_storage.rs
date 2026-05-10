@@ -4,7 +4,7 @@ use uuid::Uuid;
 use voom_domain::errors::Result;
 use voom_domain::storage::PendingOperation;
 
-use super::{format_datetime, other_storage_err, storage_err, SqliteStore};
+use super::{SqliteStore, format_datetime, other_storage_err, storage_err};
 
 impl voom_domain::storage::PendingOpsStorage for SqliteStore {
     fn insert_pending_op(&self, op: &PendingOperation) -> Result<()> {

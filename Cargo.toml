@@ -43,10 +43,10 @@ exclude = [
 missing_errors_doc = "allow"
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 authors = ["David Christensen"]
 license = "AGPL-3.0-or-later"
-rust-version = "1.82"
+rust-version = "1.85"
 repository = "https://github.com/randomparity/voom"
 readme = "README.md"
 keywords = ["video", "media", "policy", "mkvtoolnix", "ffmpeg"]

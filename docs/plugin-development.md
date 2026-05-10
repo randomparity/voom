@@ -127,7 +127,7 @@ plugins/
 [package]
 name = "my-plugin"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 voom-kernel = { path = "../../crates/voom-kernel" }
@@ -300,7 +300,7 @@ wasm-plugins/
 [package]
 name = "my-wasm-plugin"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 crate-type = ["cdylib"]

@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
-use console::{style, StyledObject};
+use console::{StyledObject, style};
 use serde::Serialize;
 use voom_backup_manager::destination::BackupDestinationConfig;
 use voom_backup_manager::inventory::{RemoteBackupInventory, RemoteBackupInventoryRecord};
@@ -643,7 +643,8 @@ fn cleanup(roots: &[PathBuf], destination: Option<&str>, yes: bool) -> Result<()
     let mut removed = 0u64;
     let mut errors = 0u64;
     for entry in &entries {
-        match voom_backup_manager::backup::remove_vbak_file(&entry.backup_path) {
+        let remove_result = voom_backup_manager::backup::remove_vbak_file(&entry.backup_path);
+        match remove_result {
             Ok(()) => removed += 1,
             Err(e) => {
                 eprintln!(
@@ -699,10 +700,11 @@ fn cleanup_remote(destination: &str, yes: bool) -> Result<()> {
     let mut deleted_ids = HashSet::new();
     let mut errors = 0u64;
     for record in &plan.delete {
-        match voom_backup_manager::destination::delete_with_rclone(
+        let delete_result = voom_backup_manager::destination::delete_with_rclone(
             &backup_config.rclone_path,
             &record.remote_path,
-        ) {
+        );
+        match delete_result {
             Ok(()) => {
                 deleted_ids.insert(record.backup_id);
             }

@@ -111,12 +111,10 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
             stderr_tail: tail,
             duration_ms,
         };
-        Ok(vec![ActionResult::failure(
-            actions[0].operation,
-            &actions[0].description,
-            &error_msg,
-        )
-        .with_execution_detail(detail)])
+        Ok(vec![
+            ActionResult::failure(actions[0].operation, &actions[0].description, &error_msg)
+                .with_execution_detail(detail),
+        ])
     }
 }
 

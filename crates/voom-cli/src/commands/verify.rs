@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use console::style;
 use rayon::prelude::*;
@@ -16,8 +16,8 @@ use voom_domain::storage::StorageTrait;
 use voom_domain::verification::{
     VerificationFilters, VerificationMode, VerificationOutcome, VerificationRecord,
 };
-use voom_verifier::hwaccel::{self as verifier_hwaccel, HwAccelMode};
 use voom_verifier::VerifierConfig;
+use voom_verifier::hwaccel::{self as verifier_hwaccel, HwAccelMode};
 
 use crate::app;
 use crate::cli::{HwAccelArg, OutputFormat, VerifyArgs, VerifyCommands, VerifyReportArgs};

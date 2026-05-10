@@ -1740,10 +1740,14 @@ mod test_health {
 
         assert!(doctor.status.success());
         assert!(health.status.success());
-        assert!(String::from_utf8_lossy(&health.stderr)
-            .contains("warning: `voom health` is deprecated; use `voom env` instead"));
-        assert!(String::from_utf8_lossy(&doctor.stderr)
-            .contains("warning: `voom doctor` is deprecated; use `voom env check` instead"));
+        assert!(
+            String::from_utf8_lossy(&health.stderr)
+                .contains("warning: `voom health` is deprecated; use `voom env` instead")
+        );
+        assert!(
+            String::from_utf8_lossy(&doctor.stderr)
+                .contains("warning: `voom doctor` is deprecated; use `voom env check` instead")
+        );
         let h = String::from_utf8_lossy(&health.stdout);
         let d = String::from_utf8_lossy(&doctor.stdout);
         assert!(h.contains("VOOM Environment Check"));
@@ -4257,9 +4261,11 @@ policy "fixture-extract" {
         let fixture_json: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("fixture extract emits JSON");
         assert_eq!(fixture_json["path"], "basic-h264-aac.mp4");
-        assert!(fixture_json["tracks"]
-            .as_array()
-            .is_some_and(|tracks| !tracks.is_empty()));
+        assert!(
+            fixture_json["tracks"]
+                .as_array()
+                .is_some_and(|tracks| !tracks.is_empty())
+        );
         for stripped_field in [
             "bitrate",
             "content_hash",

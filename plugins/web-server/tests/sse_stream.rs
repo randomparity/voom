@@ -19,7 +19,7 @@ use tokio::sync::broadcast;
 use tokio::time::timeout;
 
 use voom_domain::test_support::InMemoryStore;
-use voom_web_server::state::{AppState, SseEvent, SSE_CHANNEL_CAPACITY};
+use voom_web_server::state::{AppState, SSE_CHANNEL_CAPACITY, SseEvent};
 
 /// Read from the socket until the HTTP response header block (`\r\n\r\n`) has
 /// been consumed. Returns any bytes already read past the header boundary so

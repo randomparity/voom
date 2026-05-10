@@ -29,10 +29,10 @@ use voom_domain::utils::language::is_valid_language;
 use voom_domain::utils::sanitize::validate_metadata_value;
 use voom_kernel::{Plugin, PluginContext};
 
-use crate::hwaccel::{resolve_hw_config, HwAccelBackend, HwAccelConfig};
+use crate::hwaccel::{HwAccelBackend, HwAccelConfig, resolve_hw_config};
 use crate::probe::{
-    enumerate_gpus, probe_capabilities, validate_hw_encoder, validate_hw_encoder_on_device,
-    validate_hw_encoders_parallel, GpuDevice,
+    GpuDevice, enumerate_gpus, probe_capabilities, validate_hw_encoder,
+    validate_hw_encoder_on_device, validate_hw_encoders_parallel,
 };
 
 /// Per-plugin configuration from `[plugin.ffmpeg-executor]` in config.toml.
@@ -412,11 +412,10 @@ impl FfmpegExecutorPlugin {
                     stderr_tail: String::new(),
                     duration_ms,
                 };
-                Ok(vec![voom_domain::plan::ActionResult::success(
-                    action.operation,
-                    &action.description,
-                )
-                .with_execution_detail(detail)])
+                Ok(vec![
+                    voom_domain::plan::ActionResult::success(action.operation, &action.description)
+                        .with_execution_detail(detail),
+                ])
             }
             Ok(o) => {
                 let _ = std::fs::remove_file(&temp_path);
@@ -438,12 +437,14 @@ impl FfmpegExecutorPlugin {
                     stderr_tail: tail,
                     duration_ms,
                 };
-                Ok(vec![voom_domain::plan::ActionResult::failure(
-                    action.operation,
-                    &action.description,
-                    &error_msg,
-                )
-                .with_execution_detail(detail)])
+                Ok(vec![
+                    voom_domain::plan::ActionResult::failure(
+                        action.operation,
+                        &action.description,
+                        &error_msg,
+                    )
+                    .with_execution_detail(detail),
+                ])
             }
             Err(e) => {
                 let _ = std::fs::remove_file(&temp_path);

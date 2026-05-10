@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use console::style;
 use serde::Serialize;
 use serde_json::Value;
 use voom_policy_testing::{
-    assert_snapshot_file, CapabilityFixture, Fixture, SnapshotOutcome, TestSuite,
+    CapabilityFixture, Fixture, SnapshotOutcome, TestSuite, assert_snapshot_file,
 };
 
 use crate::cli::{PolicyCommands, PolicyFixtureCommands};

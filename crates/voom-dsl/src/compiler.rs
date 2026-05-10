@@ -802,7 +802,7 @@ fn topological_sort(ast: &PolicyAst) -> std::result::Result<Vec<String>, DslErro
 
     let mut queue: Vec<&str> = in_degree
         .iter()
-        .filter(|(_, &d)| d == 0)
+        .filter(|&(_, &d)| d == 0)
         .map(|(&n, _)| n)
         .collect();
     queue.sort_unstable(); // deterministic ordering

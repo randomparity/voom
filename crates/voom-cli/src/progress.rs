@@ -7,15 +7,15 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use console::style;
 use indicatif::{HumanDuration, ProgressBar, ProgressStyle};
 use parking_lot::Mutex;
 
-use crate::output::{max_filename_len, shrink_filename, PROGRESS_FIXED_WIDTH};
+use crate::output::{PROGRESS_FIXED_WIDTH, max_filename_len, shrink_filename};
 use voom_domain::events::FileDiscoveredEvent;
 use voom_job_manager::progress::ProgressReporter;
 

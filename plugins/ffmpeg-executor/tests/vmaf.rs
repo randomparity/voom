@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use voom_ffmpeg_executor::vmaf::{
-    compute_vmaf, pick_model_for_resolution, FullSample, SampleExtractor, SceneSample,
-    UniformSample, VmafError, VmafModel,
+    FullSample, SampleExtractor, SceneSample, UniformSample, VmafError, VmafModel, compute_vmaf,
+    pick_model_for_resolution,
 };
 
 fn ffmpeg_available() -> bool {

@@ -30,10 +30,10 @@ use super::safeguards::{
     collect_safeguard_violations, dispatch_safeguard_violations,
 };
 use super::transitions::{
-    record_failure_transition, record_file_transition, FailureTransitionContext,
-    FileTransitionContext,
+    FailureTransitionContext, FileTransitionContext, record_failure_transition,
+    record_file_transition,
 };
-use super::{record_phase_stat, PhaseOutcomeKind, ProcessContext};
+use super::{PhaseOutcomeKind, ProcessContext, record_phase_stat};
 
 use crate::introspect::DiscoveredFilePayload;
 
@@ -620,7 +620,7 @@ async fn reintrospect_file(
 
     let ffp = ctx.ffprobe_path.map(String::from);
     let kernel_clone = ctx.kernel.clone();
-    match crate::introspect::introspect_file_no_dispatch(
+    let introspection_result = crate::introspect::introspect_file_no_dispatch(
         current_path.clone(),
         size,
         hash.clone(),
@@ -628,8 +628,8 @@ async fn reintrospect_file(
         ffp.as_deref(),
         ctx.animation_detection_mode,
     )
-    .await
-    {
+    .await;
+    match introspection_result {
         Ok(mut new_file) => {
             preserve_persisted_file_identity(file, &mut new_file);
             // Preserve plugin_metadata from prior phases
@@ -875,8 +875,8 @@ fn savings_below_threshold(plan: &Plan, ctx: &ProcessContext<'_>) -> bool {
 mod tests {
     use std::future::Future;
     use std::pin::Pin;
-    use std::sync::mpsc;
     use std::sync::Arc;
+    use std::sync::mpsc;
     use std::time::Duration;
 
     use voom_domain::capabilities::Capability;

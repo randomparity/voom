@@ -7,7 +7,7 @@ use voom_domain::bad_file::BadFile;
 use voom_domain::errors::Result;
 use voom_domain::storage::{BadFileFilters, BadFileStorage};
 
-use super::{escape_like, row_to_bad_file, storage_err, OptionalExt, SqlQuery, SqliteStore};
+use super::{OptionalExt, SqlQuery, SqliteStore, escape_like, row_to_bad_file, storage_err};
 
 /// Delete the `bad_files` row at `path` using the supplied connection.
 /// Accepts any `&rusqlite::Connection`, including one obtained via `Deref`
@@ -306,10 +306,12 @@ mod tests {
             .unwrap()
             .unwrap();
         store.delete_bad_file(&stored.id).unwrap();
-        assert!(store
-            .bad_file_by_path(Path::new("/media/bad.mkv"))
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .bad_file_by_path(Path::new("/media/bad.mkv"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -321,10 +323,12 @@ mod tests {
         store
             .delete_bad_file_by_path(Path::new("/media/bad.mkv"))
             .unwrap();
-        assert!(store
-            .bad_file_by_path(Path::new("/media/bad.mkv"))
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .bad_file_by_path(Path::new("/media/bad.mkv"))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

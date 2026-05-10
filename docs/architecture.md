@@ -339,7 +339,7 @@ Built with axum 0.7, Tera templates, htmx for server-driven updates, and Alpine.
 
 | Component | Technology |
 |-----------|-----------|
-| Language | Rust 2021 edition |
+| Language | Rust 2024 edition |
 | CLI | clap (derive) |
 | Web server | axum 0.7 + tower + tokio |
 | Web frontend | htmx + Alpine.js + Tera templates |

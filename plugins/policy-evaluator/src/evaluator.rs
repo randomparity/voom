@@ -21,7 +21,7 @@ use voom_dsl::compiled::{
 };
 
 use crate::condition::{
-    evaluate_condition, resolve_value_or_field, EvalContext, PhaseOutputLookup,
+    EvalContext, PhaseOutputLookup, evaluate_condition, resolve_value_or_field,
 };
 use crate::container_compat::codec_supported;
 use crate::filter::{track_matches_with_context, tracks_for_target};
@@ -289,7 +289,8 @@ fn evaluate_phase(
     };
 
     for op in &phase.operations {
-        if let Err(msg) = emit_operation(op, &mut ctx) {
+        let emit_result = emit_operation(op, &mut ctx);
+        if let Err(msg) = emit_result {
             match phase.on_error {
                 ErrorStrategy::Abort => {
                     ctx.plan.warnings.push(format!("Error (aborting): {msg}"));
@@ -1685,11 +1686,13 @@ mod tests {
         let result = evaluate(&policy, &file);
         // containerize produces no actions (already MKV), so not modified
         assert!(result.plans[1].is_skipped());
-        assert!(result.plans[1]
-            .skip_reason
-            .as_ref()
-            .unwrap()
-            .contains("run_if"));
+        assert!(
+            result.plans[1]
+                .skip_reason
+                .as_ref()
+                .unwrap()
+                .contains("run_if")
+        );
     }
 
     #[test]
@@ -1754,11 +1757,13 @@ mod tests {
         assert!(result.plans[0].is_skipped(), "tc should be skipped");
         // post_tc has run_if tc.completed — tc was skipped not completed, so post_tc skips
         assert!(result.plans[1].is_skipped(), "post_tc should be skipped");
-        assert!(result.plans[1]
-            .skip_reason
-            .as_ref()
-            .expect("skip reason")
-            .contains("run_if"));
+        assert!(
+            result.plans[1]
+                .skip_reason
+                .as_ref()
+                .expect("skip reason")
+                .contains("run_if")
+        );
     }
 
     #[test]
@@ -2160,11 +2165,12 @@ mod tests {
             .filter(|a| a.operation == OperationType::RemoveTrack)
             .collect();
         assert_eq!(removes.len(), 0, "safeguard should retract video removal");
-        assert!(plan
-            .safeguard_violations
-            .iter()
-            .any(|v| v.kind == voom_domain::SafeguardKind::NoVideoTrack
-                || v.kind == voom_domain::SafeguardKind::AllTracksRemoved));
+        assert!(
+            plan.safeguard_violations
+                .iter()
+                .any(|v| v.kind == voom_domain::SafeguardKind::NoVideoTrack
+                    || v.kind == voom_domain::SafeguardKind::AllTracksRemoved)
+        );
     }
 
     // --- ContainerIncompatible safeguard tests ---
@@ -2200,10 +2206,11 @@ mod tests {
                 .any(|a| a.operation == OperationType::ConvertContainer),
             "ConvertContainer should be retracted"
         );
-        assert!(plan
-            .safeguard_violations
-            .iter()
-            .any(|v| v.kind == SafeguardKind::ContainerIncompatible));
+        assert!(
+            plan.safeguard_violations
+                .iter()
+                .any(|v| v.kind == SafeguardKind::ContainerIncompatible)
+        );
     }
 
     #[test]
@@ -2225,10 +2232,11 @@ mod tests {
                 .any(|a| a.operation == OperationType::ConvertContainer),
             "ConvertContainer should remain"
         );
-        assert!(plan
-            .safeguard_violations
-            .iter()
-            .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+        assert!(
+            plan.safeguard_violations
+                .iter()
+                .all(|v| v.kind != SafeguardKind::ContainerIncompatible)
+        );
     }
 
     #[test]
@@ -2241,10 +2249,11 @@ mod tests {
         let policy = test_policy(r#"policy "p" { phase init { container mkv } }"#);
         let result = evaluate(&policy, &file);
         let plan = &result.plans[0];
-        assert!(plan
-            .safeguard_violations
-            .iter()
-            .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+        assert!(
+            plan.safeguard_violations
+                .iter()
+                .all(|v| v.kind != SafeguardKind::ContainerIncompatible)
+        );
     }
 
     #[test]
@@ -2280,10 +2289,11 @@ mod tests {
                 .any(|a| a.operation == OperationType::ConvertContainer),
             "ConvertContainer should remain — dts track is removed"
         );
-        assert!(plan
-            .safeguard_violations
-            .iter()
-            .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+        assert!(
+            plan.safeguard_violations
+                .iter()
+                .all(|v| v.kind != SafeguardKind::ContainerIncompatible)
+        );
     }
 
     #[test]
@@ -2315,10 +2325,11 @@ mod tests {
                 .any(|a| a.operation == OperationType::ConvertContainer),
             "ConvertContainer should remain — dts is transcoded to aac"
         );
-        assert!(plan
-            .safeguard_violations
-            .iter()
-            .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+        assert!(
+            plan.safeguard_violations
+                .iter()
+                .all(|v| v.kind != SafeguardKind::ContainerIncompatible)
+        );
     }
 
     #[test]
@@ -2397,10 +2408,11 @@ mod tests {
                 .any(|a| a.operation == OperationType::ConvertContainer),
             "ConvertContainer should remain — synthesized Opus is WebM-compatible"
         );
-        assert!(plan
-            .safeguard_violations
-            .iter()
-            .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+        assert!(
+            plan.safeguard_violations
+                .iter()
+                .all(|v| v.kind != SafeguardKind::ContainerIncompatible)
+        );
     }
 
     #[test]
@@ -2420,10 +2432,11 @@ mod tests {
                 .any(|a| a.operation == OperationType::ConvertContainer),
             "ConvertContainer should remain — mov is unmodeled"
         );
-        assert!(plan
-            .safeguard_violations
-            .iter()
-            .all(|v| v.kind != SafeguardKind::ContainerIncompatible));
+        assert!(
+            plan.safeguard_violations
+                .iter()
+                .all(|v| v.kind != SafeguardKind::ContainerIncompatible)
+        );
     }
 
     // --- Verify operation tests ---
@@ -2785,11 +2798,13 @@ mod tests {
                 result.plans[0].is_skipped(),
                 "Should skip when nvenc unavailable and hw_fallback is false"
             );
-            assert!(result.plans[0]
-                .skip_reason
-                .as_ref()
-                .expect("skip reason")
-                .contains("nvenc"));
+            assert!(
+                result.plans[0]
+                    .skip_reason
+                    .as_ref()
+                    .expect("skip reason")
+                    .contains("nvenc")
+            );
         }
 
         #[test]
@@ -3156,11 +3171,12 @@ mod tests {
         let plan = evaluate_single_phase("post_tc", &policy, &file, &outcomes, None);
         let plan = plan.expect("phase should be evaluated");
         assert!(plan.is_skipped());
-        assert!(plan
-            .skip_reason
-            .as_ref()
-            .expect("should have skip reason")
-            .contains("run_if"));
+        assert!(
+            plan.skip_reason
+                .as_ref()
+                .expect("should have skip reason")
+                .contains("run_if")
+        );
     }
 
     #[test]
@@ -3189,11 +3205,12 @@ mod tests {
         let plan = evaluate_single_phase("post_tc", &policy, &file, &outcomes, None);
         let plan = plan.expect("phase should be evaluated");
         assert!(plan.is_skipped());
-        assert!(plan
-            .skip_reason
-            .as_ref()
-            .expect("should have skip reason")
-            .contains("run_if"));
+        assert!(
+            plan.skip_reason
+                .as_ref()
+                .expect("should have skip reason")
+                .contains("run_if")
+        );
     }
 
     #[test]
@@ -3252,11 +3269,12 @@ mod tests {
         let plan = evaluate_single_phase("post_tc", &policy, &file, &outcomes, None);
         let plan = plan.expect("phase should be evaluated");
         assert!(plan.is_skipped());
-        assert!(plan
-            .skip_reason
-            .as_ref()
-            .expect("should have skip reason")
-            .contains("run_if"));
+        assert!(
+            plan.skip_reason
+                .as_ref()
+                .expect("should have skip reason")
+                .contains("run_if")
+        );
     }
 
     #[test]
@@ -3285,11 +3303,12 @@ mod tests {
         let plan = evaluate_single_phase("post_tc", &policy, &file, &outcomes, None);
         let plan = plan.expect("phase should be evaluated");
         assert!(plan.is_skipped());
-        assert!(plan
-            .skip_reason
-            .as_ref()
-            .expect("should have skip reason")
-            .contains("run_if"));
+        assert!(
+            plan.skip_reason
+                .as_ref()
+                .expect("should have skip reason")
+                .contains("run_if")
+        );
     }
 
     #[test]

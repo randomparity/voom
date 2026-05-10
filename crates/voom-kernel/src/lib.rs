@@ -11,8 +11,8 @@ pub mod registry;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{Event, EventResult};
@@ -342,10 +342,14 @@ impl Kernel {
 
         let subscribers = self.bus.subscribers_ordered();
         for (name, plugin) in subscribers.iter().rev() {
-            if let Err(e) = plugin.shutdown() {
-                tracing::error!(plugin = %name, error = %e, "plugin shutdown failed");
-            } else {
-                tracing::debug!(plugin = %name, "plugin shut down");
+            let shutdown_result = plugin.shutdown();
+            match shutdown_result {
+                Err(e) => {
+                    tracing::error!(plugin = %name, error = %e, "plugin shutdown failed");
+                }
+                _ => {
+                    tracing::debug!(plugin = %name, "plugin shut down");
+                }
             }
         }
         tracing::info!("kernel shutdown complete");

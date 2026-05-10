@@ -14,10 +14,10 @@
 use voom_domain::events::{Event, PlanFailedEvent};
 use voom_domain::utils::format::format_size;
 
-use super::dispatch::{dispatch_and_log, PlanDispatcher};
+use super::dispatch::{PlanDispatcher, dispatch_and_log};
 use super::pipeline::resolve_post_execution_path;
-use super::transitions::{record_failure_transition, FailureTransitionContext};
-use super::{record_phase_stat, PhaseOutcomeKind, ProcessContext};
+use super::transitions::{FailureTransitionContext, record_failure_transition};
+use super::{PhaseOutcomeKind, ProcessContext, record_phase_stat};
 
 /// Dispatch `PlanFailed`, record phase stats, and write a failure transition.
 ///

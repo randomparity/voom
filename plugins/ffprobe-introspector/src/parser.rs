@@ -772,10 +772,12 @@ mod tests {
         assert_eq!(track.color_matrix.as_deref(), Some("bt2020nc"));
         assert_eq!(track.max_cll, Some(1000));
         assert_eq!(track.max_fall, Some(400));
-        assert!(track
-            .master_display
-            .as_deref()
-            .is_some_and(|value| value.contains("G(8500,39850)")));
+        assert!(
+            track
+                .master_display
+                .as_deref()
+                .is_some_and(|value| value.contains("G(8500,39850)"))
+        );
         assert_eq!(track.is_animation, None);
     }
 

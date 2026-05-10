@@ -318,7 +318,7 @@ mod tests {
     use chrono::TimeZone;
 
     use crate::estimate::{
-        estimate_plans, CostModelSample, EstimateInput, EstimateModel, EstimateOperationKey,
+        CostModelSample, EstimateInput, EstimateModel, EstimateOperationKey, estimate_plans,
     };
     use crate::media::{Container, MediaFile, Track, TrackType};
     use crate::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};

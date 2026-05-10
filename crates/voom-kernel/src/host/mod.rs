@@ -425,9 +425,11 @@ mod tests {
             .with_capabilities(HashSet::from(["execute:tool".to_string()]));
         let result = state.run_tool("echo", &["/etc/passwd".into()], 5000);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("not within allowed directories"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("not within allowed directories")
+        );
     }
 
     #[test]
@@ -445,9 +447,11 @@ mod tests {
         // /etc/passwd exists and will canonicalize to itself — outside allowed dir
         let result = state.run_tool("echo", &["/etc/passwd".into()], 5000);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .contains("not within allowed directories"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("not within allowed directories")
+        );
     }
 
     #[test]

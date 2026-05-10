@@ -1,13 +1,13 @@
 //! `TranscodeOutcomeStorage` implementation backed by SQLite.
 
-use rusqlite::{params, Row};
+use rusqlite::{Row, params};
 
 use voom_domain::errors::Result;
 use voom_domain::storage::{TranscodeOutcomeFilters, TranscodeOutcomeStorage};
 use voom_domain::transcode::TranscodeOutcome;
 
-use super::{format_datetime, parse_required_datetime, row_uuid, storage_err, SqlQuery};
-use super::{other_storage_err, SqliteStore};
+use super::{SqlQuery, format_datetime, parse_required_datetime, row_uuid, storage_err};
+use super::{SqliteStore, other_storage_err};
 
 const SELECT_TRANSCODE_OUTCOME: &str = "SELECT id, file_id, target_vmaf, achieved_vmaf, \
     crf_used, bitrate_used, iterations, sample_strategy, fallback_used, completed_at \

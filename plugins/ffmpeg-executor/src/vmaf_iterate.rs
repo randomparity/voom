@@ -6,7 +6,7 @@ use std::process::Output;
 use std::time::Duration;
 
 use crate::vmaf::{
-    compute_vmaf, pick_model_for_resolution, SampleError, SampleExtractor, VmafError, VmafModel,
+    SampleError, SampleExtractor, VmafError, VmafModel, compute_vmaf, pick_model_for_resolution,
 };
 
 const DEFAULT_START_CRF: u32 = 23;

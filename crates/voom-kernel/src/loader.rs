@@ -19,10 +19,10 @@ fn expand_tilde(path: &str) -> std::path::PathBuf {
 pub mod wasm {
     use std::sync::Arc;
 
+    use crate::Plugin;
     use crate::errors::WasmLoadError;
     use crate::host::HostState;
     use crate::manifest::PluginManifest;
-    use crate::Plugin;
     use parking_lot::Mutex;
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -712,7 +712,7 @@ pub mod wasm {
                 return Err(WasmLoadError::UnexpectedValue(format!(
                     "expected Record for event-result, got {:?}",
                     std::mem::discriminant(other)
-                )))
+                )));
             }
         };
 
@@ -1584,14 +1584,18 @@ Evaluate = {}
 
             let state = HostState::new("test-plugin".into());
             let metadata = read_file_metadata(&state, &file_path.to_string_lossy());
-            assert!(metadata
-                .unwrap_err()
-                .contains("not within allowed directories"));
+            assert!(
+                metadata
+                    .unwrap_err()
+                    .contains("not within allowed directories")
+            );
 
             let files = list_files(&state, &dir.path().to_string_lossy(), "");
-            assert!(files
-                .unwrap_err()
-                .contains("not within allowed directories"));
+            assert!(
+                files
+                    .unwrap_err()
+                    .contains("not within allowed directories")
+            );
         }
 
         #[test]
@@ -1628,14 +1632,18 @@ Evaluate = {}
             let state = HostState::new("test-plugin".into()).with_paths(vec![allowed_dir]);
 
             let metadata = read_file_metadata(&state, &blocked_file.to_string_lossy());
-            assert!(metadata
-                .unwrap_err()
-                .contains("not within allowed directories"));
+            assert!(
+                metadata
+                    .unwrap_err()
+                    .contains("not within allowed directories")
+            );
 
             let files = list_files(&state, &blocked_dir.path().to_string_lossy(), "");
-            assert!(files
-                .unwrap_err()
-                .contains("not within allowed directories"));
+            assert!(
+                files
+                    .unwrap_err()
+                    .contains("not within allowed directories")
+            );
         }
 
         #[test]

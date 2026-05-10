@@ -5,10 +5,10 @@ use std::time::Duration;
 use uuid::Uuid;
 use voom_backup_manager::destination::{BackupDestinationConfig, DestinationKind};
 use voom_domain::storage::{HealthCheckFilters, HealthCheckRecord};
-use voom_ffmpeg_executor::hwaccel::{resolve_hw_config, HwAccelBackend};
+use voom_ffmpeg_executor::hwaccel::{HwAccelBackend, resolve_hw_config};
 use voom_ffmpeg_executor::probe::{
-    enumerate_gpus, probe_hw_capabilities, validate_hw_encoder, validate_hw_encoder_on_device,
-    validate_hw_encoders_parallel_with_status, GpuDevice, HwCapabilities,
+    GpuDevice, HwCapabilities, enumerate_gpus, probe_hw_capabilities, validate_hw_encoder,
+    validate_hw_encoder_on_device, validate_hw_encoders_parallel_with_status,
 };
 
 use crate::app;
@@ -1138,11 +1138,13 @@ mod tests {
         let record: HealthCheckRecord = super::env_snapshot_record(&report, true, &[]);
 
         assert!(!record.passed);
-        assert!(record
-            .details
-            .as_deref()
-            .unwrap_or_default()
-            .contains("\"vmaf_model_status\":\"missing\""));
+        assert!(
+            record
+                .details
+                .as_deref()
+                .unwrap_or_default()
+                .contains("\"vmaf_model_status\":\"missing\"")
+        );
     }
 
     #[test]
@@ -1177,11 +1179,13 @@ remote = "s3:bucket/secret-path"
             checks[0].status,
             super::BackupDestinationHealthStatus::Healthy
         );
-        assert!(!checks[0]
-            .details
-            .as_deref()
-            .unwrap_or_default()
-            .contains("secret-path"));
+        assert!(
+            !checks[0]
+                .details
+                .as_deref()
+                .unwrap_or_default()
+                .contains("secret-path")
+        );
         assert!(commands.iter().any(|args| args[0] == "copyto"));
         assert!(commands.iter().any(|args| args[0] == "deletefile"));
     }
@@ -1281,17 +1285,19 @@ remote = "s3:bucket-b"
             super::BackupDestinationHealthStatus::ConfigInvalid
         );
         assert!(!checks[0].passed);
-        assert!(checks[0]
-            .details
-            .as_deref()
-            .unwrap_or_default()
-            .contains("duplicate backup destination"));
+        assert!(
+            checks[0]
+                .details
+                .as_deref()
+                .unwrap_or_default()
+                .contains("duplicate backup destination")
+        );
     }
 }
 
 #[cfg(test)]
 mod retention_coverage_tests {
-    use super::retention_coverage::{evaluate, evaluate_query_results, CoverageStatus};
+    use super::retention_coverage::{CoverageStatus, evaluate, evaluate_query_results};
     use chrono::{Duration, Utc};
     use voom_domain::errors::{StorageErrorKind, VoomError};
 
