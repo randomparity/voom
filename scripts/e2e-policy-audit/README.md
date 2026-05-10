@@ -32,6 +32,15 @@ All flags have defaults (see `run.sh --help`):
 | `--no-web` | (off) | Skip the `voom serve` smoke-test |
 | `--no-probe` | (off) | Skip the independent `ffprobe` sweep (DB-only diffs) |
 
+After a failed run, inspect `diffs/failure-clusters.md` first. To materialize a
+small library containing representative problem files:
+
+```bash
+~/voom-e2e-runs/<run>/repro/copy-repro-set.sh /tmp/voom-repro-library
+```
+
+Then rerun the harness against `/tmp/voom-repro-library` with the same policy.
+
 ## Pre-conditions
 
 - `~/.config/voom/voom.db` must NOT exist.
@@ -48,14 +57,18 @@ All flags have defaults (see `run.sh --help`):
 ├── manifest.json                 run metadata + per-stage timings
 ├── pre/, post/                   library snapshots (find manifest + ffprobe NDJSON + DB NDJSON)
 │   └── voom-db-tables/           raw SQLite export (per-table TSV) post-scan / post-process
+├── env/                          tool versions, GPU state, policy copy, redacted config
 ├── logs/                         one file per CLI invocation, plus *.rc exit-code sidecars
 ├── db-export/                    raw SQLite tables (post-process; consumed by build-summary)
 ├── reports/                      voom report --all, files, plans, jobs, events.json
+├── repro/                        problem-file lists + copy-repro-set.sh
 ├── web-smoke/                    curl statuses + body samples
 ├── diffs/
 │   ├── files-summary.md          path-level (size/mtime/disappeared/new/common)
 │   ├── codec-pivot.md            video-codec × container counts: pre vs post
 │   ├── tracks-pivot.md           audio + subtitle pivots
+│   ├── failure-clusters.tsv/.md   failed plans grouped by signature/source shape
+│   ├── *-summary.tsv/.md          high-level diff class counts
 │   ├── db-vs-ffprobe-pre.tsv     VOOM introspection accuracy at scan time
 │   ├── db-vs-ffprobe-post.tsv    VOOM re-introspection accuracy after process
 │   ├── voom-db-pre-vs-post.tsv   what VOOM thinks changed
@@ -74,6 +87,18 @@ The harness does **not** judge whether your policy did the *right thing*. To
 do that, read `diffs/codec-pivot.md`, `diffs/tracks-pivot.md`, and the four
 `*.tsv` ndjson diffs — they describe what changed without prescribing what
 *should* have changed.
+
+For large runs, start with the aggregate views:
+
+- `diffs/failure-clusters.md` groups failed plans by phase, error signature,
+  exit code, source container, and source video codec.
+- `diffs/db-vs-ffprobe-post-summary.md` groups post-run introspection
+  divergences by stable signatures such as subtitle default drift or attachment
+  promotion.
+- `diffs/ffprobe-pre-vs-post-summary.md` groups actual on-disk metadata changes
+  independently of VOOM's DB view.
+- `repro/minimal-covering-set.tsv` picks a capped set of representative files
+  per failure/diff signature for faster follow-up runs.
 
 ## Canonical metadata comparison
 
