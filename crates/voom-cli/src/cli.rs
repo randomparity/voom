@@ -37,6 +37,9 @@ pub enum Commands {
     /// Apply policy to files
     Process(ProcessArgs),
 
+    /// Estimate policy cost without modifying files
+    Estimate(EstimateArgs),
+
     /// Policy management
     #[command(subcommand)]
     Policy(PolicyCommands),
@@ -230,6 +233,29 @@ pub struct ProcessArgs {
     /// Assign job priority based on file modification date
     #[arg(long)]
     pub priority_by_date: bool,
+}
+
+#[derive(clap::Args)]
+pub struct EstimateArgs {
+    /// Directories or files to estimate
+    #[arg(required = true, num_args = 1..)]
+    pub paths: Vec<PathBuf>,
+
+    /// Policy file (.voom) to estimate
+    #[arg(short, long, conflicts_with = "policy_map")]
+    pub policy: Option<PathBuf>,
+
+    /// TOML file mapping directory prefixes to policies
+    #[arg(long, conflicts_with = "policy")]
+    pub policy_map: Option<PathBuf>,
+
+    /// Number of parallel workers to use for wall-time estimates
+    #[arg(short, long, default_value_t = 0)]
+    pub workers: usize,
+
+    /// Re-introspect every file from scratch before estimating
+    #[arg(long)]
+    pub force_rescan: bool,
 }
 
 fn parse_size_bytes(value: &str) -> std::result::Result<u64, String> {
@@ -1180,6 +1206,18 @@ mod tests {
                 assert_eq!(args.confirm_savings, Some(1_000_000_000));
             }
             _ => panic!("expected Process"),
+        }
+    }
+
+    #[test]
+    fn test_estimate_command() {
+        let cli = parse(&["voom", "estimate", "/media", "--policy", "p.voom"]);
+        match cli.command {
+            Commands::Estimate(args) => {
+                assert_eq!(args.paths, vec![PathBuf::from("/media")]);
+                assert_eq!(args.policy, Some(PathBuf::from("p.voom")));
+            }
+            _ => panic!("expected Estimate"),
         }
     }
 
