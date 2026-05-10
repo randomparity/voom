@@ -5,6 +5,8 @@ import random
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
+import pytest
+
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "generate-test-corpus"
 
@@ -19,8 +21,12 @@ def load_generator():
     return module
 
 
-def test_select_specs_filters_by_profile_only_and_skip():
-    generator = load_generator()
+@pytest.fixture
+def generator():
+    return load_generator()
+
+
+def test_select_specs_filters_by_profile_only_and_skip(generator):
     specs = [
         {"stem": "a", "profiles": ["smoke", "coverage"]},
         {"stem": "b", "profiles": ["coverage"]},
@@ -37,8 +43,7 @@ def test_select_specs_filters_by_profile_only_and_skip():
     assert [spec["stem"] for spec in selected] == ["a"]
 
 
-def test_select_specs_all_includes_coverage_and_stress():
-    generator = load_generator()
+def test_select_specs_all_includes_coverage_and_stress(generator):
     specs = [
         {"stem": "coverage-case", "profiles": ["coverage"]},
         {"stem": "stress-case", "profiles": ["stress"]},
@@ -54,9 +59,7 @@ def test_select_specs_all_includes_coverage_and_stress():
     ]
 
 
-def test_build_manifest_smoke_profile_is_expected_fast_subset():
-    generator = load_generator()
-
+def test_build_manifest_smoke_profile_is_expected_fast_subset(generator):
     selected = generator.select_specs(
         generator.build_manifest(),
         profile="smoke",
@@ -73,9 +76,7 @@ def test_build_manifest_smoke_profile_is_expected_fast_subset():
     ]
 
 
-def test_build_run_manifest_records_generated_skipped_failed_and_corruptions():
-    generator = load_generator()
-
+def test_build_run_manifest_records_generated_skipped_failed_and_corruptions(generator):
     manifest = generator.build_run_manifest(
         profile="coverage",
         duration=2,
@@ -130,8 +131,7 @@ def test_build_run_manifest_records_generated_skipped_failed_and_corruptions():
     assert manifest["failed"][0]["covers"] == ["audio.codec.truehd"]
 
 
-def test_write_run_manifest_uses_stable_json_format(tmp_path):
-    generator = load_generator()
+def test_write_run_manifest_uses_stable_json_format(generator, tmp_path):
     manifest = {"z": 1, "a": {"b": 2}}
 
     path = generator.write_run_manifest(tmp_path, manifest)
@@ -140,8 +140,33 @@ def test_write_run_manifest_uses_stable_json_format(tmp_path):
     assert path.read_text() == '{\n  "a": {\n    "b": 2\n  },\n  "z": 1\n}\n'
 
 
-def test_select_and_corrupt_reports_final_filenames_and_sizes(tmp_path):
-    generator = load_generator()
+def test_corruption_final_path_renames_mp4_to_mkv(generator):
+    path = Path("fixture.mp4")
+
+    final_path = generator.corruption_final_path(path, "wrong_extension")
+
+    assert final_path == Path("fixture.mkv")
+
+
+def test_corruption_final_path_renames_mkv_to_mp4(generator):
+    path = Path("fixture.mkv")
+
+    final_path = generator.corruption_final_path(path, "wrong_extension")
+
+    assert final_path == Path("fixture.mp4")
+
+
+def test_corruption_final_path_keeps_non_rename_corruptions(generator):
+    path = Path("fixture.mp4")
+
+    final_path = generator.corruption_final_path(path, "truncated")
+
+    assert final_path == path
+
+
+def test_select_and_corrupt_reports_final_filenames_and_sizes(
+    generator, monkeypatch, tmp_path
+):
     specs = [
         {"stem": "zero-case", "ext": "mkv"},
         {"stem": "truncated-case", "ext": "mkv"},
@@ -153,22 +178,18 @@ def test_select_and_corrupt_reports_final_filenames_and_sizes(tmp_path):
         path.write_bytes(bytes(range(256)) * 8)
 
     corruptions = []
-    original_types = generator.CORRUPTION_TYPES
-    try:
-        for index, corruption_type in enumerate(
-            ["zero_length", "truncated", "wrong_extension"]
-        ):
-            generator.CORRUPTION_TYPES = [corruption_type]
-            corruptions.extend(
-                generator.select_and_corrupt(
-                    tmp_path,
-                    [specs[index]],
-                    corrupt_count=1,
-                    seed=12,
-                )
+    for index, corruption_type in enumerate(
+        ["zero_length", "truncated", "wrong_extension"]
+    ):
+        monkeypatch.setattr(generator, "CORRUPTION_TYPES", [corruption_type])
+        corruptions.extend(
+            generator.select_and_corrupt(
+                tmp_path,
+                [specs[index]],
+                corrupt_count=1,
+                seed=12,
             )
-    finally:
-        generator.CORRUPTION_TYPES = original_types
+        )
 
     assert {result["type"] for result in corruptions} == {
         "zero_length",
@@ -207,8 +228,7 @@ def test_select_and_corrupt_reports_final_filenames_and_sizes(tmp_path):
         assert entry["size"] == result["size"]
 
 
-def test_collect_deterministic_corruptions_selects_profile_members():
-    generator = load_generator()
+def test_collect_deterministic_corruptions_selects_profile_members(generator):
     specs = [
         {
             "stem": "corrupt-truncated-tail",
@@ -237,9 +257,7 @@ def test_collect_deterministic_corruptions_selects_profile_members():
     assert selected == [specs[0]]
 
 
-def test_build_manifest_includes_required_corrupt_fixtures():
-    generator = load_generator()
-
+def test_build_manifest_includes_required_corrupt_fixtures(generator):
     corrupt_names = {
         spec["stem"] for spec in generator.build_manifest() if "corruption" in spec
     }
@@ -254,8 +272,7 @@ def test_build_manifest_includes_required_corrupt_fixtures():
     }
 
 
-def test_materialize_corrupt_fixture_creates_final_file(tmp_path):
-    generator = load_generator()
+def test_materialize_corrupt_fixture_creates_final_file(generator, tmp_path):
     source = tmp_path / "basic-h264-aac.mp4"
     source.write_bytes(bytes(range(256)) * 16)
     spec = {
@@ -279,8 +296,9 @@ def test_materialize_corrupt_fixture_creates_final_file(tmp_path):
     assert final_path.exists()
 
 
-def test_deterministic_corruption_manifest_entry_retains_fixture_metadata(tmp_path):
-    generator = load_generator()
+def test_deterministic_corruption_manifest_entry_retains_fixture_metadata(
+    generator, tmp_path
+):
     source = tmp_path / "basic-h264-aac.mp4"
     source.write_bytes(bytes(range(256)) * 16)
     spec = {
@@ -309,8 +327,7 @@ def test_deterministic_corruption_manifest_entry_retains_fixture_metadata(tmp_pa
     assert entry["size"] == final_path.stat().st_size
 
 
-def test_materialize_corrupt_fixture_reports_missing_source(tmp_path):
-    generator = load_generator()
+def test_materialize_corrupt_fixture_reports_missing_source(generator, tmp_path):
     spec = {
         "stem": "corrupt-truncated-tail",
         "ext": "mp4",
@@ -335,8 +352,9 @@ def test_materialize_corrupt_fixture_reports_missing_source(tmp_path):
     assert not (tmp_path / "corrupt-truncated-tail.mp4").exists()
 
 
-def test_materialize_corrupt_fixture_reports_wrong_extension_final_name(tmp_path):
-    generator = load_generator()
+def test_materialize_corrupt_fixture_reports_wrong_extension_final_name(
+    generator, tmp_path
+):
     source = tmp_path / "basic-h264-aac.mp4"
     source.write_bytes(bytes(range(256)) * 16)
     spec = {
@@ -359,8 +377,25 @@ def test_materialize_corrupt_fixture_reports_wrong_extension_final_name(tmp_path
     assert not (tmp_path / result["original_filename"]).exists()
 
 
-def test_build_video_input_uses_mandelbrot_source_and_black_bars():
-    generator = load_generator()
+def test_ensure_ffmpeg_available_exits_when_binary_missing(
+    generator, monkeypatch, capsys
+):
+    monkeypatch.setattr(generator.shutil, "which", lambda name: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        generator.ensure_ffmpeg_available()
+
+    assert exc_info.value.code == 1
+    assert capsys.readouterr().err == "Error: ffmpeg not found in PATH\n"
+
+
+def test_ensure_ffmpeg_available_returns_when_binary_exists(generator, monkeypatch):
+    monkeypatch.setattr(generator.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+
+    generator.ensure_ffmpeg_available()
+
+
+def test_build_video_input_uses_mandelbrot_source_and_black_bars(generator):
     video = {
         "source": "mandelbrot_zoom",
         "size": "1920x1080",
@@ -376,8 +411,7 @@ def test_build_video_input_uses_mandelbrot_source_and_black_bars():
     assert "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black" in source
 
 
-def test_build_video_input_keeps_testsrc_for_smoke_fixture():
-    generator = load_generator()
+def test_build_video_input_keeps_testsrc_for_smoke_fixture(generator):
     video = {"source": "testsrc2", "size": "1280x720", "fps": 24}
 
     source = generator.build_video_input(video, duration=2, specials=set())
@@ -385,8 +419,7 @@ def test_build_video_input_keeps_testsrc_for_smoke_fixture():
     assert source == "testsrc2=duration=2:size=1280x720:rate=24"
 
 
-def test_build_video_input_dark_edges_adds_vignette_without_black_bars():
-    generator = load_generator()
+def test_build_video_input_dark_edges_adds_vignette_without_black_bars(generator):
     video = {
         "source": "mandelbrot_zoom",
         "size": "1920x1080",
@@ -399,9 +432,7 @@ def test_build_video_input_dark_edges_adds_vignette_without_black_bars():
     assert "pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black" not in source
 
 
-def test_build_audio_input_dynamic_bursts_uses_aevalsrc_expression():
-    generator = load_generator()
-
+def test_build_audio_input_dynamic_bursts_uses_aevalsrc_expression(generator):
     source = generator.build_audio_input(
         {"source": "dynamic_bursts"},
         index=0,
@@ -414,8 +445,7 @@ def test_build_audio_input_dynamic_bursts_uses_aevalsrc_expression():
     assert "0.04*sin(2*PI*220*t)" in source
 
 
-def test_build_ffmpeg_cmd_adds_loudnorm_filter_for_target_fixture(tmp_path):
-    generator = load_generator()
+def test_build_ffmpeg_cmd_adds_loudnorm_filter_for_target_fixture(generator, tmp_path):
     spec = next(
         spec
         for spec in generator.build_manifest()
@@ -434,8 +464,7 @@ def test_build_ffmpeg_cmd_adds_loudnorm_filter_for_target_fixture(tmp_path):
     assert cmd[cmd.index("-af:a:0") + 1] == "loudnorm=I=-23:TP=-2:LRA=11"
 
 
-def test_add_audio_codec_options_sets_explicit_stereo_for_two_channels():
-    generator = load_generator()
+def test_add_audio_codec_options_sets_explicit_stereo_for_two_channels(generator):
     cmd = []
 
     generator.add_audio_codec_options(

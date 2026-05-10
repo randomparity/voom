@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -956,48 +957,52 @@ def apply_corruption(file_path, corruption_type, rng):
     if corruption_type == "truncated":
         cut_pct = rng.randint(10, 80)
         new_size = max(1, size * cut_pct // 100)
-        data = file_path.read_bytes()[:new_size]
-        file_path.write_bytes(data)
+        with file_path.open("r+b") as file:
+            file.truncate(new_size)
         return f"truncated to {cut_pct}% ({new_size} bytes)", file_path
 
     elif corruption_type == "header_damage":
         damage_size = min(rng.randint(64, 512), size)
-        data = bytearray(file_path.read_bytes())
-        for i in range(damage_size):
-            data[i] = rng.randint(0, 255)
-        file_path.write_bytes(bytes(data))
+        damaged_header = bytes(rng.randint(0, 255) for _ in range(damage_size))
+        with file_path.open("r+b") as file:
+            file.seek(0)
+            file.write(damaged_header)
         return f"header damaged ({damage_size} bytes)", file_path
 
     elif corruption_type == "mid_stream":
         block_size = min(rng.randint(1024, 4096), size // 2)
         quarter = max(1, size // 4)
         offset = rng.randint(quarter, max(quarter, size - quarter - block_size))
-        data = bytearray(file_path.read_bytes())
-        for i in range(min(block_size, len(data) - offset)):
-            data[offset + i] = rng.randint(0, 255)
-        file_path.write_bytes(bytes(data))
+        overwrite_size = min(block_size, size - offset)
+        damaged_block = bytes(rng.randint(0, 255) for _ in range(overwrite_size))
+        with file_path.open("r+b") as file:
+            file.seek(offset)
+            file.write(damaged_block)
         return (
             f"mid-stream corruption ({block_size} bytes at offset {offset})",
             file_path,
         )
 
     elif corruption_type == "zero_length":
-        file_path.write_bytes(b"")
+        with file_path.open("r+b") as file:
+            file.truncate(0)
         return "truncated to zero bytes", file_path
 
     elif corruption_type == "wrong_extension":
-        current_ext = file_path.suffix
-        if current_ext == ".mkv":
-            new_ext = ".mp4"
-        elif current_ext == ".mp4":
-            new_ext = ".mkv"
-        else:
-            new_ext = ".mkv"
-        new_path = file_path.with_suffix(new_ext)
+        new_path = corruption_final_path(file_path, corruption_type)
         file_path.rename(new_path)
-        return f"extension changed {current_ext} -> {new_ext}", new_path
+        return f"extension changed {file_path.suffix} -> {new_path.suffix}", new_path
 
     return "unknown corruption type", file_path
+
+
+def corruption_final_path(file_path, corruption_type):
+    """Return the path a corruption operation will leave behind."""
+    if corruption_type != "wrong_extension":
+        return file_path
+    if file_path.suffix == ".mkv":
+        return file_path.with_suffix(".mp4")
+    return file_path.with_suffix(".mkv")
 
 
 DETERMINISTIC_CORRUPTION_TYPES = {
@@ -1112,13 +1117,7 @@ def build_corruption_manifest_entries(corrupt_results):
 
 def build_skipped_corruption_entry(spec, result):
     """Return a skipped manifest entry for an unmaterialized corruption fixture."""
-    return {
-        "filename": result["filename"],
-        "stem": spec["stem"],
-        "reason": result["description"],
-        "covers": spec.get("covers", []),
-        "expect": spec.get("expect", {}),
-    }
+    return build_issue_entry(spec, result["filename"], result["description"])
 
 
 # ---------------------------------------------------------------------------
@@ -1663,49 +1662,49 @@ def format_size(n):
     return f"{n:.1f} TiB"
 
 
+@dataclass
 class PreparedSpecs:
     """Fixture specs selected for a run."""
 
-    def __init__(self, *, specs, deterministic_corrupt_specs, random_specs):
-        self.specs = specs
-        self.deterministic_corrupt_specs = deterministic_corrupt_specs
-        self.random_specs = random_specs
+    specs: list
+    deterministic_corrupt_specs: list
+    random_specs: list
 
 
+@dataclass
 class GenerationOptions:
     """Options needed while materializing normal fixtures."""
 
-    def __init__(self, *, dest, duration, seed, dry_run, verbose, available, total):
-        self.dest = dest
-        self.duration = duration
-        self.seed = seed
-        self.dry_run = dry_run
-        self.verbose = verbose
-        self.available = available
-        self.total = total
+    dest: Path
+    duration: int
+    seed: int
+    dry_run: bool
+    verbose: bool
+    available: set
+    total: int
 
 
+@dataclass
 class GenerationResult:
     """Mutable counts and manifest entries accumulated during a run."""
 
-    def __init__(self):
-        self.ok_count = 0
-        self.skip_count = 0
-        self.fail_count = 0
-        self.total_size = 0
-        self.generated_entries = []
-        self.skipped_entries = []
-        self.failed_entries = []
+    ok_count: int = 0
+    skip_count: int = 0
+    fail_count: int = 0
+    total_size: int = 0
+    generated_entries: list = field(default_factory=list)
+    skipped_entries: list = field(default_factory=list)
+    failed_entries: list = field(default_factory=list)
 
 
+@dataclass
 class CorruptionResult:
     """Counts and corruption entries accumulated during corruption steps."""
 
-    def __init__(self):
-        self.ok_count = 0
-        self.skip_count = 0
-        self.skipped_entries = []
-        self.corrupt_results = []
+    ok_count: int = 0
+    skip_count: int = 0
+    skipped_entries: list = field(default_factory=list)
+    corrupt_results: list = field(default_factory=list)
 
 
 def build_arg_parser():
@@ -1852,9 +1851,7 @@ def prepare_specs(args, manifest, duration_range):
 
 def ensure_ffmpeg_available():
     """Exit with a clear message if ffmpeg is unavailable."""
-    try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=10)
-    except FileNotFoundError:
+    if shutil.which("ffmpeg") is None:
         print("Error: ffmpeg not found in PATH", file=sys.stderr)
         sys.exit(1)
 
@@ -1883,19 +1880,8 @@ def build_generation_entry(spec, filename, size, duration):
     }
 
 
-def build_failed_generation_entry(spec, filename, reason):
-    """Return a failed-file manifest entry."""
-    return {
-        "filename": filename,
-        "stem": spec["stem"],
-        "reason": reason,
-        "covers": spec.get("covers", []),
-        "expect": spec.get("expect", {}),
-    }
-
-
-def build_skipped_generation_entry(spec, filename, reason):
-    """Return a skipped-file manifest entry."""
+def build_issue_entry(spec, filename, reason):
+    """Return a skipped/failed manifest entry."""
     return {
         "filename": filename,
         "stem": spec["stem"],
@@ -1930,7 +1916,7 @@ def generate_normal_spec(*, spec, idx, tmpdir, options, result):
             f"[{idx}/{options.total}] Skipping {filename} — encoder '{req}' not available"
         )
         result.skipped_entries.append(
-            build_skipped_generation_entry(
+            build_issue_entry(
                 spec,
                 filename,
                 f"encoder '{req}' not available",
@@ -1955,9 +1941,7 @@ def generate_normal_spec(*, spec, idx, tmpdir, options, result):
             f"[{idx}/{options.total}] FAILED {filename} — error building command: {e}"
         )
         result.failed_entries.append(
-            build_failed_generation_entry(
-                spec, filename, f"error building command: {e}"
-            )
+            build_issue_entry(spec, filename, f"error building command: {e}")
         )
         result.fail_count += 1
         return
@@ -1997,9 +1981,7 @@ def run_ffmpeg_for_spec(*, cmd, outfile, spec, filename, duration, options, resu
                 for line in lines[-5:]:
                     print(f"  {line}")
             reason = f"ffmpeg failed with exit code {run_result.returncode}"
-            result.failed_entries.append(
-                build_failed_generation_entry(spec, filename, reason)
-            )
+            result.failed_entries.append(build_issue_entry(spec, filename, reason))
             result.fail_count += 1
             return
 
@@ -2014,13 +1996,13 @@ def run_ffmpeg_for_spec(*, cmd, outfile, spec, filename, duration, options, resu
     except subprocess.TimeoutExpired:
         print("FAILED (timeout)")
         result.failed_entries.append(
-            build_failed_generation_entry(spec, filename, "ffmpeg timed out")
+            build_issue_entry(spec, filename, "ffmpeg timed out")
         )
         result.fail_count += 1
     except Exception as e:
         print(f"FAILED ({e})")
         result.failed_entries.append(
-            build_failed_generation_entry(spec, filename, f"ffmpeg failed: {e}")
+            build_issue_entry(spec, filename, f"ffmpeg failed: {e}")
         )
         result.fail_count += 1
 
@@ -2034,9 +2016,11 @@ def materialize_deterministic_corruptions(*, specs, dest, seed, dry_run, start, 
             corruption = spec["corruption"]
             corruption_type = corruption["type"]
             source_filename = f"{corruption['source_stem']}.{corruption['source_ext']}"
-            final_filename = filename
-            if corruption_type == "wrong_extension":
-                final_filename = Path(filename).with_suffix(".mkv").name
+            applied_type = DETERMINISTIC_CORRUPTION_TYPES.get(
+                corruption_type,
+                corruption_type,
+            )
+            final_filename = corruption_final_path(Path(filename), applied_type).name
             final_detail = ""
             if final_filename != filename:
                 final_detail = f"; final filename {final_filename}"
