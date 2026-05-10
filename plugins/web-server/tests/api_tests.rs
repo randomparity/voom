@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use voom_domain::job::{Job, JobType};
 use voom_domain::media::{Container, MediaFile};
+use voom_domain::storage::EstimateStorage;
 use voom_domain::test_support::InMemoryStore;
 use voom_domain::verification::{
     VerificationMode, VerificationOutcome, VerificationRecord, VerificationRecordInput,
@@ -52,6 +53,22 @@ fn make_verification_at(
         content_hash: Some("abc123".into()),
         details: Some("verification details".into()),
     })
+}
+
+fn make_estimate_run() -> voom_domain::EstimateRun {
+    voom_domain::EstimateRun {
+        id: Uuid::new_v4(),
+        estimated_at: chrono::Utc::now(),
+        file_count: 2,
+        bytes_in: 1_000_000_000,
+        bytes_out: 600_000_000,
+        bytes_saved: 400_000_000,
+        compute_time_ms: 120_000,
+        wall_time_ms: 60_000,
+        high_uncertainty_files: 1,
+        net_loss_files: 0,
+        files: Vec::new(),
+    }
 }
 
 fn make_server(store: InMemoryStore) -> TestServer {
@@ -192,6 +209,44 @@ async fn test_job_stats() {
     assert!(!body["counts"].as_array().unwrap().is_empty());
 }
 
+// === Estimate API Tests ===
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_list_estimates_returns_persisted_what_if_records() {
+    let store = InMemoryStore::new();
+    let estimate = make_estimate_run();
+    store.insert_estimate_run(&estimate).unwrap();
+    let server = make_server(store);
+
+    let resp = server.get("/api/estimates").await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["estimates"][0]["id"], estimate.id.to_string());
+    assert_eq!(body["estimates"][0]["file_count"], 2);
+    assert_eq!(body["estimates"][0]["bytes_saved"], 400_000_000);
+    assert_eq!(body["estimates"][0]["high_uncertainty_files"], 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_get_estimate_returns_detail_for_confirmation_dialog() {
+    let store = InMemoryStore::new();
+    let estimate = make_estimate_run();
+    let estimate_id = estimate.id;
+    store.insert_estimate_run(&estimate).unwrap();
+    let server = make_server(store);
+
+    let resp = server.get(&format!("/api/estimates/{estimate_id}")).await;
+    resp.assert_status_ok();
+    let body: serde_json::Value = resp.json();
+
+    assert_eq!(body["id"], estimate_id.to_string());
+    assert_eq!(body["wall_time_ms"], 60_000);
+    assert_eq!(body["compute_time_ms"], 120_000);
+    assert_eq!(body["net_loss_files"], 0);
+}
+
 // === Plugin API Tests ===
 
 #[tokio::test(flavor = "multi_thread")]
@@ -329,6 +384,16 @@ async fn test_policies_page() {
     let server = make_server(InMemoryStore::new());
     let resp = server.get("/policies").await;
     resp.assert_status_ok();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_estimates_page() {
+    let server = make_server(InMemoryStore::new());
+    let resp = server.get("/estimates").await;
+    resp.assert_status_ok();
+    let body = resp.text();
+    assert!(body.contains("Recent Estimates"));
+    assert!(body.contains("/api/estimates"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

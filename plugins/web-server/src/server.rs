@@ -153,6 +153,7 @@ pub fn embedded_templates() -> Result<tera::Tera, ServerError> {
         "library.html",
         "file_detail.html",
         "integrity.html",
+        "estimates.html",
         "policies.html",
         "policy_editor.html",
         "jobs.html",

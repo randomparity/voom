@@ -357,6 +357,7 @@
         }
 
         .htmx-indicator { display: none; }
+        [x-cloak] { display: none !important; }
         .htmx-request .htmx-indicator,
         .htmx-request.htmx-indicator { display: inline-block; }
     </style>
@@ -377,6 +378,9 @@
             </a></li>
             <li><a href="/integrity" {% if current_page | default(value="") == "integrity" %}class="active"{% endif %}>
                 <span class="icon">&#9888;</span> Integrity
+            </a></li>
+            <li><a href="/estimates" {% if current_page | default(value="") == "estimates" %}class="active"{% endif %}>
+                <span class="icon">&#9711;</span> Estimates
             </a></li>
             <li><a href="/policies" {% if current_page | default(value="") == "policies" %}class="active"{% endif %}>
                 <span class="icon">&#9881;</span> Policies

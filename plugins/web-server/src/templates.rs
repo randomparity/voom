@@ -165,6 +165,16 @@ pub async fn integrity(
     render(&state.templates, "integrity.html", &mut ctx, &nonce)
 }
 
+/// GET /estimates -- Pre-flight estimate records
+pub async fn estimates(
+    State(state): State<AppState>,
+    Extension(nonce): Extension<CspNonce>,
+) -> HtmlResult {
+    let mut ctx = tera::Context::new();
+    ctx.insert("current_page", "estimates");
+    render(&state.templates, "estimates.html", &mut ctx, &nonce)
+}
+
 fn latest_error_files(
     store: &dyn voom_domain::storage::StorageTrait,
     records: Vec<voom_domain::verification::VerificationRecord>,
@@ -325,6 +335,14 @@ mod tests {
         let tera = make_tera();
         let mut ctx = tera::Context::new();
         let result = render(&tera, "plugins.html", &mut ctx, &test_nonce());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_render_estimates_page() {
+        let tera = make_tera();
+        let mut ctx = tera::Context::new();
+        let result = render(&tera, "estimates.html", &mut ctx, &test_nonce());
         assert!(result.is_ok());
     }
 
