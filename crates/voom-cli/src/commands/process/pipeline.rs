@@ -619,6 +619,7 @@ async fn reintrospect_file(
     .await
     {
         Ok(mut new_file) => {
+            preserve_persisted_file_identity(file, &mut new_file);
             // Preserve plugin_metadata from prior phases
             for (k, v) in &file.plugin_metadata {
                 new_file
@@ -657,6 +658,19 @@ async fn reintrospect_file(
             fallback
         }
     }
+}
+
+/// Keep the database identity of the row being advanced through the process
+/// pipeline. Re-introspection builds a fresh `MediaFile`, but downstream
+/// phases must continue to reference the persisted row that
+/// `record_post_execution` just renamed/updated.
+fn preserve_persisted_file_identity(
+    persisted_file: &voom_domain::media::MediaFile,
+    reintrospected_file: &mut voom_domain::media::MediaFile,
+) {
+    reintrospected_file.id = persisted_file.id;
+    reintrospected_file.expected_hash = persisted_file.expected_hash.clone();
+    reintrospected_file.status = persisted_file.status;
 }
 
 /// Run the phase orchestrator to produce plans (used for dry-run mode).
@@ -1071,6 +1085,45 @@ mod tests {
 
         assert!(plan_requires_auto_crop(&crop));
         assert!(!plan_requires_auto_crop(&plain));
+    }
+
+    #[test]
+    fn reintrospection_preserves_persisted_file_identity_for_downstream_phases() {
+        let mut persisted = h264_file(std::path::PathBuf::from("/library/movie.mp4"));
+        persisted.expected_hash = Some("previous-expected-hash".to_string());
+        persisted.status = voom_domain::transition::FileStatus::Active;
+
+        let fresh_id = uuid::Uuid::new_v4();
+        let mut reintrospected = h264_file(std::path::PathBuf::from("/library/movie.mkv"));
+        reintrospected.id = fresh_id;
+        reintrospected.content_hash = Some("post-execution-hash".to_string());
+        reintrospected.size = 2048;
+
+        preserve_persisted_file_identity(&persisted, &mut reintrospected);
+
+        assert_eq!(
+            reintrospected.id, persisted.id,
+            "downstream plans must keep the persisted files.id, not the fresh ffprobe UUID"
+        );
+        assert_ne!(
+            reintrospected.id, fresh_id,
+            "the transient re-introspection UUID must not escape the phase boundary"
+        );
+        assert_eq!(
+            reintrospected.path,
+            std::path::PathBuf::from("/library/movie.mkv"),
+            "post-execution metadata must still reflect the re-introspected path"
+        );
+        assert_eq!(
+            reintrospected.content_hash.as_deref(),
+            Some("post-execution-hash"),
+            "post-execution content metadata must come from re-introspection"
+        );
+        assert_eq!(
+            reintrospected.expected_hash.as_deref(),
+            Some("previous-expected-hash"),
+            "identity preservation must not invent expected_hash updates before storage commits"
+        );
     }
 
     #[tokio::test]
