@@ -124,6 +124,43 @@ impl RemoteBackupInventory {
         }
         Ok(records)
     }
+
+    pub fn replace_all(&self, records: &[RemoteBackupInventoryRecord]) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                plugin_err(format!(
+                    "failed to create remote backup inventory directory {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+        let temp_path = self.path.with_extension("jsonl.tmp");
+        {
+            let mut file = fs::File::create(&temp_path).map_err(|e| {
+                plugin_err(format!(
+                    "failed to create remote backup inventory {}: {e}",
+                    temp_path.display()
+                ))
+            })?;
+            for record in records {
+                let json = serde_json::to_string(record)
+                    .expect("RemoteBackupInventoryRecord serialization cannot fail");
+                writeln!(file, "{json}").map_err(|e| {
+                    plugin_err(format!(
+                        "failed to write remote backup inventory {}: {e}",
+                        temp_path.display()
+                    ))
+                })?;
+            }
+        }
+        fs::rename(&temp_path, &self.path).map_err(|e| {
+            plugin_err(format!(
+                "failed to replace remote backup inventory {}: {e}",
+                self.path.display()
+            ))
+        })?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -206,5 +243,21 @@ mod tests {
         let records = inventory.list(Some("offsite")).unwrap();
 
         assert!(records.is_empty());
+    }
+
+    #[test]
+    fn replace_all_rewrites_inventory_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let inventory = RemoteBackupInventory::new(dir.path().join("remote-backups.jsonl"));
+        inventory
+            .append(&record("offsite", "b2:voom/a.vbak"))
+            .unwrap();
+        let remaining = record("archive", "s3:voom/b.vbak");
+
+        inventory
+            .replace_all(std::slice::from_ref(&remaining))
+            .unwrap();
+
+        assert_eq!(inventory.list(None).unwrap(), vec![remaining]);
     }
 }

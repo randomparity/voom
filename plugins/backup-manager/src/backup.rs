@@ -283,6 +283,7 @@ mod tests {
                     kind: DestinationKind::S3,
                     remote: Some("aws:voom".to_string()),
                     bandwidth_limit: Some("10M".to_string()),
+                    minimum_storage_days: None,
                 },
             ],
             ..global_config(dir)
