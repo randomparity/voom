@@ -508,6 +508,7 @@ def build_random_specs(count, seed, duration_range):
 
 
 def build_run_manifest(
+    *,
     profile,
     duration,
     duration_range,

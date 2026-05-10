@@ -127,6 +127,16 @@ def test_build_run_manifest_records_generated_skipped_failed_and_corruptions():
     assert manifest["failed"][0]["covers"] == ["audio.codec.truehd"]
 
 
+def test_write_run_manifest_uses_stable_json_format(tmp_path):
+    generator = load_generator()
+    manifest = {"z": 1, "a": {"b": 2}}
+
+    path = generator.write_run_manifest(tmp_path, manifest)
+
+    assert path == tmp_path / "manifest.json"
+    assert path.read_text() == '{\n  "a": {\n    "b": 2\n  },\n  "z": 1\n}\n'
+
+
 def test_select_and_corrupt_reports_final_filenames_and_sizes(tmp_path):
     generator = load_generator()
     specs = [
