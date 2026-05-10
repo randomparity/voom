@@ -363,10 +363,10 @@ pub fn default_config_contents() -> String {
 # # GPU device for HW encoding. NVIDIA: "0", "1". VA-API/QSV: "/dev/dri/renderD128".
 # # Omit to use system default.
 # # gpu_device = "0"
-# # Maximum simultaneous NVENC encode sessions. Default: 4.
-# # Lower this to 2 on small GPUs or when CUDA OOM appears under load.
+# # Maximum simultaneous NVENC encode sessions. Default: 2.
+# # Increase cautiously on large GPUs after validating an e2e run.
 # # Applies only when NVENC is active; 0 uses the default.
-# # nvenc_max_parallel = 4
+# # nvenc_max_parallel = 2
 # # Opportunistically use hardware decode when a matching decoder was probed.
 # # Disable this if a GPU driver or source profile fails with hwaccel enabled.
 # # Defaults to true.

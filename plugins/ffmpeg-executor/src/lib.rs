@@ -48,7 +48,7 @@ struct FfmpegExecutorConfig {
     hw_decode: Option<bool>,
 }
 
-const DEFAULT_NVENC_MAX_PARALLEL_PER_GPU: usize = 4;
+const DEFAULT_NVENC_MAX_PARALLEL_PER_GPU: usize = 2;
 
 fn positive_or_default(value: Option<usize>, default: usize) -> usize {
     match value {
