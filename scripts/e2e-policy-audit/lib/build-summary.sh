@@ -96,6 +96,9 @@ if [[ -f "${plans_tsv}" ]]; then
   done <"${phase_summary}"
 fi
 
+"${script_dir}/build-repro-set.py" "${run}" ||
+  note_warn "failed to build repro file set"
+
 # Render
 {
   echo "# E2E Run Summary — ${verdict}"
@@ -197,6 +200,7 @@ fi
   echo "- [logs/](logs/)"
   echo "- [reports/](reports/)"
   echo "- [db-export/](db-export/)"
+  echo "- [repro/](repro/)"
   echo "- [web-smoke/](web-smoke/)"
 } >"${run}/summary.md"
 

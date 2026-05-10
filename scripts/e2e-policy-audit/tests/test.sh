@@ -155,6 +155,55 @@ EOF
 
 run_diff_class_summary_test
 
+run_repro_set_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/repro" "${actual}/diffs"
+
+  cat >"${actual}/manifest.json" <<'EOF'
+{"library":"/lib"}
+EOF
+
+  cat >"${actual}/repro/failed-plan-files.tsv" <<'EOF'
+path	phase	signature	exit_code	container	video_codec	resolution	plan_id	file_id
+/lib/show/S01E01.mkv	transcode-video	cuda-context-oom	187	mkv	h264	1920x1080	plan-1	file-1
+/lib/show/S01E02.mkv	transcode-video	cuda-context-oom	187	mkv	h264	1920x1080	plan-2	file-2
+EOF
+
+  cat >"${actual}/diffs/db-vs-ffprobe-post.tsv" <<'EOF'
+path	side	change-class	details
+/lib/show/S01E03.mkv	both	subtitle	#2.is_default:False→True
+/lib/show/S01E04.mkv	both	subtitle	#2.is_default:False→True
+/lib/show/S01E05.mkv	both	video	+#4(png)
+EOF
+
+  "lib/build-repro-set.py" "${actual}" --cap-per-signature 1
+
+  cat >"${actual}/expected-minimal.tsv" <<'EOF'
+path	relative_path	source	signature	phase	detail
+/lib/show/S01E01.mkv	show/S01E01.mkv	failed-plan	cuda-context-oom	transcode-video	plan-1
+/lib/show/S01E03.mkv	show/S01E03.mkv	db-vs-ffprobe-post	subtitle-default-enabled		#2.is_default:False→True
+/lib/show/S01E05.mkv	show/S01E05.mkv	db-vs-ffprobe-post	attachment-promoted-to-png-video		+#4(png)
+EOF
+
+  assert_match "${actual}/repro/minimal-covering-set.tsv" "${actual}/expected-minimal.tsv"
+
+  cat >"${actual}/expected-relative-paths" <<'EOF'
+show/S01E01.mkv
+show/S01E03.mkv
+show/S01E05.mkv
+EOF
+  assert_match \
+    "${actual}/repro/minimal-covering-set.relative-paths" \
+    "${actual}/expected-relative-paths"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_repro_set_test
+
 raw_actual=$(mktemp -d)
 trap 'rm -rf "${raw_actual}"' EXIT
 

@@ -58,4 +58,5 @@ plan-4	file-4	transcode-video	{"error":"encoder failed"}
 - [logs/](logs/)
 - [reports/](reports/)
 - [db-export/](db-export/)
+- [repro/](repro/)
 - [web-smoke/](web-smoke/)
