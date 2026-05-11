@@ -38,6 +38,7 @@ pub enum RedactionKind {
     FileName,
     Secret,
     PathComponent,
+    TrackComment,
 }
 
 impl Redactor {
@@ -48,30 +49,126 @@ impl Redactor {
     }
 
     pub fn redact_json(&mut self, value: serde_json::Value) -> serde_json::Value {
+        self.redact_json_with_context(value, None)
+    }
+
+    fn redact_json_with_context(
+        &mut self,
+        value: serde_json::Value,
+        file_context: Option<&FileContext>,
+    ) -> serde_json::Value {
         match value {
-            serde_json::Value::Object(map) => serde_json::Value::Object(
-                map.into_iter()
-                    .map(|(key, value)| {
-                        if let serde_json::Value::String(s) = &value {
-                            if is_secret_key(&key) {
-                                let replacement = self.secret_replacement_for_key(&key);
-                                self.register_replacement(
-                                    s.clone(),
-                                    replacement,
-                                    RedactionKind::Secret,
-                                );
-                            }
-                        }
-                        (key, self.redact_json(value))
-                    })
+            serde_json::Value::Object(map) => self.redact_object_with_context(map, file_context),
+            serde_json::Value::Array(values) => serde_json::Value::Array(
+                values
+                    .into_iter()
+                    .map(|v| self.redact_json_with_context(v, file_context))
                     .collect(),
             ),
-            serde_json::Value::Array(values) => {
-                serde_json::Value::Array(values.into_iter().map(|v| self.redact_json(v)).collect())
-            }
             serde_json::Value::String(s) => serde_json::Value::String(self.redact_text(&s)),
             other => other,
         }
+    }
+
+    fn redact_object_with_context(
+        &mut self,
+        map: serde_json::Map<String, serde_json::Value>,
+        file_context: Option<&FileContext>,
+    ) -> serde_json::Value {
+        let local_file_context = self.file_context_from_map(&map);
+        let file_context = local_file_context.as_ref().or(file_context);
+        let track_comment =
+            file_context.and_then(|context| track_comment_replacement(context, &map));
+
+        serde_json::Value::Object(
+            map.into_iter()
+                .map(|(key, value)| {
+                    let value =
+                        self.redact_object_value(key.as_str(), value, file_context, &track_comment);
+                    (key, value)
+                })
+                .collect(),
+        )
+    }
+
+    fn redact_object_value(
+        &mut self,
+        key: &str,
+        value: serde_json::Value,
+        file_context: Option<&FileContext>,
+        track_comment: &Option<String>,
+    ) -> serde_json::Value {
+        match value {
+            serde_json::Value::String(s) => {
+                if is_secret_key(key) {
+                    let replacement = self.secret_replacement_for_key(key);
+                    self.register_replacement(s, replacement.clone(), RedactionKind::Secret);
+                    return serde_json::Value::String(replacement);
+                }
+                if key.eq_ignore_ascii_case("comment") {
+                    if let Some(replacement) = track_comment {
+                        self.register_replacement(
+                            s,
+                            replacement.clone(),
+                            RedactionKind::TrackComment,
+                        );
+                        return serde_json::Value::String(replacement.clone());
+                    }
+                }
+                serde_json::Value::String(self.redact_text(&s))
+            }
+            serde_json::Value::Object(map) => {
+                if key.eq_ignore_ascii_case("tags") {
+                    self.redact_tags_object(map, file_context, track_comment)
+                } else {
+                    self.redact_object_with_context(map, file_context)
+                }
+            }
+            serde_json::Value::Array(values) => serde_json::Value::Array(
+                values
+                    .into_iter()
+                    .map(|value| self.redact_json_with_context(value, file_context))
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
+
+    fn redact_tags_object(
+        &mut self,
+        map: serde_json::Map<String, serde_json::Value>,
+        file_context: Option<&FileContext>,
+        track_comment: &Option<String>,
+    ) -> serde_json::Value {
+        serde_json::Value::Object(
+            map.into_iter()
+                .map(|(key, value)| {
+                    let value =
+                        self.redact_object_value(key.as_str(), value, file_context, track_comment);
+                    (key, value)
+                })
+                .collect(),
+        )
+    }
+
+    fn file_context_from_map(
+        &mut self,
+        map: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<FileContext> {
+        let source = map
+            .get("filename")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| map.get("path").and_then(serde_json::Value::as_str))?;
+        let redacted = self.redact_text(source);
+        let placeholder = redacted
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(redacted.as_str())
+            .to_string();
+        if placeholder == source {
+            return None;
+        }
+        Some(FileContext { placeholder })
     }
 
     pub fn private_mappings(&self) -> Vec<PrivateRedactionMapping> {
@@ -166,11 +263,48 @@ impl Redactor {
     }
 }
 
+#[derive(Debug, Clone)]
+struct FileContext {
+    placeholder: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum SecretCategory {
     ApiKey,
     Token,
     Secret,
+}
+
+fn track_comment_replacement(
+    file_context: &FileContext,
+    track: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    let track_kind = normalized_track_kind(
+        track
+            .get("track_type")
+            .or_else(|| track.get("type"))
+            .and_then(serde_json::Value::as_str)?,
+    )?;
+    let index = track.get("index").and_then(serde_json::Value::as_u64)?;
+    Some(format!(
+        "comment for {} {} track {}",
+        file_context.placeholder, track_kind, index
+    ))
+}
+
+fn normalized_track_kind(track_type: &str) -> Option<&'static str> {
+    let normalized = track_type.to_ascii_lowercase();
+    if normalized == "video" {
+        Some("video")
+    } else if normalized.starts_with("audio") {
+        Some("audio")
+    } else if normalized.starts_with("subtitle") {
+        Some("subtitle")
+    } else if normalized == "attachment" {
+        Some("attachment")
+    } else {
+        None
+    }
 }
 
 fn split_secret_assignment(token: &str) -> Option<(&str, &str)> {
@@ -306,5 +440,62 @@ mod tests {
 
         assert_eq!(redacted["path"], "/media/video000.mkv");
         assert_eq!(redacted["env"]["OPENAI_API_KEY"], "<api-key-001>");
+    }
+
+    #[test]
+    fn redacts_video_track_comment_with_file_context() {
+        let mut redactor = Redactor::default();
+        let value = serde_json::json!({
+            "path": "/media/The Movie (2026).mkv",
+            "tracks": [{
+                "index": 1,
+                "track_type": "video",
+                "comment": "Shot on a private camera"
+            }]
+        });
+
+        let redacted = redactor.redact_json(value);
+
+        assert_eq!(redacted["path"], "/media/video000.mkv");
+        assert_eq!(
+            redacted["tracks"][0]["comment"],
+            "comment for video000.mkv video track 1"
+        );
+        assert!(redactor.private_mappings().iter().any(|m| {
+            m.original == "Shot on a private camera"
+                && m.replacement == "comment for video000.mkv video track 1"
+        }));
+    }
+
+    #[test]
+    fn redacts_audio_and_subtitle_track_tag_comments() {
+        let mut redactor = Redactor::default();
+        let value = serde_json::json!({
+            "filename": "The Movie (2026).mkv",
+            "tracks": [
+                {
+                    "index": 2,
+                    "track_type": "audio_commentary",
+                    "tags": {"COMMENT": "Private audio note"}
+                },
+                {
+                    "index": 3,
+                    "track_type": "subtitle_forced",
+                    "tags": {"comment": "Private subtitle note"}
+                }
+            ]
+        });
+
+        let redacted = redactor.redact_json(value);
+
+        assert_eq!(redacted["filename"], "video000.mkv");
+        assert_eq!(
+            redacted["tracks"][0]["tags"]["COMMENT"],
+            "comment for video000.mkv audio track 2"
+        );
+        assert_eq!(
+            redacted["tracks"][1]["tags"]["comment"],
+            "comment for video000.mkv subtitle track 3"
+        );
     }
 }
