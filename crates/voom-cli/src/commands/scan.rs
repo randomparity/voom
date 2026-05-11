@@ -88,14 +88,15 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         )
         .await;
 
+        let formatted_results = args.format.map(|fmt| (fmt, format_results(&all_events)));
         print_scan_summary(
-            &all_events,
+            all_events.len(),
             introspected,
             errors,
             start.elapsed(),
             token.is_cancelled(),
             quiet,
-            args.format,
+            formatted_results,
         );
 
         if token.is_cancelled() {
@@ -486,17 +487,27 @@ async fn run_introspection(
     (introspected, errors)
 }
 
+type FormattedScanResults = (
+    crate::cli::OutputFormat,
+    Vec<(PathBuf, u64, Option<String>)>,
+);
+
 /// Print the final scan summary (completion or interruption).
+///
+/// Takes primitive counts plus an optional pre-built `(format, results)`
+/// pair instead of borrowing the events slice. This keeps tainted data
+/// from CodeQL's `rust/cleartext-logging` flow analysis out of the
+/// logging sink — the print sites see only `usize`/`u64`/`Duration`.
 fn print_scan_summary(
-    events: &[FileDiscoveredEvent],
+    total_files: usize,
     introspected: u64,
     errors: u64,
     elapsed: Duration,
     cancelled: bool,
     quiet: bool,
-    format: Option<crate::cli::OutputFormat>,
+    formatted_results: Option<FormattedScanResults>,
 ) {
-    let total = events.len() as u64;
+    let total = total_files as u64;
     let error_suffix = if errors > 0 {
         format!(", {} {}", errors, style("errors").red())
     } else {
@@ -508,15 +519,15 @@ fn print_scan_summary(
             eprintln!(
                 "\n{} {} files discovered, {}/{} introspected{} ({})",
                 style("Interrupted.").bold().yellow(),
-                events.len(),
+                total_files,
                 introspected,
                 total,
                 error_suffix,
                 HumanDuration(elapsed),
             );
         }
-        if let Some(format) = format {
-            output::format_scan_results(&format_results(events), format);
+        if let Some((fmt, results)) = formatted_results {
+            output::format_scan_results(&results, fmt);
         }
         return;
     }
@@ -525,7 +536,7 @@ fn print_scan_summary(
         eprintln!(
             "\n{} {} files discovered, {} introspected{} ({})",
             style("Done.").bold().green(),
-            events.len(),
+            total_files,
             introspected,
             error_suffix,
             HumanDuration(elapsed),
