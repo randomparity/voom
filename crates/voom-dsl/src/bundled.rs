@@ -23,7 +23,7 @@ pub fn bundled_policy(name: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{bundled_policy, bundled_policy_names, parse_policy};
+    use crate::{bundled_policy, bundled_policy_names, parse_policy, validate};
 
     #[test]
     fn exposes_expected_bundled_policy_names() {
@@ -45,6 +45,7 @@ mod tests {
             let source = bundled_policy(name).expect("bundled policy exists");
             let ast = parse_policy(source).expect(name);
             assert_eq!(ast.name, name);
+            validate(&ast).expect(name);
             assert!(ast.extends.is_none());
         }
     }
