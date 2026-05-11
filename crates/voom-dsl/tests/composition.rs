@@ -2,7 +2,7 @@ use std::fs;
 
 use serde_json::json;
 use tempfile::tempdir;
-use voom_dsl::compiled::{CompiledOperation, CompiledPolicy, TrackTarget};
+use voom_dsl::compiled::{CompiledOperation, CompiledPolicy, PhaseCompositionKind, TrackTarget};
 use voom_dsl::{compile_policy, compile_policy_file, compile_policy_with_bundled};
 
 #[test]
@@ -207,6 +207,43 @@ fn file_extends_resolves_relative_to_child_file() {
     let policy = compile_policy_file(&child).unwrap();
 
     assert_eq!(policy.phase_order, ["base", "child"]);
+}
+
+#[test]
+fn inherited_intermediate_local_phase_uses_intermediate_source() {
+    let dir = tempdir().unwrap();
+    let base = dir.path().join("base.voom");
+    let middle = dir.path().join("middle.voom");
+    let child = dir.path().join("child.voom");
+    fs::write(&base, r#"policy "base" { phase a { container mkv } }"#).unwrap();
+    fs::write(
+        &middle,
+        r#"policy "middle" extends "file://./base.voom" {
+            phase b { depends_on: [a] keep audio }
+        }"#,
+    )
+    .unwrap();
+    fs::write(
+        &child,
+        r#"policy "child" extends "file://./middle.voom" {
+            phase c { depends_on: [b] keep subtitles }
+        }"#,
+    )
+    .unwrap();
+
+    let policy = compile_policy_file(&child).unwrap();
+
+    let middle_source = fs::canonicalize(&middle).unwrap().display().to_string();
+    let phase = policy
+        .phases
+        .iter()
+        .find(|phase| phase.name == "b")
+        .unwrap();
+    assert_eq!(phase.composition.kind, PhaseCompositionKind::Inherited);
+    assert_eq!(
+        phase.composition.source.as_deref(),
+        Some(middle_source.as_str())
+    );
 }
 
 #[test]

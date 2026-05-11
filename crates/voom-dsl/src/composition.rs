@@ -157,7 +157,6 @@ fn merge_policy(
     let child_source = source_label(&source_id);
     child.extends = None;
     let parent_ast = parent.ast;
-    let parent_name = parent_ast.name.clone();
     let parent_phase_sources = parent.phase_sources;
     let mut child_phases = child.phases;
     let mut consumed_child_phases = vec![false; child_phases.len()];
@@ -167,10 +166,10 @@ fn merge_policy(
 
     for parent_phase in parent_ast.phases {
         let parent_phase_name = parent_phase.name.clone();
-        let parent_source = parent_phase_sources
-            .get(&parent_phase_name)
-            .map(phase_source_label)
-            .unwrap_or_else(|| parent_name.clone());
+        let parent_source = parent_phase_sources.get(&parent_phase_name).map_or_else(
+            || source_label(&parent.source_id),
+            |composition| phase_source_label(composition, &parent.source_id),
+        );
 
         let child_phase_index = child_phases
             .iter()
@@ -339,9 +338,9 @@ fn push_source(
     Ok(())
 }
 
-fn phase_source_label(composition: &PhaseComposition) -> String {
+fn phase_source_label(composition: &PhaseComposition, parent_source_id: &PolicySourceId) -> String {
     match composition {
-        PhaseComposition::Local => "local".to_owned(),
+        PhaseComposition::Local => source_label(parent_source_id),
         PhaseComposition::Inherited { source }
         | PhaseComposition::Extended { source, .. }
         | PhaseComposition::Overridden { source } => source.clone(),

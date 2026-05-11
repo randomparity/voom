@@ -179,7 +179,7 @@ pub struct CompiledPhase {
 #[non_exhaustive]
 pub struct CompiledPhaseComposition {
     pub kind: PhaseCompositionKind,
-    /// The policy source that supplied the inherited parent phase.
+    /// The policy source associated with this composed phase.
     ///
     /// `Inherited` and `Extended` point at the parent policy source. `Overridden`
     /// points at the source that replaced the parent phase. `Local` has no source.
