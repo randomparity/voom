@@ -20,6 +20,7 @@
 //! ```
 
 pub mod ast;
+pub mod bundled;
 pub mod compiled;
 pub mod compiler;
 pub mod errors;
@@ -36,6 +37,7 @@ pub use ast::{
     PhaseNode, PolicyAst, RuleNode, RunIfNode, RunIfTriggerNode, Span, SpannedOperation,
     SynthSetting, TrackQueryNode, TrackRefNode, Value, ValueOrField, WhenNode,
 };
+pub use bundled::{bundled_policy, bundled_policy_names};
 pub use compiled::CompiledPolicy;
 pub use errors::{DslError, DslPipelineError, DslWarning, ValidationErrors};
 pub use formatter::format_policy;

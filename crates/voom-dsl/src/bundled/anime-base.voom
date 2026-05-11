@@ -1,0 +1,30 @@
+policy "anime-base" {
+  metadata {
+    version: "1.0.0"
+    description: "Base anime policy with multi-language audio and subtitle handling"
+    requires_tools: [ffmpeg, mkvmerge, mkvextract]
+  }
+
+  config {
+    languages audio: [jpn, eng, und]
+    languages subtitle: [eng, jpn]
+  }
+
+  phase containerize {
+    container mkv
+  }
+
+  phase audio {
+    depends_on: [containerize]
+    keep audio where lang in [jpn, eng, und]
+    defaults {
+      audio: first_per_language
+    }
+  }
+
+  phase subtitles {
+    depends_on: [audio]
+    keep subtitles where lang in [eng, jpn] and not commentary
+    remove attachments where not font
+  }
+}
