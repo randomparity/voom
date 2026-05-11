@@ -9,7 +9,8 @@ use voom_domain::errors::Result;
 use voom_domain::media::{MediaFile, StoredFingerprint};
 use voom_domain::storage::{FileFilters, FileStorage};
 use voom_domain::transition::{
-    DiscoveredFile, FileStatus, FileTransition, IngestDecision, ReconcileResult, TransitionSource,
+    DiscoveredFile, FileStatus, FileTransition, IngestDecision, ReconcileResult, ScanFinishOutcome,
+    TransitionSource,
 };
 
 use super::{
@@ -424,7 +425,12 @@ impl FileStorage for SqliteStore {
             }
         }
 
-        result.missing = self.finish_scan_session(session)?;
+        let finish = self.finish_scan_session(session)?;
+        result.missing = finish.missing;
+        // Promoted moves: each was counted as New during ingestion, so decrement
+        // new_files and increment moved to reflect the retroactive reclassification.
+        result.new_files = result.new_files.saturating_sub(finish.promoted_moves);
+        result.moved += finish.promoted_moves;
         Ok(result)
     }
 
@@ -896,7 +902,7 @@ impl FileStorage for SqliteStore {
     fn finish_scan_session(
         &self,
         session: voom_domain::transition::ScanSessionId,
-    ) -> voom_domain::errors::Result<u32> {
+    ) -> voom_domain::errors::Result<ScanFinishOutcome> {
         let mut conn = self.conn()?;
         let now = format_datetime(&Utc::now());
         let session_str = session.to_string();
@@ -905,16 +911,16 @@ impl FileStorage for SqliteStore {
             .transaction()
             .map_err(storage_err("failed to begin finish_scan_session tx"))?;
 
-        let row: Option<(String, String)> = tx
+        let row: Option<(String, String, String)> = tx
             .query_row(
-                "SELECT status, roots_json FROM scan_sessions WHERE id = ?1",
+                "SELECT status, roots_json, started_at FROM scan_sessions WHERE id = ?1",
                 params![&session_str],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(storage_err("failed to load scan session"))?;
 
-        let (status, roots_json) = match row {
+        let (status, roots_json, session_started_at) = match row {
             Some(v) => v,
             None => {
                 return Err(voom_domain::errors::VoomError::Storage {
@@ -937,10 +943,136 @@ impl FileStorage for SqliteStore {
             .map_err(other_storage_err("failed to parse roots_json"))?;
         let roots: Vec<PathBuf> = roots.into_iter().map(PathBuf::from).collect();
 
+        // ---- MOVE PROMOTION ----
+        // Files ingested as New this session may actually be moves from an active
+        // file that's about to be marked missing. Detect these by matching
+        // content_hash (New-this-session row) against expected_hash (missing candidate).
+        // "New this session" == last_seen_session_id == this session AND created_at >= started_at.
+
+        struct MissingCandidate {
+            id: String,
+            path: String,
+            expected_hash: String,
+        }
+
+        let candidates_for_move: Vec<MissingCandidate> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id, path, expected_hash FROM files \
+                     WHERE status = 'active' AND path IS NOT NULL \
+                       AND expected_hash IS NOT NULL \
+                       AND (last_seen_session_id IS NULL OR last_seen_session_id != ?1)",
+                )
+                .map_err(storage_err("failed to prepare move-candidate select"))?;
+            stmt.query_map(params![&session_str], |row| {
+                Ok(MissingCandidate {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    expected_hash: row.get(2)?,
+                })
+            })
+            .map_err(storage_err("failed to query move candidates"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err("failed to collect move candidates"))?
+            .into_iter()
+            .filter(|c| {
+                let p = Path::new(&c.path);
+                roots.iter().any(|r| p.starts_with(r))
+            })
+            .collect()
+        };
+
+        let mut promoted_moves = 0u32;
+
+        for candidate in &candidates_for_move {
+            // Find a New-this-session row with content_hash matching this candidate's
+            // expected_hash. "New this session" == last_seen_session_id == this session
+            // AND created_at >= session started_at.
+            let new_match: Option<(String, String, i64)> = tx
+                .query_row(
+                    "SELECT id, path, size FROM files \
+                     WHERE last_seen_session_id = ?1 \
+                       AND content_hash = ?2 \
+                       AND created_at >= ?3 \
+                       AND path IS NOT NULL \
+                       AND id != ?4 \
+                     LIMIT 1",
+                    params![
+                        &session_str,
+                        &candidate.expected_hash,
+                        &session_started_at,
+                        &candidate.id,
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(storage_err("failed to look up move-promotion target"))?;
+
+            let Some((new_id, new_path, new_size)) = new_match else {
+                continue;
+            };
+
+            // Delete the New row's transitions so the move transition is the only record.
+            tx.execute(
+                "DELETE FROM file_transitions WHERE file_id = ?1",
+                params![&new_id],
+            )
+            .map_err(storage_err("failed to delete New row's transitions"))?;
+
+            // Delete the New row itself.
+            tx.execute("DELETE FROM files WHERE id = ?1", params![&new_id])
+                .map_err(storage_err("failed to delete New row for move promotion"))?;
+
+            // Update the candidate row to reflect the new path and keep it active.
+            let new_filename = Path::new(&new_path)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_default();
+            tx.execute(
+                "UPDATE files SET path = ?1, filename = ?2, size = ?3, \
+                 status = 'active', missing_since = NULL, \
+                 last_seen_session_id = ?4, updated_at = ?5 \
+                 WHERE id = ?6",
+                params![
+                    &new_path,
+                    new_filename,
+                    new_size,
+                    &session_str,
+                    &now,
+                    &candidate.id,
+                ],
+            )
+            .map_err(storage_err("failed to promote candidate to moved"))?;
+
+            // Record a Discovery transition with from_path set to signal the move.
+            let file_uuid = super::parse_uuid(&candidate.id)?;
+            let move_tx = FileTransition::new(
+                file_uuid,
+                PathBuf::from(&new_path),
+                candidate.expected_hash.clone(),
+                new_size as u64,
+                TransitionSource::Discovery,
+            )
+            .with_from_path(PathBuf::from(&candidate.path))
+            .with_detail("detected_move");
+            insert_transition_in_tx(&tx, &move_tx, &now)?;
+
+            promoted_moves += 1;
+        }
+
+        // ---- MISSING PASS ----
         // Path-prefix filtering in Rust mirrors the historical batch-reconcile
         // missing pass (status='active' AND path under any scanned root AND
         // not seen by this session). The `AND status='active'` clause on the
         // UPDATE below guards against a race between the SELECT and UPDATE.
+        // Promoted candidates now have last_seen_session_id == this session,
+        // so the query below won't touch them.
         let candidates: Vec<(String, String)> = {
             let mut stmt = tx
                 .prepare(
@@ -980,7 +1112,7 @@ impl FileStorage for SqliteStore {
 
         tx.commit()
             .map_err(storage_err("failed to commit finish_scan_session"))?;
-        Ok(missing)
+        Ok(ScanFinishOutcome::new(missing, promoted_moves))
     }
 
     fn cancel_scan_session(
@@ -2157,9 +2289,9 @@ mod tests {
         store.upsert_file(&g).unwrap();
 
         let session = store.begin_scan_session(&roots).unwrap();
-        let missing = store.finish_scan_session(session).unwrap();
+        let finish = store.finish_scan_session(session).unwrap();
         assert_eq!(
-            missing, 1,
+            finish.missing, 1,
             "only files under /movies should be marked missing"
         );
 
@@ -2566,9 +2698,9 @@ mod tests {
             DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), a.size, "abc123".to_string());
         store.ingest_discovered_file(session, &df_a).unwrap();
 
-        let missing = store.finish_scan_session(session).unwrap();
+        let finish = store.finish_scan_session(session).unwrap();
         assert_eq!(
-            missing, 1,
+            finish.missing, 1,
             "only b.mkv was unseen and must be marked missing"
         );
 
@@ -2641,8 +2773,11 @@ mod tests {
         let d2 = store.ingest_discovered_file(session, &df).unwrap();
         assert!(matches!(d2, IngestDecision::Duplicate { .. }));
 
-        let missing = store.finish_scan_session(session).unwrap();
-        assert_eq!(missing, 0, "the one seen file must not be marked missing");
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(
+            finish.missing, 0,
+            "the one seen file must not be marked missing"
+        );
     }
 
     #[test]
@@ -2718,5 +2853,84 @@ mod tests {
         assert_eq!(result.missing, 1, "c.mkv");
         // needs_introspection: new + moved + external_changes
         assert_eq!(result.needs_introspection.len(), 3);
+    }
+
+    #[test]
+    fn move_detected_at_finish_when_old_file_was_active_before_scan() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+
+        // Seed an ACTIVE file with a known expected_hash (mimics a previously
+        // introspected file at the old path).
+        let f = active_file("/movies/old.mkv");
+        store.upsert_file(&f).unwrap();
+        let original_id = f.id;
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET content_hash = 'h-content', expected_hash = 'h-content' \
+                 WHERE id = ?1",
+                params![original_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+
+        // Ingest the file at its NEW path (the move). Old path is NOT re-ingested
+        // (the file is no longer there).
+        let df_new = DiscoveredFile::new(
+            PathBuf::from("/movies/new.mkv"),
+            100,
+            "h-content".to_string(),
+        );
+        store.ingest_discovered_file(session, &df_new).unwrap();
+
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(
+            finish.missing, 0,
+            "no file should be missing after promotion"
+        );
+        assert_eq!(finish.promoted_moves, 1, "one move should be promoted");
+
+        // The original file id should now point at the new path with active status.
+        let conn = store.conn().unwrap();
+        let (path, status): (String, String) = conn
+            .query_row(
+                "SELECT path, status FROM files WHERE id = ?1",
+                params![original_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(path, "/movies/new.mkv");
+        assert_eq!(status, "active");
+
+        // The move transition should exist with from_path set.
+        let from_path: String = conn
+            .query_row(
+                "SELECT from_path FROM file_transitions \
+                 WHERE file_id = ?1 AND path = ?2",
+                params![original_id.to_string(), "/movies/new.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(from_path, "/movies/old.mkv");
+
+        // There should be exactly one file row for the new path (no leftover New row).
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE path = ?1",
+                params!["/movies/new.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "only the promoted candidate row, no separate New row"
+        );
     }
 }

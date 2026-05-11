@@ -291,6 +291,32 @@ pub struct ReconcileResult {
     pub needs_introspection: Vec<PathBuf>,
 }
 
+/// Outcome of a [`FileStorage::finish_scan_session`] call.
+///
+/// Returned instead of a bare `u32` so that move-promotion counts can be
+/// threaded back to the caller alongside the missing count.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScanFinishOutcome {
+    /// Files that were not seen this session and were marked `missing`.
+    pub missing: u32,
+    /// Files that were ingested as `New` this session but were retroactively
+    /// promoted to `Moved` during the finish pass (because an `active` file
+    /// with a matching `expected_hash` was found to be absent).
+    pub promoted_moves: u32,
+}
+
+impl ScanFinishOutcome {
+    /// Create a new outcome with both counts.
+    #[must_use]
+    pub fn new(missing: u32, promoted_moves: u32) -> Self {
+        Self {
+            missing,
+            promoted_moves,
+        }
+    }
+}
+
 /// Identifier for a scan session. Newtype around `Uuid` so callers can't
 /// accidentally mix scan session IDs with the unrelated `voom process`
 /// `session_id` that lives on `plans` and `file_transitions`.

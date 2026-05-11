@@ -177,13 +177,17 @@ pub trait FileStorage: Send + Sync {
         file: &crate::transition::DiscoveredFile,
     ) -> Result<crate::transition::IngestDecision>;
 
-    /// Finish a scan session. Performs the deferred missing-file pass:
-    /// active files under any of the session's recorded roots that were
-    /// not ingested in this session are marked `missing`. Returns the
-    /// missing count from this pass.
+    /// Finish a scan session. Performs the deferred missing-file pass and
+    /// move promotion: active files under any of the session's recorded roots
+    /// that were not ingested this session are marked `missing`, UNLESS a
+    /// `New`-this-session row has a matching `content_hash`, in which case
+    /// the pair is promoted to a move. Returns counts of both outcomes.
     ///
     /// Errors if the session is not currently `InProgress`. See spec §6.4.
-    fn finish_scan_session(&self, session: crate::transition::ScanSessionId) -> Result<u32>;
+    fn finish_scan_session(
+        &self,
+        session: crate::transition::ScanSessionId,
+    ) -> Result<crate::transition::ScanFinishOutcome>;
 
     /// Cancel a scan session. Never marks any file missing. Used by the CLI
     /// when scan errors out mid-way. See spec §6.5.

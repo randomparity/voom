@@ -118,7 +118,9 @@ fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
 //   1. self.sessions  (scan session lifecycle)
 //   2. self.last_seen (per-path session stamps)
 //   3. self.files     (file rows)
-// Always acquire in this order, top to bottom. Release in reverse.
+// Always acquire in this order when holding multiple simultaneously.
+// `new_in_session` and `transitions` are always acquired in isolation
+// (never while holding sessions/last_seen/files).
 pub struct InMemoryStore {
     files: Mutex<HashMap<Uuid, MediaFile>>,
     jobs: Mutex<HashMap<Uuid, Job>>,
@@ -133,6 +135,10 @@ pub struct InMemoryStore {
     plugin_data: Mutex<HashMap<(String, String), Vec<u8>>>,
     sessions: Mutex<HashMap<crate::transition::ScanSessionId, InMemorySessionRow>>,
     last_seen: Mutex<HashMap<std::path::PathBuf, crate::transition::ScanSessionId>>,
+    /// Tracks which file IDs were inserted as `New` (not Moved/Unchanged/etc.)
+    /// during each open scan session, so finish_scan_session can promote them.
+    new_in_session:
+        Mutex<HashMap<crate::transition::ScanSessionId, std::collections::HashSet<Uuid>>>,
 }
 
 impl InMemoryStore {
@@ -151,6 +157,7 @@ impl InMemoryStore {
             plugin_data: Mutex::new(HashMap::new()),
             sessions: Default::default(),
             last_seen: Default::default(),
+            new_in_session: Default::default(),
         }
     }
 
@@ -474,13 +481,27 @@ impl FileStorage for InMemoryStore {
         new_file.status = FileStatus::Active;
         files.insert(new_id, new_file);
         last_seen.insert(file.path.clone(), session);
+        // Release other locks before acquiring new_in_session (preserve lock order).
+        drop(files);
+        drop(last_seen);
+        // Track this file ID as new in the session for move-promotion at finish time.
+        self.new_in_session
+            .lock()
+            .entry(session)
+            .or_default()
+            .insert(new_id);
         Ok(crate::transition::IngestDecision::New {
             file_id: new_id,
             needs_introspection: true,
         })
     }
 
-    fn finish_scan_session(&self, session: crate::transition::ScanSessionId) -> Result<u32> {
+    fn finish_scan_session(
+        &self,
+        session: crate::transition::ScanSessionId,
+    ) -> Result<crate::transition::ScanFinishOutcome> {
+        use crate::transition::ScanFinishOutcome;
+
         // Step 1: validate session status and clone roots, then release sessions
         // before acquiring last_seen and files (preserves documented lock order).
         let roots = {
@@ -500,7 +521,93 @@ impl FileStorage for InMemoryStore {
             row.roots.clone()
         };
 
-        // Step 2: run the missing pass (last_seen then files, in order).
+        // Step 2: collect the New-this-session IDs (released before acquiring other locks).
+        let new_ids: std::collections::HashSet<Uuid> = self
+            .new_in_session
+            .lock()
+            .get(&session)
+            .cloned()
+            .unwrap_or_default();
+
+        // Step 3: identify move pairs (read-only pass; releases all locks when done).
+        // A move pair is (candidate_id, new_id, old_path, new_path):
+        //   candidate = active file under roots not seen this session with expected_hash
+        //   new_id    = a New-this-session file whose content_hash == candidate.expected_hash
+        let move_pairs: Vec<(Uuid, Uuid, std::path::PathBuf, std::path::PathBuf)> = {
+            let last_seen = self.last_seen.lock();
+            let files = self.files.lock();
+
+            let new_by_hash: HashMap<String, (Uuid, std::path::PathBuf, u64)> = files
+                .iter()
+                .filter(|(id, _)| new_ids.contains(id))
+                .filter_map(|(id, f)| {
+                    f.content_hash
+                        .as_ref()
+                        .map(|h| (h.clone(), (*id, f.path.clone(), f.size)))
+                })
+                .collect();
+
+            files
+                .values()
+                .filter(|f| {
+                    f.status == FileStatus::Active
+                        && roots.iter().any(|r| f.path.starts_with(r))
+                        && last_seen.get(&f.path) != Some(&session)
+                        && f.expected_hash.is_some()
+                })
+                .filter_map(|f| {
+                    let hash = f.expected_hash.as_deref()?;
+                    let (new_id, new_path, _) = new_by_hash.get(hash)?;
+                    Some((f.id, *new_id, f.path.clone(), new_path.clone()))
+                })
+                .collect()
+        };
+
+        // Step 4: apply promotions one by one. Each iteration acquires/releases locks.
+        let mut promoted_moves = 0u32;
+        for (candidate_id, new_id, old_path, new_path) in &move_pairs {
+            // Read the New row's data.
+            let (new_size, new_hash) = {
+                let files = self.files.lock();
+                match files.get(new_id) {
+                    Some(f) => (f.size, f.content_hash.clone()),
+                    None => continue,
+                }
+            };
+
+            // Remove the New row.
+            self.files.lock().remove(new_id);
+
+            // Update the candidate row to the new path.
+            {
+                let mut files = self.files.lock();
+                if let Some(candidate) = files.get_mut(candidate_id) {
+                    candidate.path = new_path.clone();
+                    candidate.size = new_size;
+                    candidate.content_hash = new_hash.clone();
+                    candidate.status = FileStatus::Active;
+                }
+            }
+
+            // Update last_seen so the missing pass below skips the new path.
+            self.last_seen.lock().insert(new_path.clone(), session);
+
+            // Record a move transition.
+            let move_tx = FileTransition::new(
+                *candidate_id,
+                new_path.clone(),
+                new_hash.unwrap_or_default(),
+                new_size,
+                TransitionSource::Discovery,
+            )
+            .with_from_path(old_path.clone())
+            .with_detail("detected_move");
+            self.transitions.lock().push(move_tx);
+
+            promoted_moves += 1;
+        }
+
+        // Step 5: missing pass (last_seen then files, in order).
         let missing = {
             let last_seen = self.last_seen.lock();
             let mut files = self.files.lock();
@@ -522,11 +629,12 @@ impl FileStorage for InMemoryStore {
             count
         };
 
-        // Step 3: re-acquire sessions to flip status to Completed.
+        // Step 6: flip session status to Completed.
         if let Some(row) = self.sessions.lock().get_mut(&session) {
             row.status = crate::transition::ScanSessionStatus::Completed;
         }
-        Ok(missing)
+
+        Ok(ScanFinishOutcome::new(missing, promoted_moves))
     }
 
     fn cancel_scan_session(&self, session: crate::transition::ScanSessionId) -> Result<()> {

@@ -208,12 +208,14 @@ fn drive_session_ingest(
 
     match ingest_result {
         Ok(()) => {
-            let missing = store
+            let finish = store
                 .finish_scan_session(session)
                 .context("finish_scan_session failed")?;
+            // Promoted moves were counted as New during ingestion; correct both totals.
+            moved += finish.promoted_moves;
             if !quiet {
-                if missing > 0 {
-                    print_missing_count(missing);
+                if finish.missing > 0 {
+                    print_missing_count(finish.missing);
                 }
                 if moved > 0 {
                     eprintln!("  {} {} files moved/renamed", style("Moved").dim(), moved,);
