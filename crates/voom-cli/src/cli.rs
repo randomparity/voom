@@ -104,6 +104,10 @@ pub enum Commands {
     #[command(subcommand)]
     Backup(BackupCommands),
 
+    /// Generate or upload sanitized bug reports
+    #[command(subcommand)]
+    BugReport(BugReportCommands),
+
     /// First-time setup
     Init,
 
@@ -662,6 +666,50 @@ pub enum BackupCommands {
         #[arg(long)]
         yes: bool,
     },
+}
+
+// === Bug Report ===
+
+#[derive(Subcommand)]
+pub enum BugReportCommands {
+    /// Generate a local sanitized bug report for review
+    Generate(BugReportGenerateArgs),
+    /// Upload a previously generated sanitized bug report
+    Upload(BugReportUploadArgs),
+}
+
+#[derive(clap::Args)]
+pub struct BugReportGenerateArgs {
+    /// Output directory for the generated report
+    #[arg(long)]
+    pub out: PathBuf,
+    /// Processing session UUID to include
+    #[arg(long)]
+    pub session: Option<String>,
+    /// Policy file to include after redaction
+    #[arg(long)]
+    pub policy: Option<PathBuf>,
+    /// Library root to use for stable library path redactions
+    #[arg(long)]
+    pub library: Option<PathBuf>,
+    /// Recent event rows to include when no session filter is available
+    #[arg(long, default_value_t = 500)]
+    pub event_limit: u32,
+    /// Recent jobs to include
+    #[arg(long, default_value_t = 100)]
+    pub job_limit: u32,
+}
+
+#[derive(clap::Args)]
+pub struct BugReportUploadArgs {
+    /// Directory produced by `voom bug-report generate`
+    pub report_dir: PathBuf,
+    /// GitHub issue number to comment on
+    #[arg(long)]
+    pub issue: u32,
+    /// GitHub repository in owner/name form
+    #[arg(long, default_value = "randomparity/voom")]
+    pub repo: String,
 }
 
 // === Verify ===
@@ -1969,6 +2017,65 @@ mod tests {
     fn test_doctor_alias_backward_compat() {
         let cli = parse(&["voom", "doctor"]);
         assert!(matches!(cli.command, Commands::Doctor));
+    }
+
+    #[test]
+    fn test_bug_report_generate_args() {
+        let cli = parse(&[
+            "voom",
+            "bug-report",
+            "generate",
+            "--out",
+            "/tmp/voom-bug",
+            "--session",
+            "11111111-1111-1111-1111-111111111111",
+            "--policy",
+            "policy.voom",
+            "--library",
+            "/media/movies",
+        ]);
+
+        match cli.command {
+            Commands::BugReport(BugReportCommands::Generate(args)) => {
+                assert_eq!(args.out, PathBuf::from("/tmp/voom-bug"));
+                assert_eq!(
+                    args.session.as_deref(),
+                    Some("11111111-1111-1111-1111-111111111111")
+                );
+                assert_eq!(
+                    args.policy.as_deref(),
+                    Some(std::path::Path::new("policy.voom"))
+                );
+                assert_eq!(
+                    args.library.as_deref(),
+                    Some(std::path::Path::new("/media/movies"))
+                );
+            }
+            _ => panic!("expected bug-report generate"),
+        }
+    }
+
+    #[test]
+    fn test_bug_report_upload_args() {
+        let cli = parse(&[
+            "voom",
+            "bug-report",
+            "upload",
+            "/tmp/voom-bug",
+            "--issue",
+            "337",
+            "--repo",
+            "randomparity/voom",
+        ]);
+
+        match cli.command {
+            Commands::BugReport(BugReportCommands::Upload(args)) => {
+                assert_eq!(args.report_dir, PathBuf::from("/tmp/voom-bug"));
+                assert_eq!(args.issue, 337);
+                assert_eq!(args.repo, "randomparity/voom");
+            }
+            _ => panic!("expected bug-report upload"),
+        }
     }
 
     #[test]
