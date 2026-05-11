@@ -702,67 +702,18 @@ impl FileStorage for SqliteStore {
             .transaction()
             .map_err(storage_err("failed to begin ingest transaction"))?;
 
-        // Session must be in_progress
-        let status: Option<String> = tx
-            .query_row(
-                "SELECT status FROM scan_sessions WHERE id = ?1",
-                params![&session_str],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(storage_err("failed to look up scan session"))?;
-        match status.as_deref().and_then(ScanSessionStatus::parse) {
-            Some(ScanSessionStatus::InProgress) => {}
-            Some(other) => {
-                return Err(voom_domain::errors::VoomError::Storage {
-                    kind: voom_domain::errors::StorageErrorKind::Other,
-                    message: format!(
-                        "scan session {session_str} is not in_progress (status: {})",
-                        other.as_str()
-                    ),
-                });
-            }
-            None if status.is_some() => {
-                return Err(voom_domain::errors::VoomError::Storage {
-                    kind: voom_domain::errors::StorageErrorKind::Other,
-                    message: format!(
-                        "scan session {session_str} has unrecognized status: {}",
-                        status.as_deref().unwrap_or(""),
-                    ),
-                });
-            }
-            None => {
-                return Err(voom_domain::errors::VoomError::Storage {
-                    kind: voom_domain::errors::StorageErrorKind::NotFound,
-                    message: format!("unknown scan session {session_str}"),
-                });
-            }
-        }
+        validate_session_in_progress_in_tx(&tx, &session_str)?;
+        bump_session_heartbeat_in_tx(&tx, &session_str, &now)?;
 
-        // Bump heartbeat as part of this ingest transaction.
-        tx.execute(
-            "UPDATE scan_sessions SET last_heartbeat_at = ?1 WHERE id = ?2",
-            params![&now, &session_str],
-        )
-        .map_err(storage_err("failed to bump scan session heartbeat"))?;
+        let ctx = IngestCtx {
+            now: &now,
+            session_str: &session_str,
+            path_str: &path_str,
+            filename: &filename,
+            file,
+        };
 
-        // Look up existing row by path
-        let existing: Option<(String, Option<String>, i64, Option<String>)> = tx
-            .query_row(
-                "SELECT id, expected_hash, size, last_seen_session_id \
-                 FROM files WHERE path = ?1",
-                params![&path_str],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(storage_err("failed to look up existing file"))?;
+        let existing = lookup_existing_file_in_tx(&tx, &path_str)?;
 
         if let Some((existing_id, expected_hash, existing_size, last_seen)) = existing {
             // Duplicate fast-path
@@ -773,119 +724,28 @@ impl FileStorage for SqliteStore {
                 return Ok(IngestDecision::Duplicate { file_id: file_uuid });
             }
 
-            // Stub recovery: if this row was last seen by a non-completed
-            // session (cancelled, in_progress, or unknown), it's a stub
-            // from an interrupted scan. Delete it and fall through.
-            let needs_recovery: bool = if let Some(prior) = &last_seen {
-                let prior_status: Option<String> = tx
-                    .query_row(
-                        "SELECT status FROM scan_sessions WHERE id = ?1",
-                        params![prior],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(storage_err("failed to look up prior session status"))?;
-                !matches!(
-                    prior_status.as_deref().and_then(ScanSessionStatus::parse),
-                    Some(ScanSessionStatus::Completed)
-                )
-            } else {
-                false
-            };
-
+            let needs_recovery = prior_session_needs_recovery_in_tx(&tx, last_seen.as_deref())?;
             let hash_matches = expected_hash
                 .as_ref()
                 .is_none_or(|eh| eh == &file.content_hash);
 
             if needs_recovery {
-                // Stub from a non-completed session — delete unconditionally
-                // (regardless of hash match), then fall through to no-row path.
-                tx.execute(
-                    "UPDATE files SET superseded_by = NULL WHERE superseded_by = ?1",
-                    params![&existing_id],
-                )
-                .map_err(storage_err(
-                    "failed to clear dangling supersession during stub recovery",
-                ))?;
-                tx.execute(
-                    "DELETE FROM file_transitions WHERE file_id = ?1",
-                    params![&existing_id],
-                )
-                .map_err(storage_err("failed to delete stub transitions"))?;
-                tx.execute("DELETE FROM files WHERE id = ?1", params![&existing_id])
-                    .map_err(storage_err("failed to delete stub file row"))?;
+                recover_stub_in_tx(&tx, &existing_id)?;
+                // Fall through to no-row path.
             } else if hash_matches {
-                // Unchanged
-                tx.execute(
-                    "UPDATE files SET size = ?1, content_hash = ?2, \
-                     status = 'active', missing_since = NULL, \
-                     last_seen_session_id = ?3, \
-                     updated_at = ?4 WHERE id = ?5",
-                    params![
-                        file.size as i64,
-                        &file.content_hash,
-                        &session_str,
-                        &now,
-                        &existing_id
-                    ],
-                )
-                .map_err(storage_err("failed to update unchanged file"))?;
-
-                if expected_hash.is_none() {
-                    tx.execute(
-                        "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
-                        params![&file.content_hash, &existing_id],
-                    )
-                    .map_err(storage_err("failed to backfill expected_hash"))?;
-                }
-
+                let file_uuid =
+                    ingest_unchanged_in_tx(&tx, &ctx, &existing_id, expected_hash.is_none())?;
                 tx.commit()
                     .map_err(storage_err("failed to commit unchanged ingest"))?;
-                let file_uuid = super::parse_uuid(&existing_id)?;
                 return Ok(IngestDecision::Unchanged { file_id: file_uuid });
             } else {
-                // Hash mismatch → ExternallyChanged (existing implementation).
-                let old_uuid = super::parse_uuid(&existing_id)?;
-                let new_id = Uuid::new_v4();
-
-                let ext_transition = FileTransition::new(
-                    old_uuid,
-                    file.path.clone(),
-                    file.content_hash.clone(),
-                    file.size,
-                    TransitionSource::External,
-                )
-                .with_from(expected_hash.clone(), Some(existing_size as u64));
-                insert_transition_in_tx(&tx, &ext_transition, &now)?;
-
-                tx.execute(
-                    "UPDATE files SET path = NULL, status = 'missing', \
-                     missing_since = ?1, superseded_by = ?2 WHERE id = ?3",
-                    params![&now, new_id.to_string(), &existing_id],
-                )
-                .map_err(storage_err("failed to clear old file for external change"))?;
-                insert_active_file_in_tx(
+                let (new_id, old_uuid) = ingest_externally_changed_in_tx(
                     &tx,
-                    InsertActiveFile {
-                        new_id,
-                        path_str: &path_str,
-                        filename: &filename,
-                        file,
-                        now: &now,
-                        session_str: &session_str,
-                        err_msg: "failed to insert new file for external change",
-                    },
+                    &ctx,
+                    &existing_id,
+                    expected_hash.as_deref(),
+                    existing_size,
                 )?;
-
-                let disc_transition = FileTransition::new(
-                    new_id,
-                    file.path.clone(),
-                    file.content_hash.clone(),
-                    file.size,
-                    TransitionSource::Discovery,
-                );
-                insert_transition_in_tx(&tx, &disc_transition, &now)?;
-
                 tx.commit()
                     .map_err(storage_err("failed to commit external-change ingest"))?;
                 return Ok(IngestDecision::ExternallyChanged {
@@ -895,77 +755,13 @@ impl FileStorage for SqliteStore {
             }
         }
 
-        // Control reaches here either because there was no row at this path,
-        // or because stub recovery deleted the row above. Either way, proceed
-        // to the move-detection / new-file path.
-
-        // No row at this path. Check for move: a missing file with matching
-        // expected_hash. The status='missing' filter prevents double-consumption
-        // within a session — once we reactivate a row it's no longer 'missing'.
-        // Move detection is scoped to the current session's scanned roots so a
-        // hash collision across roots can't falsely promote to Moved.
-        let session_roots: Vec<PathBuf> = {
-            let roots_json: String = tx
-                .query_row(
-                    "SELECT roots_json FROM scan_sessions WHERE id = ?1",
-                    params![&session_str],
-                    |row| row.get(0),
-                )
-                .map_err(storage_err("failed to load session roots for move lookup"))?;
-            serde_json::from_str(&roots_json)
-                .map_err(other_storage_err("failed to parse roots_json"))?
-        };
-
-        let move_match: Option<(String, String)> = {
-            let mut stmt = tx
-                .prepare(
-                    "SELECT id, path FROM files \
-                     WHERE expected_hash = ?1 AND status = 'missing' AND path IS NOT NULL",
-                )
-                .map_err(storage_err("failed to prepare move-candidate select"))?;
-            let candidates: Vec<(String, String)> = stmt
-                .query_map(params![&file.content_hash], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .map_err(storage_err("failed to query move candidates"))?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(storage_err("failed to collect move candidates"))?;
-            candidates
-                .into_iter()
-                .find(|(_, path)| is_under_any(Path::new(path), &session_roots))
-        };
+        // No row at this path (either originally or after stub recovery).
+        // Check for move: a missing file with matching expected_hash, scoped
+        // to the current session's roots.
+        let move_match = find_move_candidate_in_tx(&tx, &session_str, &file.content_hash)?;
 
         if let Some((missing_id, prior_path)) = move_match {
-            tx.execute(
-                "UPDATE files SET path = ?1, filename = ?2, \
-                 size = ?3, content_hash = ?4, \
-                 status = 'active', missing_since = NULL, \
-                 last_seen_session_id = ?5, \
-                 updated_at = ?6 WHERE id = ?7",
-                params![
-                    &path_str,
-                    filename,
-                    file.size as i64,
-                    &file.content_hash,
-                    &session_str,
-                    &now,
-                    &missing_id,
-                ],
-            )
-            .map_err(storage_err("failed to reactivate moved file"))?;
-
-            let file_uuid = super::parse_uuid(&missing_id)?;
-            let move_transition = voom_domain::transition::FileTransition::new(
-                file_uuid,
-                file.path.clone(),
-                file.content_hash.clone(),
-                file.size,
-                voom_domain::transition::TransitionSource::Discovery,
-            )
-            .with_from_path(PathBuf::from(prior_path.clone()))
-            .with_detail("detected_move");
-            insert_transition_in_tx(&tx, &move_transition, &now)?;
-
+            let file_uuid = ingest_moved_in_tx(&tx, &ctx, &missing_id, &prior_path)?;
             tx.commit()
                 .map_err(storage_err("failed to commit moved ingest"))?;
             return Ok(IngestDecision::Moved {
@@ -974,30 +770,7 @@ impl FileStorage for SqliteStore {
             });
         }
 
-        // Truly new file
-        let new_id = Uuid::new_v4();
-        insert_active_file_in_tx(
-            &tx,
-            InsertActiveFile {
-                new_id,
-                path_str: &path_str,
-                filename: &filename,
-                file,
-                now: &now,
-                session_str: &session_str,
-                err_msg: "failed to insert new file in ingest",
-            },
-        )?;
-
-        let disc_transition = FileTransition::new(
-            new_id,
-            file.path.clone(),
-            file.content_hash.clone(),
-            file.size,
-            TransitionSource::Discovery,
-        );
-        insert_transition_in_tx(&tx, &disc_transition, &now)?;
-
+        let new_id = ingest_new_in_tx(&tx, &ctx)?;
         tx.commit()
             .map_err(storage_err("failed to commit ingest transaction"))?;
 
@@ -1237,6 +1010,335 @@ impl FileStorage for SqliteStore {
         .map_err(storage_err("failed to cancel scan session"))?;
         Ok(())
     }
+}
+
+/// Bundles the per-call common context for ingest helpers. Avoids
+/// long parameter lists and keeps each helper's signature consistent.
+struct IngestCtx<'a> {
+    now: &'a str,
+    session_str: &'a str,
+    path_str: &'a str,
+    filename: &'a str,
+    file: &'a DiscoveredFile,
+}
+
+/// Validate that the given scan session exists and is `InProgress`. Produces
+/// the same three error variants as the inline check it replaces:
+/// `Storage{Other}` for a non-`InProgress` status, `Storage{Other}` for an
+/// unrecognized status string, and `Storage{NotFound}` for an unknown session.
+fn validate_session_in_progress_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_str: &str,
+) -> Result<()> {
+    let status: Option<String> = tx
+        .query_row(
+            "SELECT status FROM scan_sessions WHERE id = ?1",
+            params![session_str],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage_err("failed to look up scan session"))?;
+    match status.as_deref().and_then(ScanSessionStatus::parse) {
+        Some(ScanSessionStatus::InProgress) => Ok(()),
+        Some(other) => Err(voom_domain::errors::VoomError::Storage {
+            kind: voom_domain::errors::StorageErrorKind::Other,
+            message: format!(
+                "scan session {session_str} is not in_progress (status: {})",
+                other.as_str()
+            ),
+        }),
+        None if status.is_some() => Err(voom_domain::errors::VoomError::Storage {
+            kind: voom_domain::errors::StorageErrorKind::Other,
+            message: format!(
+                "scan session {session_str} has unrecognized status: {}",
+                status.as_deref().unwrap_or(""),
+            ),
+        }),
+        None => Err(voom_domain::errors::VoomError::Storage {
+            kind: voom_domain::errors::StorageErrorKind::NotFound,
+            message: format!("unknown scan session {session_str}"),
+        }),
+    }
+}
+
+/// Bump the `last_heartbeat_at` of the given scan session inside the caller's
+/// transaction.
+fn bump_session_heartbeat_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_str: &str,
+    now: &str,
+) -> Result<()> {
+    tx.execute(
+        "UPDATE scan_sessions SET last_heartbeat_at = ?1 WHERE id = ?2",
+        params![now, session_str],
+    )
+    .map_err(storage_err("failed to bump scan session heartbeat"))?;
+    Ok(())
+}
+
+/// Existing-file lookup result: `(id, expected_hash, size, last_seen_session_id)`.
+type ExistingFileRow = (String, Option<String>, i64, Option<String>);
+
+/// Look up an existing file row by path. Returns `(id, expected_hash, size,
+/// last_seen_session_id)` if present.
+fn lookup_existing_file_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    path_str: &str,
+) -> Result<Option<ExistingFileRow>> {
+    tx.query_row(
+        "SELECT id, expected_hash, size, last_seen_session_id \
+         FROM files WHERE path = ?1",
+        params![path_str],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        },
+    )
+    .optional()
+    .map_err(storage_err("failed to look up existing file"))
+}
+
+/// Decide whether an existing row whose `last_seen_session_id` is `prior`
+/// represents a stub from a non-completed session and therefore needs
+/// recovery. Returns `false` if `prior` is `None`.
+fn prior_session_needs_recovery_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    prior: Option<&str>,
+) -> Result<bool> {
+    let Some(prior) = prior else {
+        return Ok(false);
+    };
+    let prior_status: Option<String> = tx
+        .query_row(
+            "SELECT status FROM scan_sessions WHERE id = ?1",
+            params![prior],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage_err("failed to look up prior session status"))?;
+    Ok(!matches!(
+        prior_status.as_deref().and_then(ScanSessionStatus::parse),
+        Some(ScanSessionStatus::Completed)
+    ))
+}
+
+/// Find a `missing` file with matching `expected_hash` whose previous path
+/// lies under one of the current session's scanned roots. Used by the
+/// move-detection branch of `ingest_discovered_file`.
+fn find_move_candidate_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_str: &str,
+    content_hash: &str,
+) -> Result<Option<(String, String)>> {
+    let roots_json: String = tx
+        .query_row(
+            "SELECT roots_json FROM scan_sessions WHERE id = ?1",
+            params![session_str],
+            |row| row.get(0),
+        )
+        .map_err(storage_err("failed to load session roots for move lookup"))?;
+    let session_roots: Vec<PathBuf> = serde_json::from_str(&roots_json)
+        .map_err(other_storage_err("failed to parse roots_json"))?;
+
+    let mut stmt = tx
+        .prepare(
+            "SELECT id, path FROM files \
+             WHERE expected_hash = ?1 AND status = 'missing' AND path IS NOT NULL",
+        )
+        .map_err(storage_err("failed to prepare move-candidate select"))?;
+    let candidates: Vec<(String, String)> = stmt
+        .query_map(params![content_hash], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(storage_err("failed to query move candidates"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(storage_err("failed to collect move candidates"))?;
+    Ok(candidates
+        .into_iter()
+        .find(|(_, path)| is_under_any(Path::new(path), &session_roots)))
+}
+
+/// Stub recovery: delete the dangling row + its transitions, clear any
+/// inbound supersession pointers. After this returns Ok, the caller must
+/// fall through to the no-row path (move-or-new).
+fn recover_stub_in_tx(tx: &rusqlite::Transaction<'_>, existing_id: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE files SET superseded_by = NULL WHERE superseded_by = ?1",
+        params![existing_id],
+    )
+    .map_err(storage_err(
+        "failed to clear dangling supersession during stub recovery",
+    ))?;
+    tx.execute(
+        "DELETE FROM file_transitions WHERE file_id = ?1",
+        params![existing_id],
+    )
+    .map_err(storage_err("failed to delete stub transitions"))?;
+    tx.execute("DELETE FROM files WHERE id = ?1", params![existing_id])
+        .map_err(storage_err("failed to delete stub file row"))?;
+    Ok(())
+}
+
+/// Unchanged branch: bump size/hash/status/last_seen, optionally backfill
+/// expected_hash. Returns the existing row's UUID for the `IngestDecision`.
+fn ingest_unchanged_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    ctx: &IngestCtx<'_>,
+    existing_id: &str,
+    expected_hash_was_none: bool,
+) -> Result<Uuid> {
+    tx.execute(
+        "UPDATE files SET size = ?1, content_hash = ?2, \
+         status = 'active', missing_since = NULL, \
+         last_seen_session_id = ?3, \
+         updated_at = ?4 WHERE id = ?5",
+        params![
+            ctx.file.size as i64,
+            &ctx.file.content_hash,
+            ctx.session_str,
+            ctx.now,
+            existing_id,
+        ],
+    )
+    .map_err(storage_err("failed to update unchanged file"))?;
+
+    if expected_hash_was_none {
+        tx.execute(
+            "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
+            params![&ctx.file.content_hash, existing_id],
+        )
+        .map_err(storage_err("failed to backfill expected_hash"))?;
+    }
+
+    super::parse_uuid(existing_id)
+}
+
+/// `ExternallyChanged` branch: insert the external-change transition,
+/// supersede the old row, insert the new active row, insert the discovery
+/// transition. Returns `(new_id, old_id)`.
+fn ingest_externally_changed_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    ctx: &IngestCtx<'_>,
+    existing_id: &str,
+    expected_hash: Option<&str>,
+    existing_size: i64,
+) -> Result<(Uuid, Uuid)> {
+    let old_uuid = super::parse_uuid(existing_id)?;
+    let new_id = Uuid::new_v4();
+
+    let ext_transition = FileTransition::new(
+        old_uuid,
+        ctx.file.path.clone(),
+        ctx.file.content_hash.clone(),
+        ctx.file.size,
+        TransitionSource::External,
+    )
+    .with_from(expected_hash.map(str::to_owned), Some(existing_size as u64));
+    insert_transition_in_tx(tx, &ext_transition, ctx.now)?;
+
+    tx.execute(
+        "UPDATE files SET path = NULL, status = 'missing', \
+         missing_since = ?1, superseded_by = ?2 WHERE id = ?3",
+        params![ctx.now, new_id.to_string(), existing_id],
+    )
+    .map_err(storage_err("failed to clear old file for external change"))?;
+    insert_active_file_in_tx(
+        tx,
+        InsertActiveFile {
+            new_id,
+            path_str: ctx.path_str,
+            filename: ctx.filename,
+            file: ctx.file,
+            now: ctx.now,
+            session_str: ctx.session_str,
+            err_msg: "failed to insert new file for external change",
+        },
+    )?;
+
+    let disc_transition = FileTransition::new(
+        new_id,
+        ctx.file.path.clone(),
+        ctx.file.content_hash.clone(),
+        ctx.file.size,
+        TransitionSource::Discovery,
+    );
+    insert_transition_in_tx(tx, &disc_transition, ctx.now)?;
+
+    Ok((new_id, old_uuid))
+}
+
+/// Moved branch: reactivate the missing row at the new path, insert a
+/// move-typed Discovery transition. Returns the reactivated row's UUID.
+fn ingest_moved_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    ctx: &IngestCtx<'_>,
+    missing_id: &str,
+    prior_path: &str,
+) -> Result<Uuid> {
+    tx.execute(
+        "UPDATE files SET path = ?1, filename = ?2, \
+         size = ?3, content_hash = ?4, \
+         status = 'active', missing_since = NULL, \
+         last_seen_session_id = ?5, \
+         updated_at = ?6 WHERE id = ?7",
+        params![
+            ctx.path_str,
+            ctx.filename,
+            ctx.file.size as i64,
+            &ctx.file.content_hash,
+            ctx.session_str,
+            ctx.now,
+            missing_id,
+        ],
+    )
+    .map_err(storage_err("failed to reactivate moved file"))?;
+
+    let file_uuid = super::parse_uuid(missing_id)?;
+    let move_transition = FileTransition::new(
+        file_uuid,
+        ctx.file.path.clone(),
+        ctx.file.content_hash.clone(),
+        ctx.file.size,
+        TransitionSource::Discovery,
+    )
+    .with_from_path(PathBuf::from(prior_path))
+    .with_detail("detected_move");
+    insert_transition_in_tx(tx, &move_transition, ctx.now)?;
+
+    Ok(file_uuid)
+}
+
+/// New-file branch: insert the active row, insert the Discovery transition.
+/// Returns the freshly allocated UUID.
+fn ingest_new_in_tx(tx: &rusqlite::Transaction<'_>, ctx: &IngestCtx<'_>) -> Result<Uuid> {
+    let new_id = Uuid::new_v4();
+    insert_active_file_in_tx(
+        tx,
+        InsertActiveFile {
+            new_id,
+            path_str: ctx.path_str,
+            filename: ctx.filename,
+            file: ctx.file,
+            now: ctx.now,
+            session_str: ctx.session_str,
+            err_msg: "failed to insert new file in ingest",
+        },
+    )?;
+
+    let disc_transition = FileTransition::new(
+        new_id,
+        ctx.file.path.clone(),
+        ctx.file.content_hash.clone(),
+        ctx.file.size,
+        TransitionSource::Discovery,
+    );
+    insert_transition_in_tx(tx, &disc_transition, ctx.now)?;
+
+    Ok(new_id)
 }
 
 /// Parameters for [`insert_active_file_in_tx`]. Bundled into a struct so the
