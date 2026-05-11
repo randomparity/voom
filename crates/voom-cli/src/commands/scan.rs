@@ -137,12 +137,6 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
 /// Outcome of driving the session-based ingest flow.
 struct ReconcileOutcome {
     needs_introspection: Vec<FileDiscoveredEvent>,
-    new_files: u32,
-    unchanged: u32,
-    moved: u32,
-    external_changes: u32,
-    duplicates: u32,
-    missing: u32,
 }
 
 /// Drive the scan-session lifecycle (begin → ingest each → finish) over
@@ -159,15 +153,7 @@ fn drive_session_ingest(
 ) -> anyhow::Result<ReconcileOutcome> {
     use voom_domain::transition::{DiscoveredFile, IngestDecision};
 
-    let mut outcome = ReconcileOutcome {
-        needs_introspection: Vec::new(),
-        new_files: 0,
-        unchanged: 0,
-        moved: 0,
-        external_changes: 0,
-        duplicates: 0,
-        missing: 0,
-    };
+    let mut needs_introspection: Vec<FileDiscoveredEvent> = Vec::new();
 
     if !hash_files {
         // --no-hash path: dispatch events + path-only missing-mark
@@ -181,15 +167,21 @@ fn drive_session_ingest(
         for event in events {
             kernel.dispatch(Event::FileDiscovered(event.clone()));
         }
-        outcome.missing = missing;
-        outcome.needs_introspection = events.to_vec();
-        return Ok(outcome);
+        needs_introspection = events.to_vec();
+        return Ok(ReconcileOutcome {
+            needs_introspection,
+        });
     }
 
     let session = store
         .begin_scan_session(paths)
         .context("failed to begin scan session")?;
 
+    let mut moved = 0u32;
+    let mut external_changes = 0u32;
+
+    // IIFE: collect the loop's result so we can call cancel_scan_session
+    // on error before bubbling up.
     let ingest_result: anyhow::Result<()> = (|| {
         for event in events {
             // Dispatch FIRST so bus subscribers see every event, matching today's order.
@@ -203,14 +195,12 @@ fn drive_session_ingest(
                 .ingest_discovered_file(session, &df)
                 .context("ingest_discovered_file failed")?;
             match &decision {
-                IngestDecision::New { .. } => outcome.new_files += 1,
-                IngestDecision::Unchanged { .. } => outcome.unchanged += 1,
-                IngestDecision::ExternallyChanged { .. } => outcome.external_changes += 1,
-                IngestDecision::Moved { .. } => outcome.moved += 1,
-                IngestDecision::Duplicate { .. } => outcome.duplicates += 1,
+                IngestDecision::Moved { .. } => moved += 1,
+                IngestDecision::ExternallyChanged { .. } => external_changes += 1,
+                _ => {}
             }
             if decision.needs_introspection_path(&event.path).is_some() {
-                outcome.needs_introspection.push(event.clone());
+                needs_introspection.push(event.clone());
             }
         }
         Ok(())
@@ -218,29 +208,27 @@ fn drive_session_ingest(
 
     match ingest_result {
         Ok(()) => {
-            outcome.missing = store
+            let missing = store
                 .finish_scan_session(session)
                 .context("finish_scan_session failed")?;
             if !quiet {
-                if outcome.missing > 0 {
-                    print_missing_count(outcome.missing);
+                if missing > 0 {
+                    print_missing_count(missing);
                 }
-                if outcome.moved > 0 {
-                    eprintln!(
-                        "  {} {} files moved/renamed",
-                        style("Moved").dim(),
-                        outcome.moved,
-                    );
+                if moved > 0 {
+                    eprintln!("  {} {} files moved/renamed", style("Moved").dim(), moved,);
                 }
-                if outcome.external_changes > 0 {
+                if external_changes > 0 {
                     eprintln!(
-                        "  {} {} files externally changed",
+                        "  {} {} files changed externally",
                         style("Changed").dim(),
-                        outcome.external_changes,
+                        external_changes,
                     );
                 }
             }
-            Ok(outcome)
+            Ok(ReconcileOutcome {
+                needs_introspection,
+            })
         }
         Err(e) => {
             let _ = store.cancel_scan_session(session);
