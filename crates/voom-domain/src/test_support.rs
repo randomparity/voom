@@ -113,6 +113,12 @@ fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
 /// In-memory storage for testing. Implements the full `StorageTrait` via
 /// sub-traits with working file, job, transition, and plugin-data methods.
 /// Plan/stats methods are stubs.
+///
+// Lock acquisition order (to prevent deadlock):
+//   1. self.sessions  (scan session lifecycle)
+//   2. self.last_seen (per-path session stamps)
+//   3. self.files     (file rows)
+// Always acquire in this order, top to bottom. Release in reverse.
 pub struct InMemoryStore {
     files: Mutex<HashMap<Uuid, MediaFile>>,
     jobs: Mutex<HashMap<Uuid, Job>>,
@@ -365,12 +371,16 @@ impl FileStorage for InMemoryStore {
         // Verify session is in_progress
         {
             let sessions = self.sessions.lock();
-            let row = sessions
-                .get(&session)
-                .ok_or_else(|| crate::errors::VoomError::Other("unknown scan session".into()))?;
+            let row = sessions.get(&session).ok_or_else(|| {
+                crate::errors::VoomError::Other(format!("unknown scan session {session}").into())
+            })?;
             if row.status != crate::transition::ScanSessionStatus::InProgress {
                 return Err(crate::errors::VoomError::Other(
-                    "scan session is not in_progress".into(),
+                    format!(
+                        "scan session {session} is not in_progress (status: {:?})",
+                        row.status,
+                    )
+                    .into(),
                 ));
             }
         }
@@ -383,7 +393,15 @@ impl FileStorage for InMemoryStore {
                 .values()
                 .find(|f| f.path == file.path)
                 .map(|f| f.id)
-                .unwrap_or_else(Uuid::new_v4);
+                .ok_or_else(|| {
+                    crate::errors::VoomError::Other(
+                        format!(
+                            "duplicate path {} marked seen but not in files map",
+                            file.path.display(),
+                        )
+                        .into(),
+                    )
+                })?;
             return Ok(crate::transition::IngestDecision::Duplicate { file_id: id });
         }
 
@@ -463,34 +481,49 @@ impl FileStorage for InMemoryStore {
     }
 
     fn finish_scan_session(&self, session: crate::transition::ScanSessionId) -> Result<u32> {
-        let mut sessions = self.sessions.lock();
-        let row = sessions
-            .get(&session)
-            .ok_or_else(|| crate::errors::VoomError::Other("unknown scan session".into()))?
-            .clone();
-        if row.status != crate::transition::ScanSessionStatus::InProgress {
-            return Err(crate::errors::VoomError::Other(
-                "scan session is not in_progress".into(),
-            ));
-        }
-        let last_seen = self.last_seen.lock();
-        let mut files = self.files.lock();
-        let mut missing = 0u32;
-        for f in files.values_mut() {
-            if f.status != FileStatus::Active {
-                continue;
+        // Step 1: validate session status and clone roots, then release sessions
+        // before acquiring last_seen and files (preserves documented lock order).
+        let roots = {
+            let mut sessions = self.sessions.lock();
+            let row = sessions.get_mut(&session).ok_or_else(|| {
+                crate::errors::VoomError::Other(format!("unknown scan session {session}").into())
+            })?;
+            if row.status != crate::transition::ScanSessionStatus::InProgress {
+                return Err(crate::errors::VoomError::Other(
+                    format!(
+                        "scan session {session} is not in_progress (status: {:?})",
+                        row.status,
+                    )
+                    .into(),
+                ));
             }
-            let under_root = row.roots.iter().any(|r| f.path.starts_with(r));
-            if !under_root {
-                continue;
+            row.roots.clone()
+        };
+
+        // Step 2: run the missing pass (last_seen then files, in order).
+        let missing = {
+            let last_seen = self.last_seen.lock();
+            let mut files = self.files.lock();
+            let mut count = 0u32;
+            for f in files.values_mut() {
+                if f.status != FileStatus::Active {
+                    continue;
+                }
+                let under_root = roots.iter().any(|r| f.path.starts_with(r));
+                if !under_root {
+                    continue;
+                }
+                if last_seen.get(&f.path) == Some(&session) {
+                    continue;
+                }
+                f.status = FileStatus::Missing;
+                count += 1;
             }
-            if last_seen.get(&f.path) == Some(&session) {
-                continue;
-            }
-            f.status = FileStatus::Missing;
-            missing += 1;
-        }
-        if let Some(row) = sessions.get_mut(&session) {
+            count
+        };
+
+        // Step 3: re-acquire sessions to flip status to Completed.
+        if let Some(row) = self.sessions.lock().get_mut(&session) {
             row.status = crate::transition::ScanSessionStatus::Completed;
         }
         Ok(missing)
