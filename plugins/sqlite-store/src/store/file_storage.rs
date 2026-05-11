@@ -630,8 +630,8 @@ impl FileStorage for SqliteStore {
             .map_err(storage_err("failed to auto-abandon prior scan sessions"))?;
         }
         tx.execute(
-            "INSERT INTO scan_sessions (id, roots_json, status, started_at) \
-             VALUES (?1, ?2, 'in_progress', ?3)",
+            "INSERT INTO scan_sessions (id, roots_json, status, started_at, last_heartbeat_at) \
+             VALUES (?1, ?2, 'in_progress', ?3, ?3)",
             params![id.to_string(), roots_json, now],
         )
         .map_err(storage_err("failed to insert scan session"))?;

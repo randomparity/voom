@@ -167,7 +167,8 @@ CREATE TABLE IF NOT EXISTS scan_sessions (
     roots_json TEXT NOT NULL,
     status TEXT NOT NULL,
     started_at TEXT NOT NULL,
-    finished_at TEXT
+    finished_at TEXT,
+    last_heartbeat_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_scan_sessions_status ON scan_sessions(status);
@@ -513,6 +514,12 @@ fn migrate_scan_sessions(
             );
             CREATE INDEX IF NOT EXISTS idx_scan_sessions_status \
                 ON scan_sessions(status);",
+        )?;
+    }
+    if table_exists(conn, "scan_sessions")? && !has_column("scan_sessions", "last_heartbeat_at")? {
+        conn.execute_batch(
+            "ALTER TABLE scan_sessions ADD COLUMN last_heartbeat_at TEXT \
+                 NOT NULL DEFAULT '1970-01-01T00:00:00Z';",
         )?;
     }
     Ok(())
@@ -1458,5 +1465,96 @@ mod tests {
             )
             .unwrap();
         assert!(exists);
+    }
+
+    #[test]
+    fn scan_sessions_has_last_heartbeat_at_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        let mut stmt = conn.prepare("PRAGMA table_info(scan_sessions)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            cols.iter().any(|c| c == "last_heartbeat_at"),
+            "scan_sessions table should have last_heartbeat_at column; got {cols:?}"
+        );
+    }
+
+    #[test]
+    fn migration_adds_last_heartbeat_at_to_existing_scan_sessions_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        // Minimal files table to satisfy migrate_files_columns dependency.
+        conn.execute_batch(
+            "CREATE TABLE files (
+                id TEXT PRIMARY KEY,
+                path TEXT UNIQUE,
+                filename TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                container TEXT NOT NULL,
+                introspected_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE scan_sessions (
+                id TEXT PRIMARY KEY,
+                roots_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT
+            );",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let mut stmt = conn.prepare("PRAGMA table_info(scan_sessions)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(cols.iter().any(|c| c == "last_heartbeat_at"));
+    }
+
+    #[test]
+    fn migration_seeds_existing_in_progress_session_heartbeat_to_epoch() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        // Minimal files table to satisfy migrate_files_columns dependency.
+        conn.execute_batch(
+            "CREATE TABLE files (
+                id TEXT PRIMARY KEY,
+                path TEXT UNIQUE,
+                filename TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                container TEXT NOT NULL,
+                introspected_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE scan_sessions (
+                id TEXT PRIMARY KEY,
+                roots_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT
+            );
+            INSERT INTO scan_sessions (id, roots_json, status, started_at)
+                VALUES ('stale', '[\"/m\"]', 'in_progress', '2026-01-01T00:00:00Z');",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let heartbeat: String = conn
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = 'stale'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(heartbeat, "1970-01-01T00:00:00Z");
     }
 }
