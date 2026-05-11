@@ -268,8 +268,23 @@ ever marked missing without a successful `finish`. The legacy
 `reconcile_discovered_files` is a thin wrapper around these primitives, so any
 existing caller continues to work.
 
-See `docs/superpowers/specs/2026-05-11-scan-sessions-design.md` and issue #358
-for the full specification.
+**Concurrency and recovery:** Each scan session has a `last_heartbeat_at`
+timestamp, bumped on every `ingest_discovered_file` call. `begin_scan_session`
+auto-cancels in-progress sessions whose heartbeat is older than 60 seconds
+(stale, crashed scans). A session with a recent heartbeat is treated as a
+live concurrent scan; the new `begin_scan_session` call errors out rather
+than corrupting the in-flight scan's state.
+
+**Stub recovery:** A row whose `last_seen_session_id` points to a
+non-completed (cancelled, in_progress, or unknown) session is treated as a
+stub left behind by an interrupted scan. The next ingest at the same path
+deletes the stub and re-processes from scratch — restoring move detection
+across crash boundaries and ensuring previously-stub files get
+re-introspected.
+
+See `docs/superpowers/specs/2026-05-11-scan-sessions-design.md`,
+`docs/superpowers/specs/2026-05-11-scan-session-hardening-design.md`, and
+issue #358 for the full specification.
 
 ## Data Flow
 
