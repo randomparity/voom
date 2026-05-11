@@ -21,6 +21,8 @@ EOF
 Run a VOOM command that records database context for the corpus:
 
 ```sh
+# In a real media fixture, set a video/audio/subtitle track COMMENT tag such as
+# "Private track comment" before running `voom scan`.
 voom scan /tmp/voom-issue-337-corpus --no-hash
 ```
 
@@ -57,11 +59,21 @@ rg "video000\\.mkv|<api-key-001>|<secret-001>|<token-001>" \
 
 rg "The Movie \\(2026\\)|sk-issue337" \
   /tmp/voom-issue-337-report/redactions.local.json
+
+rg "comment for video000\\.mkv (video|audio|subtitle) track [0-9]+" \
+  /tmp/voom-issue-337-report/report.md \
+  /tmp/voom-issue-337-report/report.json
+
+! rg "Private track comment" \
+  /tmp/voom-issue-337-report/report.md \
+  /tmp/voom-issue-337-report/report.json
 ```
 
 The first command should find sanitized placeholders. The second command should
 find no private values in shareable files. The third command should show that
-the private mapping exists only in `redactions.local.json`.
+the private mapping exists only in `redactions.local.json`. The track-comment
+checks should show contextual placeholders in shareable files and no original
+track comment text.
 
 ## Upload
 

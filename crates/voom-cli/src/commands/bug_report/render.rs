@@ -181,6 +181,41 @@ mod tests {
         assert!(!data.contains("The Movie (2026).mkv"));
     }
 
+    #[test]
+    fn write_bundle_excludes_original_track_comment() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut redactor = Redactor::default();
+        let storage = redactor.redact_json(serde_json::json!({
+            "path": "/media/The Movie (2026).mkv",
+            "tracks": [{
+                "index": 1,
+                "track_type": "video",
+                "comment": "Private track comment"
+            }]
+        }));
+        let mut bundle = test_bundle(dir.path());
+        bundle.storage = StorageCapture::Available {
+            table_row_counts: Vec::new(),
+            jobs: Vec::new(),
+            events: vec![storage],
+            health_checks: Vec::new(),
+        };
+        bundle.redactions = redactor.report();
+        bundle.private_redactions = redactor.private_mappings();
+
+        write_bundle(&bundle).unwrap();
+
+        let report = std::fs::read_to_string(dir.path().join("report.md")).unwrap();
+        let data = std::fs::read_to_string(dir.path().join("report.json")).unwrap();
+        let private = std::fs::read_to_string(dir.path().join("redactions.local.json")).unwrap();
+
+        assert!(report.contains("comment for video000.mkv video track 1"));
+        assert!(data.contains("comment for video000.mkv video track 1"));
+        assert!(!report.contains("Private track comment"));
+        assert!(!data.contains("Private track comment"));
+        assert!(private.contains("Private track comment"));
+    }
+
     fn test_bundle(out_dir: &std::path::Path) -> BugReportBundle {
         let mut redactor = Redactor::default();
         let policy_contents = redactor.redact_text("process The Movie (2026).mkv");
