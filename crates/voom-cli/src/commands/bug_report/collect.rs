@@ -78,6 +78,7 @@ pub fn collect(args: BugReportGenerateArgs) -> Result<BugReportBundle> {
         .as_ref()
         .map(|path| redactor.redact_text(&path.display().to_string()));
     let storage = collect_storage(&config, &args, &mut redactor);
+    let redactions = redactor.snapshot();
 
     Ok(BugReportBundle {
         out_dir: args.out,
@@ -90,8 +91,8 @@ pub fn collect(args: BugReportGenerateArgs) -> Result<BugReportBundle> {
         config: config_value,
         policy,
         storage,
-        redactions: redactor.report(),
-        private_redactions: redactor.private_mappings(),
+        redactions: redactions.public,
+        private_redactions: redactions.private,
     })
 }
 

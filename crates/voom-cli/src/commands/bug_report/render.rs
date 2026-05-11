@@ -202,8 +202,9 @@ mod tests {
             },
             health_checks: StorageSection::Available { data: Vec::new() },
         };
-        bundle.redactions = redactor.report();
-        bundle.private_redactions = redactor.private_mappings();
+        let redactions = redactor.snapshot();
+        bundle.redactions = redactions.public;
+        bundle.private_redactions = redactions.private;
 
         write_bundle(&bundle).unwrap();
 
@@ -221,8 +222,7 @@ mod tests {
     fn test_bundle(out_dir: &std::path::Path) -> BugReportBundle {
         let mut redactor = Redactor::default();
         let policy_contents = redactor.redact_text("process The Movie (2026).mkv");
-        let redactions = redactor.report();
-        let private_redactions = redactor.private_mappings();
+        let redactions = redactor.snapshot();
 
         BugReportBundle {
             out_dir: out_dir.to_path_buf(),
@@ -246,8 +246,8 @@ mod tests {
             storage: StorageCapture::Unavailable {
                 error: "not opened".to_string(),
             },
-            redactions,
-            private_redactions,
+            redactions: redactions.public,
+            private_redactions: redactions.private,
         }
     }
 }

@@ -32,6 +32,12 @@ pub struct PublicRedactionMapping {
     pub kind: RedactionKind,
 }
 
+#[derive(Debug)]
+pub struct RedactionSnapshot {
+    pub public: RedactionReport,
+    pub private: Vec<PrivateRedactionMapping>,
+}
+
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RedactionKind {
@@ -176,17 +182,18 @@ impl Redactor {
             .collect()
     }
 
-    pub fn report(&self) -> RedactionReport {
-        RedactionReport {
-            public_mappings: self
-                .private_mappings()
-                .into_iter()
+    pub fn snapshot(&self) -> RedactionSnapshot {
+        let private = self.private_mappings();
+        let public = RedactionReport {
+            public_mappings: private
+                .iter()
                 .map(|mapping| PublicRedactionMapping {
-                    replacement: mapping.replacement,
+                    replacement: mapping.replacement.clone(),
                     kind: mapping.kind,
                 })
                 .collect(),
-        }
+        };
+        RedactionSnapshot { public, private }
     }
 
     fn register_secret_assignments(&mut self, input: &str) {
