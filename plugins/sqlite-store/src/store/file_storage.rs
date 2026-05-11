@@ -577,11 +577,45 @@ impl FileStorage for SqliteStore {
 
     fn begin_scan_session(
         &self,
-        _roots: &[std::path::PathBuf],
+        roots: &[PathBuf],
     ) -> voom_domain::errors::Result<voom_domain::transition::ScanSessionId> {
-        Err(voom_domain::errors::VoomError::Other(
-            "begin_scan_session not yet implemented for SqliteStore".into(),
-        ))
+        let mut conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        let roots_json = serde_json::to_string(
+            &roots
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(other_storage_err("failed to serialize scan roots"))?;
+        let id = voom_domain::transition::ScanSessionId::new();
+
+        let tx = conn
+            .transaction()
+            .map_err(storage_err("failed to begin scan_session transaction"))?;
+        // Auto-abandon: any previously in_progress session is cancelled.
+        let abandoned = tx
+            .execute(
+                "UPDATE scan_sessions SET status = 'cancelled', finished_at = ?1 \
+                 WHERE status = 'in_progress'",
+                params![now],
+            )
+            .map_err(storage_err("failed to auto-abandon prior scan sessions"))?;
+        if abandoned > 0 {
+            tracing::warn!(
+                abandoned,
+                "auto-cancelled {abandoned} stale in_progress scan session(s) at begin",
+            );
+        }
+        tx.execute(
+            "INSERT INTO scan_sessions (id, roots_json, status, started_at) \
+             VALUES (?1, ?2, 'in_progress', ?3)",
+            params![id.to_string(), roots_json, now],
+        )
+        .map_err(storage_err("failed to insert scan session"))?;
+        tx.commit()
+            .map_err(storage_err("failed to commit begin_scan_session"))?;
+        Ok(id)
     }
 
     fn ingest_discovered_file(
@@ -1961,5 +1995,57 @@ mod tests {
         assert_eq!(result.missing, 0);
         assert_eq!(result.external_changes, 0);
         assert_eq!(result.needs_introspection.len(), 1);
+    }
+
+    #[test]
+    fn begin_scan_session_creates_in_progress_row() {
+        use std::path::PathBuf;
+
+        let store = test_store();
+        let roots = vec![PathBuf::from("/movies")];
+        let session = store.begin_scan_session(&roots).unwrap();
+
+        let conn = store.conn().unwrap();
+        let (status, roots_json): (String, String) = conn
+            .query_row(
+                "SELECT status, roots_json FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "in_progress");
+        assert_eq!(roots_json, "[\"/movies\"]");
+    }
+
+    #[test]
+    fn begin_scan_session_auto_cancels_prior_in_progress() {
+        use std::path::PathBuf;
+
+        let store = test_store();
+        let first = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let second = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        assert_ne!(first.to_string(), second.to_string());
+
+        let conn = store.conn().unwrap();
+        let first_status: String = conn
+            .query_row(
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![first.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(first_status, "cancelled");
+        let second_status: String = conn
+            .query_row(
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![second.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(second_status, "in_progress");
     }
 }
