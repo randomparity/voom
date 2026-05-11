@@ -71,6 +71,20 @@ fn format_preserves_policy_composition_syntax() {
 }
 
 #[test]
+fn format_quotes_path_like_metadata_requires_tools() {
+    let input = r#"policy "child" {
+        metadata { requires_tools: ["tools/ffmpeg"] }
+        phase audio { keep audio }
+    }"#;
+    let ast = parse_policy(input).unwrap();
+    let formatted = voom_dsl::format_policy(&ast);
+
+    assert!(formatted.contains(r#"requires_tools: ["tools/ffmpeg"]"#));
+    let reparsed = parse_policy(&formatted).unwrap();
+    assert_eq!(voom_dsl::format_policy(&reparsed), formatted);
+}
+
+#[test]
 fn snapshot_keep_remove_operations() {
     let input = r#"policy "track-ops" {
         phase normalize {

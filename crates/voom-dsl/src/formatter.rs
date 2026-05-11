@@ -97,11 +97,12 @@ fn format_metadata(metadata: &MetadataNode, out: &mut String, level: usize) {
     }
     if !metadata.requires_tools.is_empty() {
         indent(out, level + 1);
-        let _ = writeln!(
-            out,
-            "requires_tools: [{}]",
-            metadata.requires_tools.join(", ")
-        );
+        let tools: Vec<String> = metadata
+            .requires_tools
+            .iter()
+            .map(|tool| format!("\"{}\"", escape_string(tool)))
+            .collect();
+        let _ = writeln!(out, "requires_tools: [{}]", tools.join(", "));
     }
     if !metadata.test_fixtures.is_empty() {
         indent(out, level + 1);
