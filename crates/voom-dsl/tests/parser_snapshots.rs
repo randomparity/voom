@@ -1,5 +1,5 @@
 use insta::assert_yaml_snapshot;
-use voom_dsl::{compile_policy_with_bundled, parse_policy};
+use voom_dsl::{PhaseCompositionKind, compile_policy_with_bundled, parse_policy};
 
 #[test]
 fn snapshot_minimal_policy() {
@@ -345,6 +345,26 @@ fn example_composed_anime_parses_and_validates() {
     assert_eq!(policy.name, "composed-anime");
     assert_eq!(policy.metadata.extends_chain, ["anime-base"]);
     assert_eq!(policy.phase_order, ["containerize", "audio", "subtitles"]);
+    let phase = |name: &str| {
+        policy
+            .phases
+            .iter()
+            .find(|phase| phase.name == name)
+            .unwrap_or_else(|| panic!("missing compiled phase {name:?}"))
+    };
+    assert_eq!(
+        phase("containerize").composition.kind,
+        PhaseCompositionKind::Inherited
+    );
+    assert_eq!(
+        phase("audio").composition.kind,
+        PhaseCompositionKind::Extended
+    );
+    assert_eq!(phase("audio").composition.added_operations, 1);
+    assert_eq!(
+        phase("subtitles").composition.kind,
+        PhaseCompositionKind::Overridden
+    );
 }
 
 #[test]

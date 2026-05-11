@@ -203,7 +203,9 @@ The default human output shows the policy name, resolved `extends` chain,
 metadata version when present, effective phase order, and one row per phase with
 its composition source. Inherited phases are shown as inherited from the parent,
 extended phases include the parent source and number of appended operations, and
-overridden phases show the inline child source.
+overridden phases show the child source that replaced the parent phase. For
+file-loaded policies this is the child policy path; for in-memory compilation it
+may be `inline`.
 
 JSON output is intended for tooling. It includes stable top-level fields:
 `policy`, `extends_chain`, `metadata`, `phase_order`, and `phases`. Each phase

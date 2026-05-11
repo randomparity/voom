@@ -156,7 +156,7 @@ Compiled policies include provenance fields for composition-aware tooling:
 |-------|-------------|
 | `metadata.extends_chain` | Ordered parent chain used to compose the policy |
 | `phase.composition.kind` | `Local`, `Inherited`, `Extended`, or `Overridden` |
-| `phase.composition.source` | Parent name/path, `inline` for overrides, or omitted for local phases |
+| `phase.composition.source` | Parent name/path for inherited and extended phases, the child source for overridden phases, or omitted for local phases |
 | `phase.composition.added_operations` | Number of child operations appended by an extended phase |
 
 ## Config Block
