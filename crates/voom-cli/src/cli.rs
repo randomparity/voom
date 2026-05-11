@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 /// VOOM — Video Orchestration Operations Manager
 #[derive(Parser)]
-#[command(name = "voom", version, about, long_about = None)]
+#[command(name = "voom", version = env!("VOOM_PRODUCT_VERSION"), about, long_about = None)]
 pub struct Cli {
     /// Increase verbosity (-v info, -vv debug, -vvv trace)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
