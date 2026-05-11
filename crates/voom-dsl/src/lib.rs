@@ -23,7 +23,7 @@ pub mod ast;
 pub mod bundled;
 pub mod compiled;
 pub mod compiler;
-pub mod composition;
+mod composition;
 pub mod errors;
 pub mod formatter;
 pub mod parser;
@@ -40,7 +40,6 @@ pub use ast::{
 };
 pub use bundled::{bundled_policy, bundled_policy_names};
 pub use compiled::CompiledPolicy;
-pub use composition::{PhaseComposition, PolicySourceId, ResolvedPolicyAst};
 pub use errors::{DslError, DslPipelineError, DslWarning, ValidationErrors};
 pub use formatter::format_policy;
 pub use parser::parse_policy;

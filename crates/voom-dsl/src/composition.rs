@@ -7,22 +7,22 @@ use crate::errors::{DslError, DslPipelineError};
 use crate::parse_policy;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum PolicySourceId {
+pub(crate) enum PolicySourceId {
     Inline,
     Bundled(String),
     File(PathBuf),
 }
 
 #[derive(Debug, Clone)]
-pub struct ResolvedPolicyAst {
-    pub ast: PolicyAst,
-    pub source_id: PolicySourceId,
-    pub extends_chain: Vec<String>,
-    pub phase_sources: HashMap<String, PhaseComposition>,
+pub(crate) struct ResolvedPolicyAst {
+    pub(crate) ast: PolicyAst,
+    pub(crate) source_id: PolicySourceId,
+    pub(crate) extends_chain: Vec<String>,
+    pub(crate) phase_sources: HashMap<String, PhaseComposition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum PhaseComposition {
+pub(crate) enum PhaseComposition {
     Local,
     Inherited {
         source: String,
