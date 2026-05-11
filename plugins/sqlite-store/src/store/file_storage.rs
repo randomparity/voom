@@ -6,7 +6,7 @@ use rusqlite::params;
 use uuid::Uuid;
 
 use voom_domain::errors::Result;
-use voom_domain::media::{MediaFile, StoredFingerprint};
+use voom_domain::media::{MediaFile, StoredFingerprint, Track};
 use voom_domain::storage::{FileFilters, FileStorage};
 use voom_domain::transition::{
     DiscoveredFile, FileStatus, FileTransition, IngestDecision, ReconcileResult,
@@ -110,52 +110,7 @@ impl FileStorage for SqliteStore {
         )
         .map_err(storage_err("failed to upsert file"))?;
 
-        {
-            let mut stmt = tx
-                .prepare(
-                    "INSERT INTO tracks (id, file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, loudness_integrated_lufs, loudness_true_peak_db, loudness_range_lu, loudness_measured_at, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, color_primaries, color_transfer, color_matrix, max_cll, max_fall, master_display, dolby_vision_profile, is_animation)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
-                )
-                .map_err(storage_err("failed to prepare track insert"))?;
-
-            for track in &file.tracks {
-                stmt.execute(params![
-                    Uuid::new_v4().to_string(),
-                    &effective_id,
-                    i64::from(track.index),
-                    track.track_type.as_str(),
-                    track.codec,
-                    track.language,
-                    track.title,
-                    i64::from(track.is_default),
-                    i64::from(track.is_forced),
-                    track.channels.map(i64::from),
-                    track.channel_layout,
-                    track.sample_rate.map(i64::from),
-                    track.bit_depth.map(i64::from),
-                    track.loudness_integrated_lufs,
-                    track.loudness_true_peak_db,
-                    track.loudness_range_lu,
-                    track.loudness_measured_at.map(|dt| dt.to_rfc3339()),
-                    track.width.map(i64::from),
-                    track.height.map(i64::from),
-                    track.frame_rate,
-                    i64::from(track.is_vfr),
-                    i64::from(track.is_hdr),
-                    track.hdr_format,
-                    track.pixel_format,
-                    track.color_primaries,
-                    track.color_transfer,
-                    track.color_matrix,
-                    track.max_cll.map(i64::from),
-                    track.max_fall.map(i64::from),
-                    track.master_display,
-                    track.dolby_vision_profile.map(i64::from),
-                    track.is_animation.map(i64::from),
-                ])
-                .map_err(storage_err("failed to insert track"))?;
-            }
-        }
+        upsert_tracks_in_tx(&tx, &effective_id, &file.tracks)?;
 
         tx.commit().map_err(storage_err("failed to commit"))?;
         Ok(())
@@ -1458,6 +1413,59 @@ fn insert_transition_in_tx(
         ],
     )
     .map_err(storage_err("failed to insert transition"))?;
+    Ok(())
+}
+
+fn upsert_tracks_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    file_id: &str,
+    tracks: &[Track],
+) -> Result<()> {
+    let mut stmt = tx
+        .prepare(
+            "INSERT INTO tracks (id, file_id, stream_index, track_type, codec, language, title, is_default, is_forced, channels, channel_layout, sample_rate, bit_depth, loudness_integrated_lufs, loudness_true_peak_db, loudness_range_lu, loudness_measured_at, width, height, frame_rate, is_vfr, is_hdr, hdr_format, pixel_format, color_primaries, color_transfer, color_matrix, max_cll, max_fall, master_display, dolby_vision_profile, is_animation)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
+        )
+        .map_err(storage_err("failed to prepare track insert"))?;
+
+    for track in tracks {
+        stmt.execute(params![
+            Uuid::new_v4().to_string(),
+            file_id,
+            i64::from(track.index),
+            track.track_type.as_str(),
+            track.codec,
+            track.language,
+            track.title,
+            i64::from(track.is_default),
+            i64::from(track.is_forced),
+            track.channels.map(i64::from),
+            track.channel_layout,
+            track.sample_rate.map(i64::from),
+            track.bit_depth.map(i64::from),
+            track.loudness_integrated_lufs,
+            track.loudness_true_peak_db,
+            track.loudness_range_lu,
+            track.loudness_measured_at.map(|dt| dt.to_rfc3339()),
+            track.width.map(i64::from),
+            track.height.map(i64::from),
+            track.frame_rate,
+            i64::from(track.is_vfr),
+            i64::from(track.is_hdr),
+            track.hdr_format,
+            track.pixel_format,
+            track.color_primaries,
+            track.color_transfer,
+            track.color_matrix,
+            track.max_cll.map(i64::from),
+            track.max_fall.map(i64::from),
+            track.master_display,
+            track.dolby_vision_profile.map(i64::from),
+            track.is_animation.map(i64::from),
+        ])
+        .map_err(storage_err("failed to insert track"))?;
+    }
+
     Ok(())
 }
 
