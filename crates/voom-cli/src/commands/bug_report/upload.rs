@@ -23,7 +23,11 @@ pub fn run(args: BugReportUploadArgs) -> Result<()> {
         .status()
         .context(
             "failed to run `gh issue comment`; install GitHub CLI and authenticate with `gh auth login`",
-        )?;
+        );
+
+    // Upload can still report the `gh` failure if temporary-file cleanup fails.
+    let _ = std::fs::remove_file(&body_file);
+    let status = status?;
 
     if !status.success() {
         anyhow::bail!("`gh issue comment` failed with status {status}");
@@ -43,9 +47,22 @@ fn build_issue_body(report_dir: &Path) -> Result<String> {
 }
 
 fn write_temp_body(report_dir: &Path, body: &str) -> Result<PathBuf> {
-    let path = report_dir.join("upload-body.md");
+    let path = upload_body_path(report_dir);
     std::fs::write(&path, body).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(path)
+}
+
+fn upload_body_path(report_dir: &Path) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    let report_name = report_dir
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("report");
+    path.push(format!(
+        "voom-bug-report-{report_name}-{}.md",
+        std::process::id()
+    ));
+    path
 }
 
 #[cfg(test)]
@@ -74,5 +91,17 @@ mod tests {
         let err = build_issue_body(dir.path()).unwrap_err();
 
         assert!(err.to_string().contains("report.md"));
+    }
+
+    #[test]
+    fn upload_body_temp_file_is_outside_report_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = upload_body_path(dir.path());
+
+        assert!(!path.starts_with(dir.path()));
+        assert_eq!(
+            path.extension().and_then(std::ffi::OsStr::to_str),
+            Some("md")
+        );
     }
 }
