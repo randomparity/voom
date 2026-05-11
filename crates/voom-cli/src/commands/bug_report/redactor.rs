@@ -49,20 +49,20 @@ impl Redactor {
     }
 
     pub fn redact_json(&mut self, value: serde_json::Value) -> serde_json::Value {
-        self.redact_json_with_context(value, None)
+        self.redact_json_with_context(value, &RedactionContext::default())
     }
 
     fn redact_json_with_context(
         &mut self,
         value: serde_json::Value,
-        file_context: Option<&FileContext>,
+        context: &RedactionContext,
     ) -> serde_json::Value {
         match value {
-            serde_json::Value::Object(map) => self.redact_object_with_context(map, file_context),
+            serde_json::Value::Object(map) => self.redact_object_with_context(map, context),
             serde_json::Value::Array(values) => serde_json::Value::Array(
                 values
                     .into_iter()
-                    .map(|v| self.redact_json_with_context(v, file_context))
+                    .map(|value| self.redact_json_with_context(value, context))
                     .collect(),
             ),
             serde_json::Value::String(s) => serde_json::Value::String(self.redact_text(&s)),
@@ -73,18 +73,19 @@ impl Redactor {
     fn redact_object_with_context(
         &mut self,
         map: serde_json::Map<String, serde_json::Value>,
-        file_context: Option<&FileContext>,
+        context: &RedactionContext,
     ) -> serde_json::Value {
-        let local_file_context = self.file_context_from_map(&map);
-        let file_context = local_file_context.as_ref().or(file_context);
-        let track_comment =
-            file_context.and_then(|context| track_comment_replacement(context, &map));
+        let context = context.with_file(self.file_context_from_map(&map));
+        let track_comment = context
+            .file
+            .as_ref()
+            .and_then(|file| track_comment_replacement(file, &map));
+        let context = context.with_track_comment(track_comment);
 
         serde_json::Value::Object(
             map.into_iter()
                 .map(|(key, value)| {
-                    let value =
-                        self.redact_object_value(key.as_str(), value, file_context, &track_comment);
+                    let value = self.redact_object_value(key.as_str(), value, &context);
                     (key, value)
                 })
                 .collect(),
@@ -95,8 +96,7 @@ impl Redactor {
         &mut self,
         key: &str,
         value: serde_json::Value,
-        file_context: Option<&FileContext>,
-        track_comment: &Option<String>,
+        context: &RedactionContext,
     ) -> serde_json::Value {
         match value {
             serde_json::Value::String(s) => {
@@ -106,7 +106,7 @@ impl Redactor {
                     return serde_json::Value::String(replacement);
                 }
                 if key.eq_ignore_ascii_case("comment") {
-                    if let Some(replacement) = track_comment {
+                    if let Some(replacement) = &context.track_comment {
                         self.register_replacement(
                             s,
                             replacement.clone(),
@@ -117,38 +117,15 @@ impl Redactor {
                 }
                 serde_json::Value::String(self.redact_text(&s))
             }
-            serde_json::Value::Object(map) => {
-                if key.eq_ignore_ascii_case("tags") {
-                    self.redact_tags_object(map, file_context, track_comment)
-                } else {
-                    self.redact_object_with_context(map, file_context)
-                }
-            }
+            serde_json::Value::Object(map) => self.redact_object_with_context(map, context),
             serde_json::Value::Array(values) => serde_json::Value::Array(
                 values
                     .into_iter()
-                    .map(|value| self.redact_json_with_context(value, file_context))
+                    .map(|value| self.redact_json_with_context(value, context))
                     .collect(),
             ),
             other => other,
         }
-    }
-
-    fn redact_tags_object(
-        &mut self,
-        map: serde_json::Map<String, serde_json::Value>,
-        file_context: Option<&FileContext>,
-        track_comment: &Option<String>,
-    ) -> serde_json::Value {
-        serde_json::Value::Object(
-            map.into_iter()
-                .map(|(key, value)| {
-                    let value =
-                        self.redact_object_value(key.as_str(), value, file_context, track_comment);
-                    (key, value)
-                })
-                .collect(),
-        )
     }
 
     fn file_context_from_map(
@@ -266,6 +243,28 @@ impl Redactor {
 #[derive(Debug, Clone)]
 struct FileContext {
     placeholder: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct RedactionContext {
+    file: Option<FileContext>,
+    track_comment: Option<String>,
+}
+
+impl RedactionContext {
+    fn with_file(&self, file: Option<FileContext>) -> Self {
+        Self {
+            file: file.or_else(|| self.file.clone()),
+            track_comment: self.track_comment.clone(),
+        }
+    }
+
+    fn with_track_comment(&self, track_comment: Option<String>) -> Self {
+        Self {
+            file: self.file.clone(),
+            track_comment: track_comment.or_else(|| self.track_comment.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -496,6 +495,28 @@ mod tests {
         assert_eq!(
             redacted["tracks"][1]["tags"]["comment"],
             "comment for video000.mkv subtitle track 3"
+        );
+    }
+
+    #[test]
+    fn redacts_nested_track_comment_without_tags_special_case() {
+        let mut redactor = Redactor::default();
+        let value = serde_json::json!({
+            "filename": "The Movie (2026).mkv",
+            "tracks": [{
+                "index": 1,
+                "track_type": "video",
+                "metadata": {
+                    "comment": "Private nested video note"
+                }
+            }]
+        });
+
+        let redacted = redactor.redact_json(value);
+
+        assert_eq!(
+            redacted["tracks"][0]["metadata"]["comment"],
+            "comment for video000.mkv video track 1"
         );
     }
 }
