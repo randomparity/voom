@@ -351,6 +351,53 @@ average true peak, and files outside the -23 LUFS broadcast target by more than
 
 ---
 
+### `voom bug-report`
+
+Generate and upload sanitized bug reports. Generation and upload are separate
+commands so generated files can be reviewed before sharing.
+
+#### `voom bug-report generate`
+
+Generate a local sanitized bug report directory.
+
+```bash
+voom bug-report generate --out /tmp/voom-bug [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--out <DIR>` | *required* | Output directory for generated report files |
+| `--session <UUID>` | none | Processing session UUID to include |
+| `--policy <FILE>` | none | Policy file to include after redaction |
+| `--library <PATH>` | none | Library root to include as a redacted path |
+| `--event-limit <N>` | `500` | Recent event rows to include |
+| `--job-limit <N>` | `100` | Recent jobs to include |
+
+The command writes `report.md`, `report.json`, `redactions.public.json`,
+`redactions.local.json`, `metadata.json`, and `README.txt`. Review `report.md`
+and `report.json` before sharing. `redactions.local.json` contains original
+private values and is never uploaded by VOOM.
+
+#### `voom bug-report upload`
+
+Upload a previously generated sanitized report as a GitHub issue comment
+through the `gh` CLI.
+
+```bash
+voom bug-report upload /tmp/voom-bug --issue 337 --repo randomparity/voom
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `<REPORT_DIR>` | *required* | Directory produced by `voom bug-report generate` |
+| `--issue <N>` | *required* | GitHub issue number to comment on |
+| `--repo <OWNER/NAME>` | `randomparity/voom` | GitHub repository |
+
+`upload` reads `report.md` only. It does not read or upload
+`redactions.local.json`.
+
+---
+
 ### `voom verify`
 
 Per-file media integrity verification.
