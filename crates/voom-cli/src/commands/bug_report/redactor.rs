@@ -263,7 +263,7 @@ fn is_video_filename(candidate: &str) -> bool {
 
 fn extension(candidate: &str) -> Option<&str> {
     let (_, ext) = candidate.rsplit_once('.')?;
-    let ext = ext.trim_end_matches(|ch: char| matches!(ch, ')' | ']' | '}' | ',' | ';' | ':'));
+    let ext = ext.trim_end_matches([')', ']', '}', ',', ';', ':']);
     if ext.is_empty() {
         return None;
     }
