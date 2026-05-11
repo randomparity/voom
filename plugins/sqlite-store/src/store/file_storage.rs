@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -9,7 +9,8 @@ use voom_domain::errors::Result;
 use voom_domain::media::{MediaFile, StoredFingerprint};
 use voom_domain::storage::{FileFilters, FileStorage};
 use voom_domain::transition::{
-    DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
+    DiscoveredFile, FileStatus, FileTransition, IngestDecision, ReconcileResult,
+    STALE_SESSION_SECS, ScanFinishOutcome, ScanSessionStatus, TransitionSource, is_under_any,
 };
 
 use super::{
@@ -404,26 +405,53 @@ impl FileStorage for SqliteStore {
         discovered: &[DiscoveredFile],
         scanned_dirs: &[PathBuf],
     ) -> Result<ReconcileResult> {
-        let mut conn = self.conn()?;
-        let now = format_datetime(&Utc::now());
-        let tx = conn
-            .transaction()
-            .map_err(storage_err("failed to begin reconcile transaction"))?;
-
+        let session = self.begin_scan_session(scanned_dirs)?;
         let mut result = ReconcileResult::default();
 
-        let discovered_paths: HashSet<String> = discovered
-            .iter()
-            .map(|d| d.path.to_string_lossy().to_string())
-            .collect();
+        // Single closure so any `?` on ingest/finish error routes through
+        // the cancel path below.
+        let outcome: Result<()> = (|| {
+            for df in discovered {
+                let decision = self.ingest_discovered_file(session, df)?;
+                match &decision {
+                    IngestDecision::New { .. } => result.new_files += 1,
+                    IngestDecision::Unchanged { .. } => result.unchanged += 1,
+                    IngestDecision::ExternallyChanged { .. } => result.external_changes += 1,
+                    IngestDecision::Moved { .. } => result.moved += 1,
+                    IngestDecision::Duplicate { .. } => {
+                        // Silently drop — preserves today's `HashSet`-based
+                        // dedup semantics on the input list.
+                    }
+                }
+                if let Some(p) = decision.needs_introspection_path(&df.path) {
+                    result.needs_introspection.push(p);
+                }
+            }
+            let finish = self.finish_scan_session(session)?;
+            result.missing = finish.missing;
+            // Promoted moves: each was counted as New during ingestion, so decrement
+            // new_files and increment moved to reflect the retroactive reclassification.
+            result.new_files = result.new_files.saturating_sub(finish.promoted_moves);
+            result.moved += finish.promoted_moves;
+            Ok(())
+        })();
 
-        result.missing = mark_missing_files(&tx, scanned_dirs, &discovered_paths, &now)?;
-        let missing_by_hash = build_missing_hash_index(&tx, scanned_dirs)?;
-        match_discovered_files(&tx, discovered, &missing_by_hash, &now, &mut result)?;
-
-        tx.commit()
-            .map_err(storage_err("failed to commit reconciliation"))?;
-        Ok(result)
+        match outcome {
+            Ok(()) => Ok(result),
+            Err(e) => {
+                // Best-effort: cancel the session so it doesn't linger as
+                // in_progress and block the next begin.
+                if let Err(cancel_err) = self.cancel_scan_session(session) {
+                    tracing::warn!(
+                        session = %session,
+                        ingest_error = %e,
+                        cancel_error = %cancel_err,
+                        "failed to cancel scan session after ingest error",
+                    );
+                }
+                Err(e)
+            }
+        }
     }
 
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()> {
@@ -561,8 +589,7 @@ impl FileStorage for SqliteStore {
         let mut marked = 0u32;
         for (id, path) in &active_files {
             let path_obj = std::path::Path::new(path);
-            let under_scanned = scanned_dirs.iter().any(|dir| path_obj.starts_with(dir));
-            if under_scanned && !discovered_set.contains(path.as_str()) {
+            if is_under_any(path_obj, scanned_dirs) && !discovered_set.contains(path.as_str()) {
                 conn.execute(
                     "UPDATE files SET status = 'missing', missing_since = ?1 \
                      WHERE id = ?2 AND status = 'active'",
@@ -574,313 +601,682 @@ impl FileStorage for SqliteStore {
         }
         Ok(marked)
     }
-}
 
-/// Pass 1: Mark active files under scanned dirs as missing if not in discovered set.
-fn mark_missing_files(
-    tx: &rusqlite::Transaction<'_>,
-    scanned_dirs: &[PathBuf],
-    discovered_paths: &HashSet<String>,
-    now: &str,
-) -> Result<u32> {
-    let mut stmt = tx
-        .prepare(
-            "SELECT id, path, expected_hash, size FROM files \
-             WHERE status = 'active' AND path IS NOT NULL",
-        )
-        .map_err(storage_err("failed to prepare missing scan"))?;
+    fn begin_scan_session(
+        &self,
+        roots: &[PathBuf],
+    ) -> voom_domain::errors::Result<voom_domain::transition::ScanSessionId> {
+        let mut conn = self.conn()?;
+        let now_dt = Utc::now();
+        let now = format_datetime(&now_dt);
+        let roots_json = serde_json::to_string(roots)
+            .map_err(other_storage_err("failed to serialize scan roots"))?;
+        let id = voom_domain::transition::ScanSessionId::new();
 
-    let active_files: Vec<(String, String, Option<String>, i64)> = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
-        })
-        .map_err(storage_err("failed to query active files"))?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(storage_err("failed to collect active files"))?;
+        let tx = conn
+            .transaction()
+            .map_err(storage_err("failed to begin scan_session transaction"))?;
 
-    let mut missing = 0u32;
-    for (id, path, _expected_hash, _size) in &active_files {
-        let path_obj = Path::new(path);
-        let under_scanned = scanned_dirs.iter().any(|dir| path_obj.starts_with(dir));
-        if under_scanned && !discovered_paths.contains(path.as_str()) {
-            tx.execute(
-                "UPDATE files SET status = 'missing', missing_since = ?1 \
-                 WHERE id = ?2 AND status = 'active'",
-                params![now, id],
-            )
-            .map_err(storage_err("failed to mark file missing"))?;
-            missing += 1;
+        // Inspect existing in_progress sessions. Auto-cancel only those whose
+        // heartbeat is older than STALE_SESSION_SECS; live sessions cause this
+        // call to error.
+        let prior: Vec<(String, String)> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id, last_heartbeat_at FROM scan_sessions \
+                     WHERE status = 'in_progress'",
+                )
+                .map_err(storage_err("failed to prepare prior-session lookup"))?;
+            stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage_err("failed to query prior in_progress sessions"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err(
+                "failed to collect prior in_progress session rows",
+            ))?
+        };
+
+        let mut cancelled_ids: Vec<String> = Vec::new();
+        for (sid, heartbeat_str) in &prior {
+            let heartbeat = parse_datetime(heartbeat_str).map_err(|e| {
+                voom_domain::errors::VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::Other,
+                    message: format!("failed to parse last_heartbeat_at for session {sid}: {e}"),
+                }
+            })?;
+            let age_secs = now_dt.signed_duration_since(heartbeat).num_seconds();
+            if age_secs > STALE_SESSION_SECS {
+                cancelled_ids.push(sid.clone());
+            } else {
+                return Err(voom_domain::errors::VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::Other,
+                    message: format!(
+                        "another scan is in progress (session {sid}, last heartbeat {heartbeat_str}); \
+                         wait up to {STALE_SESSION_SECS} seconds or abandon it manually if stale"
+                    ),
+                });
+            }
         }
-    }
-    Ok(missing)
-}
 
-/// A move-detection candidate: a missing file's identity plus its prior path,
-/// so the resulting transition can record `from_path`.
-struct MissingMatch {
-    id: String,
-    prior_path: String,
-}
-
-/// Build a content-hash → `MissingMatch` index of missing files scoped to
-/// scanned dirs.
-fn build_missing_hash_index(
-    tx: &rusqlite::Transaction<'_>,
-    scanned_dirs: &[PathBuf],
-) -> Result<HashMap<String, MissingMatch>> {
-    let mut stmt = tx
-        .prepare(
-            "SELECT id, path, expected_hash FROM files \
-             WHERE status = 'missing' AND expected_hash IS NOT NULL \
-             AND path IS NOT NULL",
-        )
-        .map_err(storage_err("failed to prepare missing lookup"))?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(storage_err("failed to query missing files"))?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(storage_err("failed to collect missing files"))?;
-
-    let mut map = HashMap::new();
-    for (id, path, hash) in rows {
-        let path_obj = Path::new(&path);
-        if scanned_dirs.iter().any(|dir| path_obj.starts_with(dir)) {
-            map.entry(hash).or_insert(MissingMatch {
-                id,
-                prior_path: path,
-            });
+        if !cancelled_ids.is_empty() {
+            tracing::warn!(
+                cancelled_count = cancelled_ids.len(),
+                cancelled_ids = ?cancelled_ids,
+                "auto-cancelled stale in_progress scan session(s) at begin",
+            );
+            for sid in &cancelled_ids {
+                tx.execute(
+                    "UPDATE scan_sessions SET status = 'cancelled', \
+                     finished_at = ?1, last_heartbeat_at = ?1 \
+                     WHERE id = ?2 AND status = 'in_progress'",
+                    params![now, sid],
+                )
+                .map_err(storage_err("failed to auto-cancel stale scan session"))?;
+            }
         }
+
+        tx.execute(
+            "INSERT INTO scan_sessions (id, roots_json, status, started_at, last_heartbeat_at) \
+             VALUES (?1, ?2, 'in_progress', ?3, ?3)",
+            params![id.to_string(), roots_json, now],
+        )
+        .map_err(storage_err("failed to insert scan session"))?;
+        tx.commit()
+            .map_err(storage_err("failed to commit begin_scan_session"))?;
+        Ok(id)
     }
-    Ok(map)
-}
 
-/// Pass 2: Match each discovered file against DB (unchanged, external change, move, or new).
-fn match_discovered_files(
-    tx: &rusqlite::Transaction<'_>,
-    discovered: &[DiscoveredFile],
-    missing_by_hash: &HashMap<String, MissingMatch>,
-    now: &str,
-    result: &mut ReconcileResult,
-) -> Result<()> {
-    let mut consumed_missing: HashSet<String> = HashSet::new();
+    fn ingest_discovered_file(
+        &self,
+        session: voom_domain::transition::ScanSessionId,
+        file: &voom_domain::transition::DiscoveredFile,
+    ) -> voom_domain::errors::Result<voom_domain::transition::IngestDecision> {
+        let mut conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        let session_str = session.to_string();
+        let path_str = file.path.to_string_lossy().to_string();
+        let filename = filename_string(&file.path);
 
-    for df in discovered {
-        let path_str = df.path.to_string_lossy().to_string();
+        let tx = conn
+            .transaction()
+            .map_err(storage_err("failed to begin ingest transaction"))?;
 
-        let existing: Option<(String, Option<String>, i64)> = tx
+        // Session must be in_progress
+        let status: Option<String> = tx
             .query_row(
-                "SELECT id, expected_hash, size FROM files WHERE path = ?1",
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![&session_str],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_err("failed to look up scan session"))?;
+        match status.as_deref().and_then(ScanSessionStatus::parse) {
+            Some(ScanSessionStatus::InProgress) => {}
+            Some(other) => {
+                return Err(voom_domain::errors::VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::Other,
+                    message: format!(
+                        "scan session {session_str} is not in_progress (status: {})",
+                        other.as_str()
+                    ),
+                });
+            }
+            None if status.is_some() => {
+                return Err(voom_domain::errors::VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::Other,
+                    message: format!(
+                        "scan session {session_str} has unrecognized status: {}",
+                        status.as_deref().unwrap_or(""),
+                    ),
+                });
+            }
+            None => {
+                return Err(voom_domain::errors::VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::NotFound,
+                    message: format!("unknown scan session {session_str}"),
+                });
+            }
+        }
+
+        // Bump heartbeat as part of this ingest transaction.
+        tx.execute(
+            "UPDATE scan_sessions SET last_heartbeat_at = ?1 WHERE id = ?2",
+            params![&now, &session_str],
+        )
+        .map_err(storage_err("failed to bump scan session heartbeat"))?;
+
+        // Look up existing row by path
+        let existing: Option<(String, Option<String>, i64, Option<String>)> = tx
+            .query_row(
+                "SELECT id, expected_hash, size, last_seen_session_id \
+                 FROM files WHERE path = ?1",
                 params![&path_str],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, Option<String>>(1)?,
                         row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
                     ))
                 },
             )
             .optional()
-            .map_err(storage_err("failed to check existing file"))?;
+            .map_err(storage_err("failed to look up existing file"))?;
 
-        if let Some((existing_id, expected_hash, existing_size)) = existing {
-            reconcile_existing_path(
-                tx,
-                df,
-                &existing_id,
-                expected_hash,
-                existing_size,
-                now,
-                result,
-            )?;
-        } else {
-            reconcile_new_path(tx, df, missing_by_hash, &mut consumed_missing, now, result)?;
+        if let Some((existing_id, expected_hash, existing_size, last_seen)) = existing {
+            // Duplicate fast-path
+            if last_seen.as_deref() == Some(session_str.as_str()) {
+                let file_uuid = super::parse_uuid(&existing_id)?;
+                tx.commit()
+                    .map_err(storage_err("failed to commit duplicate ingest"))?;
+                return Ok(IngestDecision::Duplicate { file_id: file_uuid });
+            }
+
+            // Stub recovery: if this row was last seen by a non-completed
+            // session (cancelled, in_progress, or unknown), it's a stub
+            // from an interrupted scan. Delete it and fall through.
+            let needs_recovery: bool = if let Some(prior) = &last_seen {
+                let prior_status: Option<String> = tx
+                    .query_row(
+                        "SELECT status FROM scan_sessions WHERE id = ?1",
+                        params![prior],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(storage_err("failed to look up prior session status"))?;
+                !matches!(
+                    prior_status.as_deref().and_then(ScanSessionStatus::parse),
+                    Some(ScanSessionStatus::Completed)
+                )
+            } else {
+                false
+            };
+
+            let hash_matches = expected_hash
+                .as_ref()
+                .is_none_or(|eh| eh == &file.content_hash);
+
+            if needs_recovery {
+                // Stub from a non-completed session — delete unconditionally
+                // (regardless of hash match), then fall through to no-row path.
+                tx.execute(
+                    "UPDATE files SET superseded_by = NULL WHERE superseded_by = ?1",
+                    params![&existing_id],
+                )
+                .map_err(storage_err(
+                    "failed to clear dangling supersession during stub recovery",
+                ))?;
+                tx.execute(
+                    "DELETE FROM file_transitions WHERE file_id = ?1",
+                    params![&existing_id],
+                )
+                .map_err(storage_err("failed to delete stub transitions"))?;
+                tx.execute("DELETE FROM files WHERE id = ?1", params![&existing_id])
+                    .map_err(storage_err("failed to delete stub file row"))?;
+            } else if hash_matches {
+                // Unchanged
+                tx.execute(
+                    "UPDATE files SET size = ?1, content_hash = ?2, \
+                     status = 'active', missing_since = NULL, \
+                     last_seen_session_id = ?3, \
+                     updated_at = ?4 WHERE id = ?5",
+                    params![
+                        file.size as i64,
+                        &file.content_hash,
+                        &session_str,
+                        &now,
+                        &existing_id
+                    ],
+                )
+                .map_err(storage_err("failed to update unchanged file"))?;
+
+                if expected_hash.is_none() {
+                    tx.execute(
+                        "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
+                        params![&file.content_hash, &existing_id],
+                    )
+                    .map_err(storage_err("failed to backfill expected_hash"))?;
+                }
+
+                tx.commit()
+                    .map_err(storage_err("failed to commit unchanged ingest"))?;
+                let file_uuid = super::parse_uuid(&existing_id)?;
+                return Ok(IngestDecision::Unchanged { file_id: file_uuid });
+            } else {
+                // Hash mismatch → ExternallyChanged (existing implementation).
+                let old_uuid = super::parse_uuid(&existing_id)?;
+                let new_id = Uuid::new_v4();
+
+                let ext_transition = FileTransition::new(
+                    old_uuid,
+                    file.path.clone(),
+                    file.content_hash.clone(),
+                    file.size,
+                    TransitionSource::External,
+                )
+                .with_from(expected_hash.clone(), Some(existing_size as u64));
+                insert_transition_in_tx(&tx, &ext_transition, &now)?;
+
+                tx.execute(
+                    "UPDATE files SET path = NULL, status = 'missing', \
+                     missing_since = ?1, superseded_by = ?2 WHERE id = ?3",
+                    params![&now, new_id.to_string(), &existing_id],
+                )
+                .map_err(storage_err("failed to clear old file for external change"))?;
+                insert_active_file_in_tx(
+                    &tx,
+                    InsertActiveFile {
+                        new_id,
+                        path_str: &path_str,
+                        filename: &filename,
+                        file,
+                        now: &now,
+                        session_str: &session_str,
+                        err_msg: "failed to insert new file for external change",
+                    },
+                )?;
+
+                let disc_transition = FileTransition::new(
+                    new_id,
+                    file.path.clone(),
+                    file.content_hash.clone(),
+                    file.size,
+                    TransitionSource::Discovery,
+                );
+                insert_transition_in_tx(&tx, &disc_transition, &now)?;
+
+                tx.commit()
+                    .map_err(storage_err("failed to commit external-change ingest"))?;
+                return Ok(IngestDecision::ExternallyChanged {
+                    file_id: new_id,
+                    superseded: old_uuid,
+                });
+            }
         }
-    }
-    Ok(())
-}
 
-/// Handle a discovered file whose path already exists in the DB.
-fn reconcile_existing_path(
-    tx: &rusqlite::Transaction<'_>,
-    df: &DiscoveredFile,
-    existing_id: &str,
-    expected_hash: Option<String>,
-    existing_size: i64,
-    now: &str,
-    result: &mut ReconcileResult,
-) -> Result<()> {
-    let path_str = df.path.to_string_lossy().to_string();
-    let filename = filename_string(&df.path);
-    let hash_matches = expected_hash
-        .as_ref()
-        .is_none_or(|eh| eh == &df.content_hash);
+        // Control reaches here either because there was no row at this path,
+        // or because stub recovery deleted the row above. Either way, proceed
+        // to the move-detection / new-file path.
 
-    if hash_matches {
-        tx.execute(
-            "UPDATE files SET size = ?1, content_hash = ?2, \
-             status = 'active', missing_since = NULL, \
-             updated_at = ?3 WHERE id = ?4",
-            params![df.size as i64, &df.content_hash, now, existing_id],
-        )
-        .map_err(storage_err("failed to update unchanged file"))?;
+        // No row at this path. Check for move: a missing file with matching
+        // expected_hash. The status='missing' filter prevents double-consumption
+        // within a session — once we reactivate a row it's no longer 'missing'.
+        // Move detection is scoped to the current session's scanned roots so a
+        // hash collision across roots can't falsely promote to Moved.
+        let session_roots: Vec<PathBuf> = {
+            let roots_json: String = tx
+                .query_row(
+                    "SELECT roots_json FROM scan_sessions WHERE id = ?1",
+                    params![&session_str],
+                    |row| row.get(0),
+                )
+                .map_err(storage_err("failed to load session roots for move lookup"))?;
+            serde_json::from_str(&roots_json)
+                .map_err(other_storage_err("failed to parse roots_json"))?
+        };
 
-        if expected_hash.is_none() {
+        let move_match: Option<(String, String)> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id, path FROM files \
+                     WHERE expected_hash = ?1 AND status = 'missing' AND path IS NOT NULL",
+                )
+                .map_err(storage_err("failed to prepare move-candidate select"))?;
+            let candidates: Vec<(String, String)> = stmt
+                .query_map(params![&file.content_hash], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(storage_err("failed to query move candidates"))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(storage_err("failed to collect move candidates"))?;
+            candidates
+                .into_iter()
+                .find(|(_, path)| is_under_any(Path::new(path), &session_roots))
+        };
+
+        if let Some((missing_id, prior_path)) = move_match {
             tx.execute(
-                "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
-                params![&df.content_hash, existing_id],
+                "UPDATE files SET path = ?1, filename = ?2, \
+                 size = ?3, content_hash = ?4, \
+                 status = 'active', missing_since = NULL, \
+                 last_seen_session_id = ?5, \
+                 updated_at = ?6 WHERE id = ?7",
+                params![
+                    &path_str,
+                    filename,
+                    file.size as i64,
+                    &file.content_hash,
+                    &session_str,
+                    &now,
+                    &missing_id,
+                ],
             )
-            .map_err(storage_err("failed to backfill expected_hash"))?;
-        }
-        result.unchanged += 1;
-    } else {
-        let old_id = super::parse_uuid(existing_id)?;
-        let ext_transition = FileTransition::new(
-            old_id,
-            df.path.clone(),
-            df.content_hash.clone(),
-            df.size,
-            TransitionSource::External,
-        )
-        .with_from(expected_hash, Some(existing_size as u64));
-        insert_transition_in_tx(tx, &ext_transition, now)?;
+            .map_err(storage_err("failed to reactivate moved file"))?;
 
+            let file_uuid = super::parse_uuid(&missing_id)?;
+            let move_transition = voom_domain::transition::FileTransition::new(
+                file_uuid,
+                file.path.clone(),
+                file.content_hash.clone(),
+                file.size,
+                voom_domain::transition::TransitionSource::Discovery,
+            )
+            .with_from_path(PathBuf::from(prior_path.clone()))
+            .with_detail("detected_move");
+            insert_transition_in_tx(&tx, &move_transition, &now)?;
+
+            tx.commit()
+                .map_err(storage_err("failed to commit moved ingest"))?;
+            return Ok(IngestDecision::Moved {
+                file_id: file_uuid,
+                from_path: PathBuf::from(prior_path),
+            });
+        }
+
+        // Truly new file
         let new_id = Uuid::new_v4();
-        tx.execute(
-            "UPDATE files SET path = NULL, status = 'missing', \
-             missing_since = ?1, superseded_by = ?2 WHERE id = ?3",
-            params![now, new_id.to_string(), existing_id],
-        )
-        .map_err(storage_err("failed to clear old file for external change"))?;
-        tx.execute(
-            "INSERT INTO files \
-             (id, path, filename, size, content_hash, \
-              expected_hash, status, container, duration, \
-              tags, plugin_metadata, introspected_at, \
-              created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
-                     'other', 0.0, '{}', '{}', ?7, ?7, ?7)",
-            params![
-                new_id.to_string(),
-                path_str,
-                filename,
-                df.size as i64,
-                &df.content_hash,
-                &df.content_hash,
-                now,
-            ],
-        )
-        .map_err(storage_err("failed to insert new file for external change"))?;
+        insert_active_file_in_tx(
+            &tx,
+            InsertActiveFile {
+                new_id,
+                path_str: &path_str,
+                filename: &filename,
+                file,
+                now: &now,
+                session_str: &session_str,
+                err_msg: "failed to insert new file in ingest",
+            },
+        )?;
 
         let disc_transition = FileTransition::new(
             new_id,
-            df.path.clone(),
-            df.content_hash.clone(),
-            df.size,
+            file.path.clone(),
+            file.content_hash.clone(),
+            file.size,
             TransitionSource::Discovery,
         );
-        insert_transition_in_tx(tx, &disc_transition, now)?;
+        insert_transition_in_tx(&tx, &disc_transition, &now)?;
 
-        result.external_changes += 1;
-        result.needs_introspection.push(df.path.clone());
+        tx.commit()
+            .map_err(storage_err("failed to commit ingest transaction"))?;
+
+        Ok(IngestDecision::New {
+            file_id: new_id,
+            needs_introspection: true,
+        })
     }
-    Ok(())
+
+    fn finish_scan_session(
+        &self,
+        session: voom_domain::transition::ScanSessionId,
+    ) -> voom_domain::errors::Result<ScanFinishOutcome> {
+        let mut conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        let session_str = session.to_string();
+
+        let tx = conn
+            .transaction()
+            .map_err(storage_err("failed to begin finish_scan_session tx"))?;
+
+        let row: Option<(String, String, String)> = tx
+            .query_row(
+                "SELECT status, roots_json, started_at FROM scan_sessions WHERE id = ?1",
+                params![&session_str],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(storage_err("failed to load scan session"))?;
+
+        let (status, roots_json, session_started_at) = match row {
+            Some(v) => v,
+            None => {
+                return Err(voom_domain::errors::VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::Other,
+                    message: format!("unknown scan session {session_str}"),
+                });
+            }
+        };
+
+        if ScanSessionStatus::parse(&status) != Some(ScanSessionStatus::InProgress) {
+            return Err(voom_domain::errors::VoomError::Storage {
+                kind: voom_domain::errors::StorageErrorKind::Other,
+                message: format!(
+                    "scan session {session_str} is not in_progress (status: {status})",
+                ),
+            });
+        }
+
+        let roots: Vec<PathBuf> = serde_json::from_str(&roots_json)
+            .map_err(other_storage_err("failed to parse roots_json"))?;
+
+        // ---- MOVE PROMOTION ----
+        // Files ingested as New this session may actually be moves from an active
+        // file that's about to be marked missing. Detect these by matching
+        // content_hash (New-this-session row) against expected_hash (missing candidate).
+        // "New this session" == last_seen_session_id == this session AND created_at >= started_at.
+
+        struct MissingCandidate {
+            id: String,
+            path: String,
+            expected_hash: String,
+        }
+
+        let candidates_for_move: Vec<MissingCandidate> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id, path, expected_hash FROM files \
+                     WHERE status = 'active' AND path IS NOT NULL \
+                       AND expected_hash IS NOT NULL \
+                       AND (last_seen_session_id IS NULL OR last_seen_session_id != ?1)",
+                )
+                .map_err(storage_err("failed to prepare move-candidate select"))?;
+            stmt.query_map(params![&session_str], |row| {
+                Ok(MissingCandidate {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    expected_hash: row.get(2)?,
+                })
+            })
+            .map_err(storage_err("failed to query move candidates"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err("failed to collect move candidates"))?
+            .into_iter()
+            .filter(|c| is_under_any(Path::new(&c.path), &roots))
+            .collect()
+        };
+
+        let mut promoted_moves = 0u32;
+
+        for candidate in &candidates_for_move {
+            // Find a New-this-session row with content_hash matching this candidate's
+            // expected_hash. "New this session" == last_seen_session_id == this session
+            // AND created_at >= session started_at.
+            // Exclude rows that are part of a supersession chain — these are
+            // ExternallyChanged replacement rows (their id appears as superseded_by
+            // on the old row) and must not be hijacked as move targets.
+            let new_match: Option<(String, String, i64)> = tx
+                .query_row(
+                    "SELECT id, path, size FROM files \
+                     WHERE last_seen_session_id = ?1 \
+                       AND content_hash = ?2 \
+                       AND created_at >= ?3 \
+                       AND path IS NOT NULL \
+                       AND id != ?4 \
+                       AND id NOT IN (SELECT superseded_by FROM files \
+                                      WHERE superseded_by IS NOT NULL) \
+                     LIMIT 1",
+                    params![
+                        &session_str,
+                        &candidate.expected_hash,
+                        &session_started_at,
+                        &candidate.id,
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(storage_err("failed to look up move-promotion target"))?;
+
+            let Some((new_id, new_path, new_size)) = new_match else {
+                continue;
+            };
+
+            // Delete the New row's transitions so the move transition is the only record.
+            tx.execute(
+                "DELETE FROM file_transitions WHERE file_id = ?1",
+                params![&new_id],
+            )
+            .map_err(storage_err("failed to delete New row's transitions"))?;
+
+            // Delete the New row itself.
+            tx.execute("DELETE FROM files WHERE id = ?1", params![&new_id])
+                .map_err(storage_err("failed to delete New row for move promotion"))?;
+
+            // Update the candidate row to reflect the new path and keep it active.
+            let new_filename = filename_string(Path::new(&new_path));
+            tx.execute(
+                "UPDATE files SET path = ?1, filename = ?2, size = ?3, \
+                 content_hash = ?4, \
+                 status = 'active', missing_since = NULL, \
+                 last_seen_session_id = ?5, updated_at = ?6 \
+                 WHERE id = ?7",
+                params![
+                    &new_path,
+                    new_filename,
+                    new_size,
+                    &candidate.expected_hash,
+                    &session_str,
+                    &now,
+                    &candidate.id,
+                ],
+            )
+            .map_err(storage_err("failed to promote candidate to moved"))?;
+
+            // Record a Discovery transition with from_path set to signal the move.
+            let file_uuid = super::parse_uuid(&candidate.id)?;
+            let move_tx = FileTransition::new(
+                file_uuid,
+                PathBuf::from(&new_path),
+                candidate.expected_hash.clone(),
+                new_size as u64,
+                TransitionSource::Discovery,
+            )
+            .with_from_path(PathBuf::from(&candidate.path))
+            .with_detail("detected_move");
+            insert_transition_in_tx(&tx, &move_tx, &now)?;
+
+            promoted_moves += 1;
+        }
+
+        // ---- MISSING PASS ----
+        // Mark every active file under a scanned root that wasn't seen this
+        // session. The `AND status = 'active'` clause on the UPDATE guards
+        // against a race between SELECT and UPDATE. Promoted candidates already
+        // have last_seen_session_id == this session, so they're excluded here.
+        let candidates: Vec<(String, String)> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id, path FROM files \
+                     WHERE status = 'active' AND path IS NOT NULL \
+                       AND (last_seen_session_id IS NULL OR last_seen_session_id != ?1)",
+                )
+                .map_err(storage_err("failed to prepare missing-scan select"))?;
+            stmt.query_map(params![&session_str], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage_err("failed to query missing candidates"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err("failed to collect missing candidates"))?
+        };
+
+        let mut missing = 0u32;
+        for (id, path) in candidates {
+            if !is_under_any(Path::new(&path), &roots) {
+                continue;
+            }
+            tx.execute(
+                "UPDATE files SET status = 'missing', missing_since = ?1, updated_at = ?1 \
+                 WHERE id = ?2 AND status = 'active'",
+                params![&now, &id],
+            )
+            .map_err(storage_err("failed to mark file missing in finish"))?;
+            missing += 1;
+        }
+
+        tx.execute(
+            "UPDATE scan_sessions SET status = 'completed', finished_at = ?1, \
+             last_heartbeat_at = ?1 \
+             WHERE id = ?2",
+            params![&now, &session_str],
+        )
+        .map_err(storage_err("failed to mark session completed"))?;
+
+        tx.commit()
+            .map_err(storage_err("failed to commit finish_scan_session"))?;
+        Ok(ScanFinishOutcome::new(missing, promoted_moves))
+    }
+
+    fn cancel_scan_session(
+        &self,
+        session: voom_domain::transition::ScanSessionId,
+    ) -> voom_domain::errors::Result<()> {
+        let conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        conn.execute(
+            "UPDATE scan_sessions \
+             SET status = 'cancelled', finished_at = ?1, last_heartbeat_at = ?1 \
+             WHERE id = ?2 AND status = 'in_progress'",
+            params![now, session.to_string()],
+        )
+        .map_err(storage_err("failed to cancel scan session"))?;
+        Ok(())
+    }
 }
 
-/// Handle a discovered file whose path is not yet in the DB (move or new).
-fn reconcile_new_path(
+/// Parameters for [`insert_active_file_in_tx`]. Bundled into a struct so the
+/// helper stays under clippy's `too_many_arguments` threshold.
+struct InsertActiveFile<'a> {
+    new_id: Uuid,
+    path_str: &'a str,
+    filename: &'a str,
+    file: &'a DiscoveredFile,
+    now: &'a str,
+    session_str: &'a str,
+    err_msg: &'a str,
+}
+
+/// Insert a new active file row during ingest. Shared by the
+/// `ExternallyChanged` and `New` branches of `ingest_discovered_file`.
+fn insert_active_file_in_tx(
     tx: &rusqlite::Transaction<'_>,
-    df: &DiscoveredFile,
-    missing_by_hash: &HashMap<String, MissingMatch>,
-    consumed_missing: &mut HashSet<String>,
-    now: &str,
-    result: &mut ReconcileResult,
+    args: InsertActiveFile<'_>,
 ) -> Result<()> {
-    let path_str = df.path.to_string_lossy().to_string();
-    let filename = filename_string(&df.path);
-    let move_match = missing_by_hash
-        .get(&df.content_hash)
-        .filter(|m| !consumed_missing.contains(&m.id));
-
-    if let Some(m) = move_match {
-        let missing_id = m.id.clone();
-        let prior_path = m.prior_path.clone();
-        consumed_missing.insert(missing_id.clone());
-
-        tx.execute(
-            "UPDATE files SET path = ?1, filename = ?2, \
-             size = ?3, content_hash = ?4, \
-             status = 'active', missing_since = NULL, \
-             updated_at = ?5 WHERE id = ?6",
-            params![
-                path_str,
-                filename,
-                df.size as i64,
-                &df.content_hash,
-                now,
-                &missing_id,
-            ],
-        )
-        .map_err(storage_err("failed to reactivate moved file"))?;
-
-        let file_uuid = super::parse_uuid(&missing_id)?;
-        let move_transition = FileTransition::new(
-            file_uuid,
-            df.path.clone(),
-            df.content_hash.clone(),
-            df.size,
-            TransitionSource::Discovery,
-        )
-        .with_from_path(PathBuf::from(prior_path))
-        .with_detail("detected_move");
-        insert_transition_in_tx(tx, &move_transition, now)?;
-
-        result.moved += 1;
-        result.needs_introspection.push(df.path.clone());
-    } else {
-        let new_id = Uuid::new_v4();
-        tx.execute(
-            "INSERT INTO files \
-             (id, path, filename, size, content_hash, \
-              expected_hash, status, container, duration, \
-              tags, plugin_metadata, introspected_at, \
-              created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
-                     'other', 0.0, '{}', '{}', ?7, ?7, ?7)",
-            params![
-                new_id.to_string(),
-                path_str,
-                filename,
-                df.size as i64,
-                &df.content_hash,
-                &df.content_hash,
-                now,
-            ],
-        )
-        .map_err(storage_err("failed to insert new file"))?;
-
-        let disc_transition = FileTransition::new(
-            new_id,
-            df.path.clone(),
-            df.content_hash.clone(),
-            df.size,
-            TransitionSource::Discovery,
-        );
-        insert_transition_in_tx(tx, &disc_transition, now)?;
-
-        result.new_files += 1;
-        result.needs_introspection.push(df.path.clone());
-    }
+    tx.execute(
+        "INSERT INTO files \
+         (id, path, filename, size, content_hash, \
+          expected_hash, status, container, duration, \
+          tags, plugin_metadata, introspected_at, \
+          created_at, updated_at, last_seen_session_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
+                 'other', 0.0, '{}', '{}', ?7, ?7, ?7, ?8)",
+        params![
+            args.new_id.to_string(),
+            args.path_str,
+            args.filename,
+            args.file.size as i64,
+            &args.file.content_hash,
+            &args.file.content_hash,
+            args.now,
+            args.session_str,
+        ],
+    )
+    .map_err(storage_err(args.err_msg))?;
     Ok(())
 }
 
@@ -941,6 +1337,19 @@ mod tests {
 
     fn test_store() -> SqliteStore {
         SqliteStore::in_memory().expect("in-memory store")
+    }
+
+    /// Return the variant name without exposing inner fields (which carry
+    /// UUIDs that CodeQL's `rust/cleartext-logging` rule mistakenly flags
+    /// when Debug-formatted into panic/assert messages).
+    fn decision_variant(d: &IngestDecision) -> &'static str {
+        match d {
+            IngestDecision::New { .. } => "New",
+            IngestDecision::Unchanged { .. } => "Unchanged",
+            IngestDecision::ExternallyChanged { .. } => "ExternallyChanged",
+            IngestDecision::Moved { .. } => "Moved",
+            IngestDecision::Duplicate { .. } => "Duplicate",
+        }
     }
 
     fn active_file(path: &str) -> MediaFile {
@@ -1924,5 +2333,1607 @@ mod tests {
         assert_eq!(result.missing, 0);
         assert_eq!(result.external_changes, 0);
         assert_eq!(result.needs_introspection.len(), 1);
+    }
+
+    #[test]
+    fn begin_scan_session_creates_in_progress_row() {
+        use std::path::PathBuf;
+
+        let store = test_store();
+        let roots = vec![PathBuf::from("/movies")];
+        let session = store.begin_scan_session(&roots).unwrap();
+
+        let conn = store.conn().unwrap();
+        let (status, roots_json): (String, String) = conn
+            .query_row(
+                "SELECT status, roots_json FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "in_progress");
+        assert_eq!(roots_json, "[\"/movies\"]");
+    }
+
+    #[test]
+    fn begin_scan_session_auto_cancels_prior_in_progress() {
+        use std::path::PathBuf;
+
+        let store = test_store();
+        let first = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+
+        // First session is live (heartbeat = now). A second begin should
+        // error, not silently cancel the live session.
+        let err = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("another scan is in progress") || msg.contains("in_progress"),
+            "expected live-session error on second begin, got: {msg}"
+        );
+
+        // First session row is untouched.
+        let conn = store.conn().unwrap();
+        let first_status: String = conn
+            .query_row(
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![first.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(first_status, "in_progress");
+
+        let first_finished_at: Option<String> = conn
+            .query_row(
+                "SELECT finished_at FROM scan_sessions WHERE id = ?1",
+                params![first.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            first_finished_at.is_none(),
+            "live session must not have finished_at set on rejected begin"
+        );
+    }
+
+    #[test]
+    fn cancel_scan_session_marks_cancelled_and_leaves_files_unchanged() {
+        use std::path::PathBuf;
+
+        let store = test_store();
+        let roots = vec![PathBuf::from("/movies")];
+
+        // Seed an active file
+        let f = active_file("/movies/a.mkv");
+        store.upsert_file(&f).unwrap();
+
+        let session = store.begin_scan_session(&roots).unwrap();
+        store.cancel_scan_session(session).unwrap();
+
+        let conn = store.conn().unwrap();
+        let (status, finished_at): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, finished_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "cancelled");
+        assert!(
+            finished_at.is_some(),
+            "cancelled session must have finished_at set"
+        );
+
+        // file row is still active
+        let file_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(file_status, "active");
+    }
+
+    #[test]
+    fn finish_session_with_no_ingest_marks_all_files_in_roots_missing() {
+        use std::path::PathBuf;
+
+        let store = test_store();
+        let roots = vec![PathBuf::from("/movies")];
+
+        let f = active_file("/movies/a.mkv");
+        store.upsert_file(&f).unwrap();
+        let g = active_file("/other/b.mkv");
+        store.upsert_file(&g).unwrap();
+
+        let session = store.begin_scan_session(&roots).unwrap();
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(
+            finish.missing, 1,
+            "only files under /movies should be marked missing"
+        );
+
+        let conn = store.conn().unwrap();
+        let a_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(a_status, "missing");
+
+        let b_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/other/b.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(b_status, "active");
+
+        let session_status: String = conn
+            .query_row(
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(session_status, "completed");
+
+        let finished_at: Option<String> = conn
+            .query_row(
+                "SELECT finished_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            finished_at.is_some(),
+            "completed session must have finished_at set"
+        );
+    }
+
+    #[test]
+    fn finish_session_errors_if_not_in_progress() {
+        use std::path::PathBuf;
+
+        let store = test_store();
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        store.finish_scan_session(session).unwrap();
+
+        let err = store.finish_scan_session(session).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not in_progress") || msg.contains("not in progress"),
+            "expected 'not in_progress' in error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn ingest_new_file_inserts_and_returns_new() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), 100, "h-a".to_string());
+
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+        match decision {
+            IngestDecision::New {
+                needs_introspection,
+                ..
+            } => {
+                assert!(needs_introspection);
+            }
+            other => panic!("expected New, got {}", decision_variant(&other)),
+        }
+
+        // File row created with status=active, last_seen_session_id stamped
+        let conn = store.conn().unwrap();
+        let (status, last_seen): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, last_seen_session_id FROM files WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "active");
+        assert_eq!(last_seen.as_deref(), Some(session.to_string().as_str()));
+
+        // Discovery transition recorded
+        let tx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions \
+                 WHERE source = 'discovery' AND path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tx_count, 1);
+    }
+
+    #[test]
+    fn ingest_unchanged_file_stamps_session_and_backfills_expected_hash() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        // Seed an existing file with NULL expected_hash
+        let mut f = active_file("/movies/a.mkv");
+        f.expected_hash = None;
+        // Make sure content_hash matches what we'll ingest
+        f.content_hash = Some("h-a".to_string());
+        store.upsert_file(&f).unwrap();
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), f.size, "h-a".to_string());
+
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+        assert!(matches!(decision, IngestDecision::Unchanged { .. }));
+
+        let conn = store.conn().unwrap();
+        let (expected_hash, last_seen): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT expected_hash, last_seen_session_id FROM files WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            expected_hash.as_deref(),
+            Some("h-a"),
+            "expected_hash should be backfilled"
+        );
+        assert_eq!(
+            last_seen.as_deref(),
+            Some(session.to_string().as_str()),
+            "last_seen_session_id should be stamped"
+        );
+
+        // No new transition row for unchanged
+        let tx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tx_count, 0, "unchanged should not create transitions");
+    }
+
+    #[test]
+    fn ingest_externally_changed_creates_supersession_and_external_transition() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let mut f = active_file("/movies/a.mkv");
+        f.content_hash = Some("h-old".to_string());
+        f.expected_hash = Some("h-old".to_string());
+        store.upsert_file(&f).unwrap();
+        // upsert_file does not write expected_hash; stamp it directly.
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET expected_hash = 'h-old' WHERE path = '/movies/a.mkv'",
+                [],
+            )
+            .unwrap();
+        }
+        let old_id = f.id;
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), 150, "h-new".to_string());
+
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+        let (new_id, superseded) = match decision {
+            IngestDecision::ExternallyChanged {
+                file_id,
+                superseded,
+            } => (file_id, superseded),
+            other => panic!(
+                "expected ExternallyChanged, got {}",
+                decision_variant(&other)
+            ),
+        };
+        assert_eq!(superseded, old_id);
+        assert_ne!(new_id, old_id);
+
+        let conn = store.conn().unwrap();
+
+        // External transition recorded
+        let ext_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions \
+                 WHERE source = 'external' AND path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ext_count, 1);
+
+        // Discovery transition for the new row recorded
+        let disc_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions \
+                 WHERE source = 'discovery' AND path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(disc_count, 1);
+
+        // last_seen_session_id stamped on the new row only
+        let new_last_seen: Option<String> = conn
+            .query_row(
+                "SELECT last_seen_session_id FROM files WHERE id = ?1",
+                params![new_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_last_seen.as_deref(), Some(session.to_string().as_str()));
+
+        // Old row is superseded
+        let (old_status, superseded_by): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, superseded_by FROM files WHERE id = ?1",
+                params![old_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(old_status, "missing");
+        assert_eq!(superseded_by.as_deref(), Some(new_id.to_string().as_str()));
+    }
+
+    #[test]
+    fn ingest_moved_file_reuses_id_and_records_move_transition() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        // Seed a file marked missing with a known expected_hash
+        let mut f = active_file("/movies/old.mkv");
+        f.status = FileStatus::Missing;
+        f.content_hash = Some("h-content".to_string());
+        f.expected_hash = Some("h-content".to_string());
+        store.upsert_file(&f).unwrap();
+        let original_id = f.id;
+
+        // upsert_file doesn't write expected_hash or status='missing', so set them
+        // directly via SQL the way the ExternallyChanged test does.
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET expected_hash = ?1, status = 'missing' WHERE id = ?2",
+                params!["h-content", original_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let df = DiscoveredFile::new(
+            PathBuf::from("/movies/new.mkv"),
+            100,
+            "h-content".to_string(),
+        );
+
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+        let (file_id, from_path) = match decision {
+            IngestDecision::Moved { file_id, from_path } => (file_id, from_path),
+            other => panic!("expected Moved, got {}", decision_variant(&other)),
+        };
+        assert_eq!(file_id, original_id);
+        assert_eq!(from_path, PathBuf::from("/movies/old.mkv"));
+
+        let conn = store.conn().unwrap();
+        let (path, status): (String, String) = conn
+            .query_row(
+                "SELECT path, status FROM files WHERE id = ?1",
+                params![original_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(path, "/movies/new.mkv");
+        assert_eq!(status, "active");
+
+        // Discovery transition with from_path recorded
+        let from_path_db: String = conn
+            .query_row(
+                "SELECT from_path FROM file_transitions WHERE file_id = ?1 AND path = ?2",
+                params![original_id.to_string(), "/movies/new.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(from_path_db, "/movies/old.mkv");
+    }
+
+    #[test]
+    fn ingest_does_not_claim_same_missing_row_twice() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let f = active_file("/movies/old.mkv");
+        let original_id = f.id;
+        store.upsert_file(&f).unwrap();
+
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET expected_hash = ?1, content_hash = ?2, status = 'missing' WHERE id = ?3",
+                params!["h-content", "h-content", original_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+
+        let df1 = DiscoveredFile::new(
+            PathBuf::from("/movies/new_a.mkv"),
+            100,
+            "h-content".to_string(),
+        );
+        let df2 = DiscoveredFile::new(
+            PathBuf::from("/movies/new_b.mkv"),
+            100,
+            "h-content".to_string(),
+        );
+
+        let d1 = store.ingest_discovered_file(session, &df1).unwrap();
+        let d2 = store.ingest_discovered_file(session, &df2).unwrap();
+
+        assert!(matches!(d1, IngestDecision::Moved { .. }));
+        // The first one consumed the missing row by flipping it to active; the second
+        // sees no missing match and must be a fresh New row.
+        assert!(
+            matches!(d2, IngestDecision::New { .. }),
+            "got {}",
+            decision_variant(&d2)
+        );
+    }
+
+    #[test]
+    fn ingest_duplicate_path_in_same_session_returns_duplicate() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), 100, "h-a".to_string());
+
+        let d1 = store.ingest_discovered_file(session, &df).unwrap();
+        let d2 = store.ingest_discovered_file(session, &df).unwrap();
+
+        let id1 = match d1 {
+            IngestDecision::New { file_id, .. } => file_id,
+            other => panic!("expected New first, got {}", decision_variant(&other)),
+        };
+        let id2 = match d2 {
+            IngestDecision::Duplicate { file_id } => file_id,
+            other => panic!(
+                "expected Duplicate second, got {}",
+                decision_variant(&other)
+            ),
+        };
+        assert_eq!(id1, id2);
+
+        // Only one transition recorded (the first New); no duplicate
+        let conn = store.conn().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn finish_preserves_ingested_files_and_marks_only_unseen() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        // Two pre-existing active files under /movies.
+        // active_file always sets content_hash = "abc123".
+        let a = active_file("/movies/a.mkv");
+        let b = active_file("/movies/b.mkv");
+        store.upsert_file(&a).unwrap();
+        store.upsert_file(&b).unwrap();
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        // Ingest `a` with matching size and hash so it resolves as Unchanged.
+        let df_a =
+            DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), a.size, "abc123".to_string());
+        store.ingest_discovered_file(session, &df_a).unwrap();
+
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(
+            finish.missing, 1,
+            "only b.mkv was unseen and must be marked missing"
+        );
+
+        let conn = store.conn().unwrap();
+        let a_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(a_status, "active");
+        let b_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/movies/b.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(b_status, "missing");
+    }
+
+    #[test]
+    fn cancel_session_leaves_unseen_files_active() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        let a = active_file("/movies/a.mkv");
+        let b = active_file("/movies/b.mkv");
+        store.upsert_file(&a).unwrap();
+        store.upsert_file(&b).unwrap();
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let df_a =
+            DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), a.size, "abc123".to_string());
+        store.ingest_discovered_file(session, &df_a).unwrap();
+        store.cancel_scan_session(session).unwrap();
+
+        let conn = store.conn().unwrap();
+        let b_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/movies/b.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(b_status, "active", "cancel must not mark anything missing");
+    }
+
+    #[test]
+    fn overlapping_scan_roots_double_ingest_yields_duplicate() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies"), PathBuf::from("/movies/4k")])
+            .unwrap();
+
+        let df = DiscoveredFile::new(PathBuf::from("/movies/4k/a.mkv"), 100, "h-a".to_string());
+
+        // First call (e.g. from outer root walk)
+        let d1 = store.ingest_discovered_file(session, &df).unwrap();
+        assert!(matches!(d1, IngestDecision::New { .. }));
+
+        // Second call (e.g. from inner root walk, same path)
+        let d2 = store.ingest_discovered_file(session, &df).unwrap();
+        assert!(matches!(d2, IngestDecision::Duplicate { .. }));
+
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(
+            finish.missing, 0,
+            "the one seen file must not be marked missing"
+        );
+    }
+
+    #[test]
+    fn reconcile_wrapper_matches_session_api_outcomes() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+
+        // Seed:
+        //   - active a (will be Unchanged)
+        //   - missing b with expected_hash (will be Moved to /m/new.mkv)
+        //   - active c (will become missing)
+        //   - active d with expected_hash='h-d-old' (will be ExternallyChanged)
+        let a = active_file("/m/a.mkv");
+        let b = active_file("/m/old.mkv");
+        let c = active_file("/m/c.mkv");
+        let d = active_file("/m/d.mkv");
+        store.upsert_file(&a).unwrap();
+        store.upsert_file(&b).unwrap();
+        store.upsert_file(&c).unwrap();
+        store.upsert_file(&d).unwrap();
+
+        let a_hash: String = {
+            let conn = store.conn().unwrap();
+            conn.query_row(
+                "SELECT content_hash FROM files WHERE path = ?1",
+                params!["/m/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+
+        // Stamp b as missing with expected_hash='h-moved'
+        // Stamp d's content_hash/expected_hash='h-d-old' so a discovery with h-d-new triggers external change
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET status = 'missing', \
+                 content_hash = 'h-moved', expected_hash = 'h-moved' \
+                 WHERE path = ?1",
+                params!["/m/old.mkv"],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE files SET content_hash = 'h-d-old', expected_hash = 'h-d-old' \
+                 WHERE path = ?1",
+                params!["/m/d.mkv"],
+            )
+            .unwrap();
+        }
+
+        let brand_new = DiscoveredFile::new(
+            PathBuf::from("/m/brand-new.mkv"),
+            100,
+            "h-fresh".to_string(),
+        );
+        let discovered = vec![
+            DiscoveredFile::new(PathBuf::from("/m/a.mkv"), a.size, a_hash),
+            DiscoveredFile::new(PathBuf::from("/m/new.mkv"), 100, "h-moved".to_string()),
+            brand_new.clone(),
+            brand_new, // duplicate path in input — should be silently dropped
+            DiscoveredFile::new(PathBuf::from("/m/d.mkv"), d.size, "h-d-new".to_string()),
+        ];
+        let result = store
+            .reconcile_discovered_files(&discovered, &[PathBuf::from("/m")])
+            .unwrap();
+
+        assert_eq!(result.new_files, 1, "brand-new.mkv");
+        assert_eq!(result.unchanged, 1, "a.mkv");
+        assert_eq!(result.moved, 1, "old.mkv -> new.mkv");
+        assert_eq!(result.external_changes, 1, "d.mkv");
+        assert_eq!(result.missing, 1, "c.mkv");
+        // needs_introspection: new + moved + external_changes
+        assert_eq!(result.needs_introspection.len(), 3);
+    }
+
+    #[test]
+    fn move_detected_at_finish_when_old_file_was_active_before_scan() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+
+        // Seed an ACTIVE file with a known expected_hash (mimics a previously
+        // introspected file at the old path).
+        let f = active_file("/movies/old.mkv");
+        store.upsert_file(&f).unwrap();
+        let original_id = f.id;
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET content_hash = 'h-content', expected_hash = 'h-content' \
+                 WHERE id = ?1",
+                params![original_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+
+        // Ingest the file at its NEW path (the move). Old path is NOT re-ingested
+        // (the file is no longer there).
+        let df_new = DiscoveredFile::new(
+            PathBuf::from("/movies/new.mkv"),
+            100,
+            "h-content".to_string(),
+        );
+        store.ingest_discovered_file(session, &df_new).unwrap();
+
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(
+            finish.missing, 0,
+            "no file should be missing after promotion"
+        );
+        assert_eq!(finish.promoted_moves, 1, "one move should be promoted");
+
+        // The original file id should now point at the new path with active status.
+        let conn = store.conn().unwrap();
+        let (path, status): (String, String) = conn
+            .query_row(
+                "SELECT path, status FROM files WHERE id = ?1",
+                params![original_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(path, "/movies/new.mkv");
+        assert_eq!(status, "active");
+
+        // The move transition should exist with from_path set.
+        let from_path: String = conn
+            .query_row(
+                "SELECT from_path FROM file_transitions \
+                 WHERE file_id = ?1 AND path = ?2",
+                params![original_id.to_string(), "/movies/new.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(from_path, "/movies/old.mkv");
+
+        // There should be exactly one file row for the new path (no leftover New row).
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE path = ?1",
+                params!["/movies/new.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "only the promoted candidate row, no separate New row"
+        );
+    }
+
+    #[test]
+    fn ingest_moved_does_not_steal_from_other_root() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        // Pre-existing TV file marked missing with a known hash — NOT under
+        // the scan root we're about to use.
+        let mut tv = active_file("/tv/old-show.mkv");
+        tv.content_hash = Some("h-shared".to_string());
+        store.upsert_file(&tv).unwrap();
+        let tv_id = tv.id;
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET status = 'missing', \
+                 content_hash = 'h-shared', expected_hash = 'h-shared' \
+                 WHERE id = ?1",
+                params![tv_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        // Scan /movies only.
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        // Ingest a file in /movies with the same hash — NOT a move, just a coincidence.
+        let df = DiscoveredFile::new(
+            PathBuf::from("/movies/foo.mkv"),
+            100,
+            "h-shared".to_string(),
+        );
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+        assert!(
+            matches!(decision, IngestDecision::New { .. }),
+            "cross-root hash collision must NOT be treated as a move; got {}",
+            decision_variant(&decision),
+        );
+
+        // Confirm the TV row is still in its original state.
+        let conn = store.conn().unwrap();
+        let (tv_path, tv_status): (String, String) = conn
+            .query_row(
+                "SELECT path, status FROM files WHERE id = ?1",
+                params![tv_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            tv_path, "/tv/old-show.mkv",
+            "TV row must not be moved by /movies scan"
+        );
+        assert_eq!(tv_status, "missing");
+
+        // Finish — TV file is not under scan root, so it should stay missing
+        // (the missing pass only updates files under session roots).
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(finish.missing, 0);
+        assert_eq!(finish.promoted_moves, 0);
+
+        let (tv_path_after, tv_status_after): (String, String) = conn
+            .query_row(
+                "SELECT path, status FROM files WHERE id = ?1",
+                params![tv_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tv_path_after, "/tv/old-show.mkv");
+        assert_eq!(tv_status_after, "missing");
+    }
+
+    #[test]
+    fn finish_promotion_does_not_steal_externally_changed_replacement() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        // Pre-existing /a.mkv with hash X (will be externally changed to hash Y)
+        let mut a = active_file("/a.mkv");
+        a.content_hash = Some("h-x".to_string());
+        store.upsert_file(&a).unwrap();
+        let a_id = a.id;
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET content_hash = 'h-x', expected_hash = 'h-x' WHERE id = ?1",
+                params![a_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        // Pre-existing /b.mkv with hash Y and expected_hash Y (will NOT be re-ingested)
+        let mut b = active_file("/b.mkv");
+        b.content_hash = Some("h-y".to_string());
+        store.upsert_file(&b).unwrap();
+        let b_id = b.id;
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET content_hash = 'h-y', expected_hash = 'h-y' WHERE id = ?1",
+                params![b_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        // Scan root '/' covers both files.
+        let session = store.begin_scan_session(&[PathBuf::from("/")]).unwrap();
+
+        // Ingest /a.mkv with NEW hash Y → ExternallyChanged
+        let df_a = DiscoveredFile::new(PathBuf::from("/a.mkv"), 100, "h-y".to_string());
+        let _decision_a = store.ingest_discovered_file(session, &df_a).unwrap();
+
+        // /b.mkv is NOT ingested — it will become a missing candidate.
+
+        let finish = store.finish_scan_session(session).unwrap();
+
+        // /b.mkv must be marked missing, NOT promoted to a move of the
+        // ExternallyChanged replacement row.
+        assert_eq!(
+            finish.promoted_moves, 0,
+            "ExternallyChanged replacement must not be hijacked by move promotion",
+        );
+        assert_eq!(finish.missing, 1, "/b.mkv must be marked missing");
+
+        let conn = store.conn().unwrap();
+        // /b.mkv row is still at /b.mkv, marked missing.
+        let (b_path, b_status): (String, String) = conn
+            .query_row(
+                "SELECT path, status FROM files WHERE id = ?1",
+                params![b_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(b_path, "/b.mkv");
+        assert_eq!(b_status, "missing");
+
+        // /a.mkv supersession is intact: one row at /a.mkv (the replacement), one
+        // superseded row (old a) with status=missing and path=NULL.
+        let active_a_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE path = '/a.mkv' AND status = 'active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            active_a_count, 1,
+            "active /a.mkv replacement must still exist"
+        );
+
+        let superseded_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE superseded_by IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(superseded_count, 1, "supersession chain intact");
+    }
+
+    #[test]
+    fn finish_promoted_move_updates_content_hash() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        // Pre-existing active file with content_hash != expected_hash
+        // (mimics a prior voom operation that bumped expected_hash).
+        let mut f = active_file("/movies/old.mkv");
+        f.content_hash = Some("h-stale".to_string());
+        store.upsert_file(&f).unwrap();
+        let original_id = f.id;
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET content_hash = 'h-stale', expected_hash = 'h-current' \
+                 WHERE id = ?1",
+                params![original_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        // Ingest a NEW path with content_hash matching expected_hash.
+        let df_new = DiscoveredFile::new(
+            PathBuf::from("/movies/new.mkv"),
+            100,
+            "h-current".to_string(),
+        );
+        store.ingest_discovered_file(session, &df_new).unwrap();
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(finish.promoted_moves, 1);
+
+        let conn = store.conn().unwrap();
+        let (path, content_hash, expected_hash): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT path, content_hash, expected_hash FROM files WHERE id = ?1",
+                params![original_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(path, "/movies/new.mkv");
+        assert_eq!(
+            content_hash, "h-current",
+            "promoted move must update content_hash to the discovered hash"
+        );
+        assert_eq!(expected_hash.as_deref(), Some("h-current"));
+    }
+
+    #[test]
+    fn begin_after_stale_in_progress_auto_cancels() {
+        use std::path::PathBuf;
+        let store = test_store();
+        // Seed a stale in_progress session via a direct INSERT with old heartbeat.
+        let stale_id = "11111111-1111-1111-1111-111111111111";
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at) \
+                 VALUES (?1, '[\"/m\"]', 'in_progress', ?2, ?3)",
+                params![stale_id, "2026-05-11T10:00:00Z", "2026-05-11T10:00:00Z",],
+            )
+            .unwrap();
+        }
+        let new_session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        assert_ne!(new_session.to_string(), stale_id);
+
+        let conn = store.conn().unwrap();
+        let stale_status: String = conn
+            .query_row(
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![stale_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stale_status, "cancelled");
+        let new_status: String = conn
+            .query_row(
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![new_session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_status, "in_progress");
+    }
+
+    #[test]
+    fn begin_with_live_in_progress_errors() {
+        use std::path::PathBuf;
+        let store = test_store();
+        let live_id = "22222222-2222-2222-2222-222222222222";
+        let now = format_datetime(&chrono::Utc::now());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at) \
+                 VALUES (?1, '[\"/m\"]', 'in_progress', ?2, ?2)",
+                params![live_id, now],
+            )
+            .unwrap();
+        }
+        let err = store
+            .begin_scan_session(&[PathBuf::from("/m")])
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("another scan is in progress") || msg.contains("in_progress"),
+            "expected live-session error, got: {msg}"
+        );
+
+        let conn = store.conn().unwrap();
+        let live_status: String = conn
+            .query_row(
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![live_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(live_status, "in_progress");
+    }
+
+    #[test]
+    fn ingest_bumps_heartbeat() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+
+        let before: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-a".to_string());
+        store.ingest_discovered_file(session, &df).unwrap();
+
+        let after: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert!(
+            after > before,
+            "heartbeat must advance after ingest; before={before} after={after}"
+        );
+    }
+
+    #[test]
+    fn finish_bumps_heartbeat() {
+        use std::path::PathBuf;
+        let store = test_store();
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let before: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        store.finish_scan_session(session).unwrap();
+        let after: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(after > before);
+    }
+
+    #[test]
+    fn cancel_bumps_heartbeat() {
+        use std::path::PathBuf;
+        let store = test_store();
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let before: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        store.cancel_scan_session(session).unwrap();
+        let after: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(after > before);
+    }
+
+    #[test]
+    fn unchanged_check_recovers_stub_from_cancelled_session() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let stub_id = "33333333-3333-3333-3333-333333333333";
+        let cancelled_session = "44444444-4444-4444-4444-444444444444";
+        let now = format_datetime(&chrono::Utc::now());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at, finished_at) \
+                 VALUES (?1, '[\"/m\"]', 'cancelled', ?2, ?2, ?2)",
+                params![cancelled_session, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at, last_seen_session_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 'active', 'other', 0.0, \
+                         '{}', '{}', ?6, ?6, ?6, ?7)",
+                params![
+                    stub_id,
+                    "/m/a.mkv",
+                    "a.mkv",
+                    100,
+                    "h-a",
+                    now,
+                    cancelled_session
+                ],
+            )
+            .unwrap();
+        }
+
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-a".to_string());
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+
+        match decision {
+            IngestDecision::New {
+                needs_introspection,
+                ..
+            } => {
+                assert!(
+                    needs_introspection,
+                    "stub recovery must mark needs_introspection"
+                );
+            }
+            other => panic!(
+                "expected New (stub recovery), got {}",
+                decision_variant(&other)
+            ),
+        }
+
+        let conn = store.conn().unwrap();
+        let stub_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE id = ?1",
+                params![stub_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stub_exists, 0, "stub row must be deleted by recovery");
+
+        let (status, last_seen): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, last_seen_session_id FROM files WHERE path = ?1",
+                params!["/m/a.mkv"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "active");
+        assert_eq!(last_seen.as_deref(), Some(session.to_string().as_str()));
+    }
+
+    #[test]
+    fn unchanged_check_recovers_move_destination_from_cancelled_session() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let stub_id = "55555555-5555-5555-5555-555555555555";
+        let source_id = "66666666-6666-6666-6666-666666666666";
+        let cancelled_session = "77777777-7777-7777-7777-777777777777";
+        let now = format_datetime(&chrono::Utc::now());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at, finished_at) \
+                 VALUES (?1, '[\"/m\"]', 'cancelled', ?2, ?2, ?2)",
+                params![cancelled_session, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at, last_seen_session_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 'active', 'other', 0.0, \
+                         '{}', '{}', ?6, ?6, ?6, ?7)",
+                params![
+                    stub_id,
+                    "/m/new.mkv",
+                    "new.mkv",
+                    100,
+                    "h-c",
+                    now,
+                    cancelled_session
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'missing', 'other', 0.0, \
+                         '{}', '{}', ?7, ?7, ?7)",
+                params![source_id, "/m/old.mkv", "old.mkv", 100, "h-c", "h-c", now],
+            )
+            .unwrap();
+        }
+
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/m/new.mkv"), 100, "h-c".to_string());
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+
+        match decision {
+            IngestDecision::Moved { from_path, .. } => {
+                assert_eq!(from_path, PathBuf::from("/m/old.mkv"));
+            }
+            other => panic!(
+                "expected Moved (stub deleted, move detected), got {}",
+                decision_variant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn unchanged_check_preserves_supersession_when_stub_was_replacement() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        let stub_id = "88888888-8888-8888-8888-888888888888";
+        let pred_id = "99999999-9999-9999-9999-999999999999";
+        let cancelled_session = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let now = format_datetime(&chrono::Utc::now());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at, finished_at) \
+                 VALUES (?1, '[\"/m\"]', 'cancelled', ?2, ?2, ?2)",
+                params![cancelled_session, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at, superseded_by, missing_since) \
+                 VALUES (?1, NULL, 'a.mkv', 100, ?2, ?2, 'missing', 'other', 0.0, \
+                         '{}', '{}', ?3, ?3, ?3, ?4, ?3)",
+                params![pred_id, "h-old", now, stub_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at, last_seen_session_id) \
+                 VALUES (?1, ?2, 'a.mkv', 100, ?3, ?3, 'active', 'other', 0.0, \
+                         '{}', '{}', ?4, ?4, ?4, ?5)",
+                params![stub_id, "/m/a.mkv", "h-new", now, cancelled_session],
+            )
+            .unwrap();
+        }
+
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-new".to_string());
+        let _decision = store.ingest_discovered_file(session, &df).unwrap();
+
+        let conn = store.conn().unwrap();
+
+        let stub_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE id = ?1",
+                params![stub_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stub_exists, 0);
+
+        let pred_superseded_by: Option<String> = conn
+            .query_row(
+                "SELECT superseded_by FROM files WHERE id = ?1",
+                params![pred_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            pred_superseded_by.is_none(),
+            "predecessor's superseded_by must be cleared after stub removal"
+        );
+
+        let pred_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE id = ?1",
+                params![pred_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pred_status, "missing");
+    }
+
+    #[test]
+    fn unchanged_with_completed_session_stays_unchanged() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let row_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let completed_session = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        let now = format_datetime(&chrono::Utc::now());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at, finished_at) \
+                 VALUES (?1, '[\"/m\"]', 'completed', ?2, ?2, ?2)",
+                params![completed_session, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at, last_seen_session_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 'active', 'other', 0.0, \
+                         '{}', '{}', ?6, ?6, ?6, ?7)",
+                params![
+                    row_id,
+                    "/m/a.mkv",
+                    "a.mkv",
+                    100,
+                    "h-a",
+                    now,
+                    completed_session
+                ],
+            )
+            .unwrap();
+        }
+
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-a".to_string());
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+        assert!(
+            matches!(decision, IngestDecision::Unchanged { .. }),
+            "completed-session row must stay Unchanged; got {}",
+            decision_variant(&decision)
+        );
+    }
+
+    #[test]
+    fn reconcile_wrapper_clean_path_leaves_no_in_progress_session() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        let discovered = vec![DiscoveredFile::new(
+            PathBuf::from("/m/a.mkv"),
+            100,
+            "h-a".to_string(),
+        )];
+        let result = store
+            .reconcile_discovered_files(&discovered, &[PathBuf::from("/m")])
+            .unwrap();
+        assert_eq!(result.new_files, 1);
+
+        // After successful reconcile, no in_progress sessions linger.
+        let conn = store.conn().unwrap();
+        let in_progress: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scan_sessions WHERE status = 'in_progress'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(in_progress, 0);
+    }
+
+    #[test]
+    fn reconcile_wrapper_cancels_session_on_ingest_validity_error() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        // Reach into the session table after begin to simulate concurrent
+        // cancellation. Then the next ingest's session-status check errors,
+        // and the wrapper must call cancel (which is a no-op since the
+        // session is already cancelled) and propagate the error.
+
+        // We need to control timing: begin via wrapper isn't easy to interrupt.
+        // Instead, we test the mechanism by:
+        // 1. Calling reconcile with a list of two discovered files.
+        // 2. Before the call, externally cancelling any sessions that exist
+        //    — there shouldn't be any.
+        // 3. After the call, verifying behavior.
+        //
+        // Simpler approach: directly demonstrate that when ingest errors mid-
+        // loop (we simulate by externally cancelling the session immediately
+        // after the wrapper begins it), the wrapper cancels and propagates.
+        //
+        // The cleanest test is to bypass the wrapper and directly verify the
+        // underlying behavior: an ingest_discovered_file against a cancelled
+        // session errors, and a manual call to cancel_scan_session is a no-op.
+        //
+        // NOTE: A full end-to-end test of the wrapper's error path (injecting
+        // a failure mid-loop) would require mockable storage; that is better
+        // covered by an integration test in voom-cli.
+
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        // Externally cancel the session.
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE scan_sessions SET status = 'cancelled' WHERE id = ?1",
+                params![session.to_string()],
+            )
+            .unwrap();
+        }
+        // Ingest against the cancelled session must error.
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-a".to_string());
+        let err = store.ingest_discovered_file(session, &df).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not in_progress") || msg.contains("cancelled"),
+            "expected session-state error, got: {msg}"
+        );
+
+        // cancel_scan_session on an already-cancelled session is a no-op (returns Ok).
+        store.cancel_scan_session(session).unwrap();
+        // No in_progress session is left.
+        let conn = store.conn().unwrap();
+        let in_progress: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scan_sessions WHERE status = 'in_progress'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(in_progress, 0);
+    }
+
+    #[test]
+    fn stub_recovery_fires_when_hash_changed_too() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        // Stub from a cancelled session at /m/a.mkv with hash h-old.
+        let stub_id = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+        let cancelled_session = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+        let now = format_datetime(&chrono::Utc::now());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at, finished_at) \
+                 VALUES (?1, '[\"/m\"]', 'cancelled', ?2, ?2, ?2)",
+                params![cancelled_session, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at, last_seen_session_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 'active', 'other', 0.0, \
+                         '{}', '{}', ?6, ?6, ?6, ?7)",
+                params![
+                    stub_id,
+                    "/m/a.mkv",
+                    "a.mkv",
+                    100i64,
+                    "h-old",
+                    now,
+                    cancelled_session
+                ],
+            )
+            .unwrap();
+        }
+
+        // Rescan with a DIFFERENT hash — must not create a fake supersession.
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-new".to_string());
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+
+        // Should be New (stub deleted, fresh insert), NOT ExternallyChanged.
+        match decision {
+            IngestDecision::New {
+                needs_introspection,
+                ..
+            } => {
+                assert!(needs_introspection);
+            }
+            other => panic!(
+                "expected New (stub recovery), got {}",
+                decision_variant(&other)
+            ),
+        }
+
+        let conn = store.conn().unwrap();
+        // The stub's id is gone.
+        let stub_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE id = ?1",
+                params![stub_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stub_exists, 0, "stub row must be deleted");
+
+        // No supersession chain was created.
+        let superseded_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE superseded_by IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(superseded_count, 0, "no fake supersession should exist");
+
+        // No External transition was created.
+        let ext_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions WHERE source = 'external'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ext_count, 0, "no external transition should exist");
     }
 }

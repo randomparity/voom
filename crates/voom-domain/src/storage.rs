@@ -145,6 +145,14 @@ pub trait FileStorage: Send + Sync {
     /// Returns the number of rows purged.
     fn purge_missing(&self, older_than: DateTime<Utc>) -> Result<u64>;
     /// Reconcile a batch of discovered files against stored state.
+    ///
+    /// Implemented in terms of the scan-session API: `begin_scan_session`,
+    /// `ingest_discovered_file` per file, then `finish_scan_session`.
+    ///
+    /// Per-file rows become visible as they are ingested. If any per-file
+    /// ingest or the final finish call errors, the session is cancelled and
+    /// the error is returned, but **already-ingested rows remain visible** —
+    /// there is no atomic all-or-nothing rollback.
     fn reconcile_discovered_files(
         &self,
         discovered: &[DiscoveredFile],
@@ -157,6 +165,42 @@ pub trait FileStorage: Send + Sync {
         discovered_paths: &[PathBuf],
         scanned_dirs: &[PathBuf],
     ) -> Result<u32>;
+    /// Begin a scan session. Auto-cancels any in-progress sessions whose
+    /// last heartbeat is stale (older than
+    /// [`crate::transition::STALE_SESSION_SECS`]) and inserts a new row with
+    /// the given canonical scan roots. Errors if a live in-progress session
+    /// already exists. No `files` rows are modified by this call.
+    fn begin_scan_session(&self, roots: &[PathBuf]) -> Result<crate::transition::ScanSessionId>;
+
+    /// Ingest a single discovered file into the active scan session, making
+    /// it visible in `files` immediately. Returns the decision so the caller
+    /// can collect counters and `needs_introspection` paths.
+    ///
+    /// Idempotent within a session: if the same path is ingested twice,
+    /// the second call returns `IngestDecision::Duplicate` and performs no
+    /// further work.
+    fn ingest_discovered_file(
+        &self,
+        session: crate::transition::ScanSessionId,
+        file: &crate::transition::DiscoveredFile,
+    ) -> Result<crate::transition::IngestDecision>;
+
+    /// Finish a scan session. Performs the deferred missing-file pass and
+    /// move promotion: active files under any of the session's recorded roots
+    /// that were not ingested this session are marked `missing`, UNLESS a
+    /// `New`-this-session row has a matching `content_hash`, in which case
+    /// the pair is promoted to a move. Returns counts of both outcomes.
+    ///
+    /// Errors if the session is not currently `InProgress`.
+    fn finish_scan_session(
+        &self,
+        session: crate::transition::ScanSessionId,
+    ) -> Result<crate::transition::ScanFinishOutcome>;
+
+    /// Cancel a scan session. Never marks any file missing. Used by the CLI
+    /// when scan errors out mid-way.
+    fn cancel_scan_session(&self, session: crate::transition::ScanSessionId) -> Result<()>;
+
     /// Update the expected hash for a file (set after a successful voom operation).
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()>;
     /// Update the `files.status` column for the given file id. Used by the

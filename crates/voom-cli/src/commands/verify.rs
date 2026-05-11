@@ -79,7 +79,7 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
                     hw_accel,
                 )?;
                 store.insert_verification(&rec)?;
-                print_record(&rec, &tgt.path);
+                print_record(rec.outcome, rec.mode, &tgt.path);
                 records.push(rec);
             }
         }
@@ -98,7 +98,7 @@ fn run_verify(args: VerifyArgs) -> Result<()> {
             });
             for r in parallel {
                 let (rec, path) = r?;
-                print_record(&rec, &path);
+                print_record(rec.outcome, rec.mode, &path);
                 records.push(rec);
             }
         }
@@ -309,13 +309,13 @@ fn read_verifier_config(cfg: &AppConfig) -> VerifierConfig {
         .unwrap_or_default()
 }
 
-fn print_record(rec: &VerificationRecord, path: &Path) {
-    let status = match rec.outcome {
+fn print_record(outcome: VerificationOutcome, mode: VerificationMode, path: &Path) {
+    let status = match outcome {
         VerificationOutcome::Ok => style("OK").green().to_string(),
         VerificationOutcome::Warning => style("WARN").yellow().to_string(),
         VerificationOutcome::Error => style("ERR").red().to_string(),
     };
-    println!("{status:>5}  {:<8}  {}", rec.mode.as_str(), path.display());
+    println!("{status:>5}  {:<8}  {}", mode.as_str(), path.display());
 }
 
 fn print_summary(records: &[VerificationRecord]) {
