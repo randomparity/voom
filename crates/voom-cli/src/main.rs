@@ -90,6 +90,7 @@ async fn main() -> Result<()> {
         Commands::Verify(cmd) => commands::verify::run(cmd),
         Commands::History(args) => commands::history::run(&args),
         Commands::Backup(sub) => commands::backup::run(sub, global_yes),
+        Commands::BugReport(sub) => commands::bug_report::run(sub),
         Commands::Init => commands::init::run(),
         Commands::Completions(args) => commands::completions::run(&args),
     }

@@ -1,4 +1,5 @@
 pub mod backup;
+pub mod bug_report;
 pub mod completions;
 pub mod config;
 pub mod db;
