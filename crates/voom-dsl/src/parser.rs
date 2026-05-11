@@ -139,6 +139,22 @@ fn build_extends(pair: Pair<'_, Rule>) -> ExtendsSource {
     }
 }
 
+fn metadata_string_value(item: Pair<'_, Rule>) -> String {
+    let string_pair = item
+        .into_inner()
+        .find(|pair| pair.as_rule() == Rule::string)
+        .unwrap();
+    parse_string_value(&string_pair)
+}
+
+fn metadata_list_value(item: Pair<'_, Rule>) -> Vec<String> {
+    let list_pair = item
+        .into_inner()
+        .find(|pair| pair.as_rule() == Rule::list)
+        .unwrap();
+    build_list(list_pair)
+}
+
 fn build_metadata(pair: Pair<'_, Rule>) -> Result<MetadataNode> {
     let span = span_from_pair(&pair);
     let mut version = None;
@@ -155,48 +171,12 @@ fn build_metadata(pair: Pair<'_, Rule>) -> Result<MetadataNode> {
         let text = item.as_str().trim();
         let keyword = leading_keyword(text);
         match keyword {
-            "version" => {
-                let string_pair = item
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::string)
-                    .unwrap();
-                version = Some(parse_string_value(&string_pair));
-            }
-            "author" => {
-                let string_pair = item
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::string)
-                    .unwrap();
-                author = Some(parse_string_value(&string_pair));
-            }
-            "description" => {
-                let string_pair = item
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::string)
-                    .unwrap();
-                description = Some(parse_string_value(&string_pair));
-            }
-            "requires_voom" => {
-                let string_pair = item
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::string)
-                    .unwrap();
-                requires_voom = Some(parse_string_value(&string_pair));
-            }
-            "requires_tools" => {
-                let list_pair = item
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::list)
-                    .unwrap();
-                requires_tools = Some(build_list(list_pair));
-            }
-            "test_fixtures" => {
-                let list_pair = item
-                    .into_inner()
-                    .find(|p| p.as_rule() == Rule::list)
-                    .unwrap();
-                test_fixtures = Some(build_list(list_pair));
-            }
+            "version" => version = Some(metadata_string_value(item)),
+            "author" => author = Some(metadata_string_value(item)),
+            "description" => description = Some(metadata_string_value(item)),
+            "requires_voom" => requires_voom = Some(metadata_string_value(item)),
+            "requires_tools" => requires_tools = Some(metadata_list_value(item)),
+            "test_fixtures" => test_fixtures = Some(metadata_list_value(item)),
             other => {
                 let (line, col) = item.as_span().start_pos().line_col();
                 return Err(DslError::build(
