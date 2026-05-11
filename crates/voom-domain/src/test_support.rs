@@ -278,10 +278,42 @@ impl FileStorage for InMemoryStore {
 
     fn reconcile_discovered_files(
         &self,
-        _discovered: &[DiscoveredFile],
-        _scanned_dirs: &[std::path::PathBuf],
+        discovered: &[DiscoveredFile],
+        scanned_dirs: &[std::path::PathBuf],
     ) -> Result<ReconcileResult> {
-        Ok(ReconcileResult::default())
+        use crate::transition::IngestDecision;
+
+        let session = self.begin_scan_session(scanned_dirs)?;
+        let mut result = ReconcileResult::default();
+
+        let outcome: Result<()> = (|| {
+            for df in discovered {
+                let decision = self.ingest_discovered_file(session, df)?;
+                match &decision {
+                    IngestDecision::New { .. } => result.new_files += 1,
+                    IngestDecision::Unchanged { .. } => result.unchanged += 1,
+                    IngestDecision::ExternallyChanged { .. } => result.external_changes += 1,
+                    IngestDecision::Moved { .. } => result.moved += 1,
+                    IngestDecision::Duplicate { .. } => {}
+                }
+                if let Some(p) = decision.needs_introspection_path(&df.path) {
+                    result.needs_introspection.push(p);
+                }
+            }
+            let finish = self.finish_scan_session(session)?;
+            result.missing = finish.missing;
+            result.new_files = result.new_files.saturating_sub(finish.promoted_moves);
+            result.moved += finish.promoted_moves;
+            Ok(())
+        })();
+
+        match outcome {
+            Ok(()) => Ok(result),
+            Err(e) => {
+                let _ = self.cancel_scan_session(session);
+                Err(e)
+            }
+        }
     }
 
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()> {
@@ -480,7 +512,19 @@ impl FileStorage for InMemoryStore {
                 .as_ref()
                 .is_none_or(|eh| eh == &file.content_hash);
 
-            if hash_matches && !needs_recovery {
+            if needs_recovery {
+                // Stub from a non-completed session — delete unconditionally
+                // (regardless of hash match), then fall through to the no-row path.
+                let stub_id = existing.id;
+                files.remove(&stub_id);
+                drop(files);
+                drop(last_seen);
+                self.file_session_affinity.lock().remove(&stub_id);
+                // Re-acquire locks in documented order so the no-row path proceeds normally.
+                last_seen = self.last_seen.lock();
+                files = self.files.lock();
+                // Fall through to no-row path (existing is dropped; files has no entry now).
+            } else if hash_matches {
                 // Unchanged
                 existing.status = FileStatus::Active;
                 if existing.expected_hash.is_none() {
@@ -493,22 +537,8 @@ impl FileStorage for InMemoryStore {
                 drop(last_seen);
                 self.file_session_affinity.lock().insert(id, session);
                 return Ok(crate::transition::IngestDecision::Unchanged { file_id: id });
-            }
-
-            if hash_matches && needs_recovery {
-                // Stub recovery: delete the stub row and its affinity entry,
-                // then fall through to the no-row path below.
-                let stub_id = existing.id;
-                files.remove(&stub_id);
-                drop(files);
-                drop(last_seen);
-                self.file_session_affinity.lock().remove(&stub_id);
-                // Re-acquire locks in documented order so the no-row path proceeds normally.
-                last_seen = self.last_seen.lock();
-                files = self.files.lock();
-                // Fall through to no-row path (existing is dropped; files has no entry now).
             } else {
-                // !hash_matches: ExternallyChanged
+                // !hash_matches && !needs_recovery: ExternallyChanged
                 let old_id = existing.id;
                 existing.status = FileStatus::Missing;
                 files.insert(old_id, existing);
@@ -1429,6 +1459,48 @@ mod scan_session_tests {
             }
             other => panic!("expected New on stub recovery, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn in_memory_store_stub_recovery_fires_with_changed_hash() {
+        use crate::transition::{DiscoveredFile, IngestDecision};
+        use std::path::PathBuf;
+
+        let store = InMemoryStore::new();
+        // Session 1: ingest /m/a.mkv as New with hash h-old.
+        let session1 = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df_old = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-old".to_string());
+        store.ingest_discovered_file(session1, &df_old).unwrap();
+        store.cancel_scan_session(session1).unwrap();
+
+        // Session 2: re-ingest same path with DIFFERENT hash.
+        let session2 = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df_new = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-new".to_string());
+        let decision = store.ingest_discovered_file(session2, &df_new).unwrap();
+        // Must be New (stub recovery), not ExternallyChanged.
+        assert!(
+            matches!(decision, IngestDecision::New { .. }),
+            "stub recovery with changed hash must produce New; got {decision:?}"
+        );
+    }
+
+    #[test]
+    fn in_memory_store_reconcile_wrapper_exercises_session_api() {
+        use crate::storage::FileStorage;
+        use crate::transition::DiscoveredFile;
+        use std::path::PathBuf;
+
+        let store = InMemoryStore::new();
+        let discovered = vec![DiscoveredFile::new(
+            PathBuf::from("/m/a.mkv"),
+            100,
+            "h-a".to_string(),
+        )];
+        let result = store
+            .reconcile_discovered_files(&discovered, &[PathBuf::from("/m")])
+            .unwrap();
+        assert_eq!(result.new_files, 1, "wrapper must produce a New count");
+        assert_eq!(result.needs_introspection.len(), 1);
     }
 
     #[test]

@@ -191,9 +191,9 @@ fn drive_session_ingest(
     let mut moved = 0u32;
     let mut external_changes = 0u32;
 
-    // IIFE: collect the loop's result so we can call cancel_scan_session
-    // on error before bubbling up.
-    let ingest_result: anyhow::Result<()> = (|| {
+    // IIFE: include finish_scan_session so any error (ingest or finish) routes
+    // through the cancel path and the session is never left in_progress.
+    let combined_result: anyhow::Result<voom_domain::transition::ScanFinishOutcome> = (|| {
         for event in events {
             // Dispatch FIRST so bus subscribers see every event, matching today's order.
             kernel.dispatch(Event::FileDiscovered(event.clone()));
@@ -214,40 +214,40 @@ fn drive_session_ingest(
                 needs_introspection.push(event.clone());
             }
         }
-        Ok(())
+        let finish = store
+            .finish_scan_session(session)
+            .context("finish_scan_session failed")?;
+        Ok(finish)
     })();
 
-    match ingest_result {
-        Ok(()) => {
-            let finish = store
-                .finish_scan_session(session)
-                .context("finish_scan_session failed")?;
-            // Promoted moves were counted as New during ingestion; correct both totals.
-            moved += finish.promoted_moves;
-            if !quiet {
-                if finish.missing > 0 {
-                    print_missing_count(finish.missing);
-                }
-                if moved > 0 {
-                    eprintln!("  {} {} files moved/renamed", style("Moved").dim(), moved,);
-                }
-                if external_changes > 0 {
-                    eprintln!(
-                        "  {} {} files changed externally",
-                        style("Changed").dim(),
-                        external_changes,
-                    );
-                }
-            }
-            Ok(ReconcileOutcome {
-                needs_introspection,
-            })
-        }
+    let finish = match combined_result {
+        Ok(f) => f,
         Err(e) => {
             let _ = store.cancel_scan_session(session);
-            Err(e)
+            return Err(e);
+        }
+    };
+
+    // Promoted moves were counted as New during ingestion; correct both totals.
+    moved += finish.promoted_moves;
+    if !quiet {
+        if finish.missing > 0 {
+            print_missing_count(finish.missing);
+        }
+        if moved > 0 {
+            eprintln!("  {} {} files moved/renamed", style("Moved").dim(), moved,);
+        }
+        if external_changes > 0 {
+            eprintln!(
+                "  {} {} files changed externally",
+                style("Changed").dim(),
+                external_changes,
+            );
         }
     }
+    Ok(ReconcileOutcome {
+        needs_introspection,
+    })
 }
 
 /// Run filesystem discovery across all paths, returning events and counters.

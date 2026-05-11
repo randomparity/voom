@@ -786,7 +786,25 @@ impl FileStorage for SqliteStore {
                     .as_ref()
                     .is_none_or(|eh| eh == &file.content_hash);
 
-                if hash_matches && !needs_recovery {
+                if needs_recovery {
+                    // Stub from a non-completed session — delete unconditionally
+                    // (regardless of hash match), then fall through to no-row path.
+                    tx.execute(
+                        "UPDATE files SET superseded_by = NULL WHERE superseded_by = ?1",
+                        params![&existing_id],
+                    )
+                    .map_err(storage_err(
+                        "failed to clear dangling supersession during stub recovery",
+                    ))?;
+                    tx.execute(
+                        "DELETE FROM file_transitions WHERE file_id = ?1",
+                        params![&existing_id],
+                    )
+                    .map_err(storage_err("failed to delete stub transitions"))?;
+                    tx.execute("DELETE FROM files WHERE id = ?1", params![&existing_id])
+                        .map_err(storage_err("failed to delete stub file row"))?;
+                    true // signal: stub was deleted, fall through to no-row path
+                } else if hash_matches {
                     // Unchanged
                     tx.execute(
                         "UPDATE files SET size = ?1, content_hash = ?2, \
@@ -815,25 +833,6 @@ impl FileStorage for SqliteStore {
                         .map_err(storage_err("failed to commit unchanged ingest"))?;
                     let file_uuid = super::parse_uuid(&existing_id)?;
                     return Ok(IngestDecision::Unchanged { file_id: file_uuid });
-                }
-
-                if hash_matches && needs_recovery {
-                    // Stub from a non-completed session. Clean up and re-process.
-                    tx.execute(
-                        "UPDATE files SET superseded_by = NULL WHERE superseded_by = ?1",
-                        params![&existing_id],
-                    )
-                    .map_err(storage_err(
-                        "failed to clear dangling supersession during stub recovery",
-                    ))?;
-                    tx.execute(
-                        "DELETE FROM file_transitions WHERE file_id = ?1",
-                        params![&existing_id],
-                    )
-                    .map_err(storage_err("failed to delete stub transitions"))?;
-                    tx.execute("DELETE FROM files WHERE id = ?1", params![&existing_id])
-                        .map_err(storage_err("failed to delete stub file row"))?;
-                    true // signal: stub was deleted, fall through to no-row path
                 } else {
                     // Hash mismatch → ExternallyChanged (existing implementation).
                     let old_uuid = super::parse_uuid(&existing_id)?;
@@ -3799,5 +3798,92 @@ mod tests {
             )
             .unwrap();
         assert_eq!(in_progress, 0);
+    }
+
+    #[test]
+    fn stub_recovery_fires_when_hash_changed_too() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        // Stub from a cancelled session at /m/a.mkv with hash h-old.
+        let stub_id = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+        let cancelled_session = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+        let now = format_datetime(&chrono::Utc::now());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at, finished_at) \
+                 VALUES (?1, '[\"/m\"]', 'cancelled', ?2, ?2, ?2)",
+                params![cancelled_session, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at, last_seen_session_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 'active', 'other', 0.0, \
+                         '{}', '{}', ?6, ?6, ?6, ?7)",
+                params![
+                    stub_id,
+                    "/m/a.mkv",
+                    "a.mkv",
+                    100i64,
+                    "h-old",
+                    now,
+                    cancelled_session
+                ],
+            )
+            .unwrap();
+        }
+
+        // Rescan with a DIFFERENT hash — must not create a fake supersession.
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-new".to_string());
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+
+        // Should be New (stub deleted, fresh insert), NOT ExternallyChanged.
+        match decision {
+            IngestDecision::New {
+                needs_introspection,
+                ..
+            } => {
+                assert!(needs_introspection);
+            }
+            other => panic!("expected New (stub recovery), got {other:?}"),
+        }
+
+        let conn = store.conn().unwrap();
+        // The stub's id is gone.
+        let stub_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE id = ?1",
+                params![stub_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stub_exists, 0, "stub row must be deleted");
+
+        // No supersession chain was created.
+        let superseded_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE superseded_by IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(superseded_count, 0, "no fake supersession should exist");
+
+        // No External transition was created.
+        let ext_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions WHERE source = 'external'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ext_count, 0, "no external transition should exist");
     }
 }
