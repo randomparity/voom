@@ -52,10 +52,13 @@ with:
 ```bash
   cat >"${actual}/reports/jobs.json" <<'EOF'
 {
-  "data": [
+  "jobs": [
     {"id": "job-1", "status": "completed"},
     {"id": "job-2", "status": "completed"}
-  ]
+  ],
+  "counts": [["completed", 2]],
+  "limit": 50,
+  "offset": 0
 }
 EOF
 ```
@@ -91,10 +94,13 @@ EOF
 
   cat >"${actual}/reports/jobs.json" <<'EOF'
 {
-  "data": [
+  "jobs": [
     {"id": "job-1", "status": "completed"},
     {"id": "job-2", "status": "running"}
-  ]
+  ],
+  "counts": [["completed", 1], ["running", 1]],
+  "limit": 50,
+  "offset": 0
 }
 EOF
 
@@ -162,7 +168,7 @@ with:
 jobs_json="${run}/reports/jobs.json"
 jobs_report="${run}/reports/jobs.txt"
 if [[ -f "${jobs_json}" ]]; then
-  if jq -e '.data[]? | select(.status == "running" or .status == "pending")' \
+  if jq -e '.jobs[]? | select(.status == "running" or .status == "pending")' \
     "${jobs_json}" >/dev/null; then
     note_fail "jobs report contains non-terminal states (running/pending)"
   fi
@@ -189,8 +195,8 @@ with:
 
 ```bash
   if [[ -f "${jobs_json}" ]]; then
-    completed_jobs=$(jq '[.data[]? | select(.status == "completed")] | length' "${jobs_json}")
-    failed_jobs=$(jq '[.data[]? | select(.status == "failed")] | length' "${jobs_json}")
+    completed_jobs=$(jq '[.jobs[]? | select(.status == "completed")] | length' "${jobs_json}")
+    failed_jobs=$(jq '[.jobs[]? | select(.status == "failed")] | length' "${jobs_json}")
     if ((completed_jobs > 0 && failed_jobs == 0)); then
       note_warn "jobs report has completed jobs but no failed jobs despite ${total_failed_plans} failed plan(s)"
     fi
@@ -448,4 +454,4 @@ Expected: clean working tree.
 
 - Spec coverage: The plan updates the low-priority script consumers identified in this branch: jobs JSON consumption, policy validation JSON output, report JSON output, and config JSON snapshot. It leaves raw command logs intact.
 - Placeholder scan: No task uses `TBD`, vague error handling, or unspecified tests.
-- Type consistency: All JSON examples use the existing `MachineResponse`-style `data` wrapper expected from the new CLI output helpers.
+- Type consistency: Jobs JSON examples use the actual `jobs`, `counts`, `limit`, and `offset` fields emitted by `voom jobs list --format json`.
