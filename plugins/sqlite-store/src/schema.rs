@@ -480,9 +480,13 @@ fn migrate_files_columns(
     Ok(())
 }
 
-/// Add `last_seen_session_id` column to `files` and create the `scan_sessions`
-/// table on databases that predate scan-session support. Idempotent: skips
-/// either step if it's already in place.
+/// Migration for scan-session support: adds `last_seen_session_id` to the
+/// `files` table and creates the `scan_sessions` table.
+///
+/// This helper bundles both changes under one scan-session-focused header
+/// rather than splitting them between `migrate_files_columns` and
+/// `migrate_missing_tables`. Both halves are individually idempotent —
+/// running this on an up-to-date DB is a no-op.
 fn migrate_scan_sessions(
     conn: &Connection,
     has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
@@ -1399,6 +1403,20 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert!(cols.iter().any(|c| c == "last_seen_session_id"));
+
+        // The migration must also create the index on the new column.
+        let has_index: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master \
+                 WHERE type='index' AND name='idx_files_last_seen_session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            has_index,
+            "idx_files_last_seen_session should be created by migration"
+        );
     }
 
     #[test]
