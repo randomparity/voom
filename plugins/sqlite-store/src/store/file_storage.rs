@@ -2850,4 +2850,104 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
     }
+
+    #[test]
+    fn finish_preserves_ingested_files_and_marks_only_unseen() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        // Two pre-existing active files under /movies.
+        // active_file always sets content_hash = "abc123".
+        let a = active_file("/movies/a.mkv");
+        let b = active_file("/movies/b.mkv");
+        store.upsert_file(&a).unwrap();
+        store.upsert_file(&b).unwrap();
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        // Ingest `a` with matching size and hash so it resolves as Unchanged.
+        let df_a =
+            DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), a.size, "abc123".to_string());
+        store.ingest_discovered_file(session, &df_a).unwrap();
+
+        let missing = store.finish_scan_session(session).unwrap();
+        assert_eq!(
+            missing, 1,
+            "only b.mkv was unseen and must be marked missing"
+        );
+
+        let conn = store.conn().unwrap();
+        let a_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(a_status, "active");
+        let b_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/movies/b.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(b_status, "missing");
+    }
+
+    #[test]
+    fn cancel_session_leaves_unseen_files_active() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        let a = active_file("/movies/a.mkv");
+        let b = active_file("/movies/b.mkv");
+        store.upsert_file(&a).unwrap();
+        store.upsert_file(&b).unwrap();
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let df_a =
+            DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), a.size, "abc123".to_string());
+        store.ingest_discovered_file(session, &df_a).unwrap();
+        store.cancel_scan_session(session).unwrap();
+
+        let conn = store.conn().unwrap();
+        let b_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/movies/b.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(b_status, "active", "cancel must not mark anything missing");
+    }
+
+    #[test]
+    fn overlapping_scan_roots_double_ingest_yields_duplicate() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies"), PathBuf::from("/movies/4k")])
+            .unwrap();
+
+        let df = DiscoveredFile::new(PathBuf::from("/movies/4k/a.mkv"), 100, "h-a".to_string());
+
+        // First call (e.g. from outer root walk)
+        let d1 = store.ingest_discovered_file(session, &df).unwrap();
+        assert!(matches!(d1, IngestDecision::New { .. }));
+
+        // Second call (e.g. from inner root walk, same path)
+        let d2 = store.ingest_discovered_file(session, &df).unwrap();
+        assert!(matches!(d2, IngestDecision::Duplicate { .. }));
+
+        let missing = store.finish_scan_session(session).unwrap();
+        assert_eq!(missing, 0, "the one seen file must not be marked missing");
+    }
 }
