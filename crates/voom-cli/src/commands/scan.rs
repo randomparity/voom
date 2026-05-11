@@ -191,11 +191,12 @@ fn drive_session_ingest(
     let mut moved = 0u32;
     let mut external_changes = 0u32;
 
-    // IIFE: include finish_scan_session so any error (ingest or finish) routes
-    // through the cancel path and the session is never left in_progress.
+    // Wrap ingest + finish so any error routes through the cancel path below
+    // and the session is never left in_progress.
     let combined_result: anyhow::Result<voom_domain::transition::ScanFinishOutcome> = (|| {
         for event in events {
-            // Dispatch FIRST so bus subscribers see every event, matching today's order.
+            // Dispatch before ingest so bus subscribers see every event even if
+            // ingest later errors and aborts the loop.
             kernel.dispatch(Event::FileDiscovered(event.clone()));
 
             let Some(hash) = event.content_hash.clone() else {
@@ -223,7 +224,14 @@ fn drive_session_ingest(
     let finish = match combined_result {
         Ok(f) => f,
         Err(e) => {
-            let _ = store.cancel_scan_session(session);
+            if let Err(cancel_err) = store.cancel_scan_session(session) {
+                tracing::warn!(
+                    session = %session,
+                    ingest_error = %e,
+                    cancel_error = %cancel_err,
+                    "failed to cancel scan session after ingest error",
+                );
+            }
             return Err(e);
         }
     };

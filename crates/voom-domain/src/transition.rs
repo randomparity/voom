@@ -355,6 +355,20 @@ impl std::fmt::Display for ScanSessionId {
     }
 }
 
+/// Maximum age, in seconds, of a scan session's last heartbeat before it is
+/// considered stale and may be auto-cancelled. Shared across storage backends
+/// so the staleness contract doesn't drift between SQLite and in-memory impls.
+pub const STALE_SESSION_SECS: i64 = 60;
+
+/// Returns `true` if `path` is at or beneath any of the given root paths.
+///
+/// Used by the scan-session implementations to scope per-root logic (missing
+/// pass, move detection) so cross-root hash collisions don't falsely match.
+#[must_use]
+pub fn is_under_any(path: &std::path::Path, roots: &[std::path::PathBuf]) -> bool {
+    roots.iter().any(|r| path.starts_with(r))
+}
+
 /// Lifecycle state of a [`ScanSession`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScanSessionStatus {
@@ -390,7 +404,7 @@ impl ScanSessionStatus {
 /// A scan session: a durable record bounding one "walk the filesystem and
 /// reconcile" pass. Per-file ingestion happens while a session is `InProgress`;
 /// missing-file detection runs only at `finish_scan_session`. See
-/// `docs/superpowers/specs/2026-05-11-scan-sessions-design.md`.
+/// `docs/architecture.md` for the scan-session contract.
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanSession {
@@ -442,10 +456,8 @@ impl IngestDecision {
     }
 
     /// If this decision means "introspect this file next," return the path.
-    ///
-    /// Matches today's `ReconcileResult.needs_introspection` set: `New`,
-    /// `ExternallyChanged`, and `Moved` all require introspection; `Unchanged`
-    /// and `Duplicate` do not. See spec §6.3.
+    /// `New`, `ExternallyChanged`, and `Moved` require introspection;
+    /// `Unchanged` and `Duplicate` do not.
     #[must_use]
     pub fn needs_introspection_path(
         &self,

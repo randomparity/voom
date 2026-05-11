@@ -149,12 +149,10 @@ pub trait FileStorage: Send + Sync {
     /// Implemented in terms of the scan-session API: `begin_scan_session`,
     /// `ingest_discovered_file` per file, then `finish_scan_session`.
     ///
-    /// **Error semantics (phase 1 change):** if any per-file ingest or the
-    /// final finish call errors, the session is cancelled and the error is
-    /// returned. **Already-ingested file rows remain visible** — this matches
-    /// the per-file-visibility design of the new session API. Callers that
-    /// require atomic all-or-nothing reconciliation must use a different
-    /// mechanism (none is provided in phase 1).
+    /// Per-file rows become visible as they are ingested. If any per-file
+    /// ingest or the final finish call errors, the session is cancelled and
+    /// the error is returned, but **already-ingested rows remain visible** —
+    /// there is no atomic all-or-nothing rollback.
     fn reconcile_discovered_files(
         &self,
         discovered: &[DiscoveredFile],
@@ -167,20 +165,20 @@ pub trait FileStorage: Send + Sync {
         discovered_paths: &[PathBuf],
         scanned_dirs: &[PathBuf],
     ) -> Result<u32>;
-    /// Begin a scan session. Marks any existing `InProgress` sessions as
-    /// `Cancelled` (auto-abandon) and inserts a new row with the given
-    /// canonical scan roots. No `files` rows are modified by this call.
-    ///
-    /// See `docs/superpowers/specs/2026-05-11-scan-sessions-design.md` §6.1.
+    /// Begin a scan session. Auto-cancels any in-progress sessions whose
+    /// last heartbeat is stale (older than
+    /// [`crate::transition::STALE_SESSION_SECS`]) and inserts a new row with
+    /// the given canonical scan roots. Errors if a live in-progress session
+    /// already exists. No `files` rows are modified by this call.
     fn begin_scan_session(&self, roots: &[PathBuf]) -> Result<crate::transition::ScanSessionId>;
 
     /// Ingest a single discovered file into the active scan session, making
     /// it visible in `files` immediately. Returns the decision so the caller
     /// can collect counters and `needs_introspection` paths.
     ///
-    /// Idempotent: if the same path is ingested twice in one session,
+    /// Idempotent within a session: if the same path is ingested twice,
     /// the second call returns `IngestDecision::Duplicate` and performs no
-    /// further work. See spec §6.2.
+    /// further work.
     fn ingest_discovered_file(
         &self,
         session: crate::transition::ScanSessionId,
@@ -193,14 +191,14 @@ pub trait FileStorage: Send + Sync {
     /// `New`-this-session row has a matching `content_hash`, in which case
     /// the pair is promoted to a move. Returns counts of both outcomes.
     ///
-    /// Errors if the session is not currently `InProgress`. See spec §6.4.
+    /// Errors if the session is not currently `InProgress`.
     fn finish_scan_session(
         &self,
         session: crate::transition::ScanSessionId,
     ) -> Result<crate::transition::ScanFinishOutcome>;
 
     /// Cancel a scan session. Never marks any file missing. Used by the CLI
-    /// when scan errors out mid-way. See spec §6.5.
+    /// when scan errors out mid-way.
     fn cancel_scan_session(&self, session: crate::transition::ScanSessionId) -> Result<()>;
 
     /// Update the expected hash for a file (set after a successful voom operation).

@@ -32,7 +32,8 @@ use crate::storage::{
 };
 use crate::transcode::TranscodeOutcome;
 use crate::transition::{
-    DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
+    DiscoveredFile, FileStatus, FileTransition, ReconcileResult, STALE_SESSION_SECS,
+    TransitionSource, is_under_any,
 };
 use crate::verification::{
     IntegritySummary, IntegritySummaryInput, VerificationFilters, VerificationMode,
@@ -204,6 +205,18 @@ impl Default for InMemoryStore {
     }
 }
 
+/// Build a fresh active `MediaFile` for an ingested `DiscoveredFile`, mirroring
+/// the SQLite store's "new active row" shape.
+fn fresh_active_file(new_id: Uuid, file: &DiscoveredFile) -> MediaFile {
+    let mut new_file = MediaFile::new(file.path.clone());
+    new_file.id = new_id;
+    new_file.size = file.size;
+    new_file.content_hash = Some(file.content_hash.clone());
+    new_file.expected_hash = Some(file.content_hash.clone());
+    new_file.status = FileStatus::Active;
+    new_file
+}
+
 impl FileStorage for InMemoryStore {
     fn upsert_file(&self, file: &MediaFile) -> Result<()> {
         self.files.lock().insert(file.id, file.clone());
@@ -310,7 +323,14 @@ impl FileStorage for InMemoryStore {
         match outcome {
             Ok(()) => Ok(result),
             Err(e) => {
-                let _ = self.cancel_scan_session(session);
+                if let Err(cancel_err) = self.cancel_scan_session(session) {
+                    tracing::warn!(
+                        session = %session,
+                        ingest_error = %e,
+                        cancel_error = %cancel_err,
+                        "failed to cancel scan session after ingest error",
+                    );
+                }
                 Err(e)
             }
         }
@@ -381,8 +401,7 @@ impl FileStorage for InMemoryStore {
             if file.status != FileStatus::Active {
                 continue;
             }
-            let under_scanned = scanned_dirs.iter().any(|dir| file.path.starts_with(dir));
-            if under_scanned && !discovered_set.contains(&file.path) {
+            if is_under_any(&file.path, scanned_dirs) && !discovered_set.contains(&file.path) {
                 file.status = FileStatus::Missing;
                 marked += 1;
             }
@@ -391,7 +410,6 @@ impl FileStorage for InMemoryStore {
     }
 
     fn begin_scan_session(&self, roots: &[PathBuf]) -> Result<crate::transition::ScanSessionId> {
-        const STALE_SESSION_SECS: i64 = 60;
         let now = chrono::Utc::now();
 
         let mut sessions = self.sessions.lock();
@@ -544,13 +562,7 @@ impl FileStorage for InMemoryStore {
                 files.insert(old_id, existing);
 
                 let new_id = Uuid::new_v4();
-                let mut new_file = MediaFile::new(file.path.clone());
-                new_file.id = new_id;
-                new_file.size = file.size;
-                new_file.content_hash = Some(file.content_hash.clone());
-                new_file.expected_hash = Some(file.content_hash.clone());
-                new_file.status = FileStatus::Active;
-                files.insert(new_id, new_file);
+                files.insert(new_id, fresh_active_file(new_id, file));
                 last_seen.insert(file.path.clone(), session);
                 drop(files);
                 drop(last_seen);
@@ -570,7 +582,7 @@ impl FileStorage for InMemoryStore {
             .find(|f| {
                 f.status == FileStatus::Missing
                     && f.expected_hash.as_deref() == Some(file.content_hash.as_str())
-                    && session_roots.iter().any(|r| f.path.starts_with(r))
+                    && is_under_any(&f.path, &session_roots)
             })
             .cloned();
         if let Some(mut m) = move_match {
@@ -593,13 +605,7 @@ impl FileStorage for InMemoryStore {
 
         // Truly new
         let new_id = Uuid::new_v4();
-        let mut new_file = MediaFile::new(file.path.clone());
-        new_file.id = new_id;
-        new_file.size = file.size;
-        new_file.content_hash = Some(file.content_hash.clone());
-        new_file.expected_hash = Some(file.content_hash.clone());
-        new_file.status = FileStatus::Active;
-        files.insert(new_id, new_file);
+        files.insert(new_id, fresh_active_file(new_id, file));
         last_seen.insert(file.path.clone(), session);
         // Release other locks before acquiring new_in_session and affinity
         // (preserve lock order — these are both isolation-only locks).
@@ -674,7 +680,7 @@ impl FileStorage for InMemoryStore {
                 .values()
                 .filter(|f| {
                     f.status == FileStatus::Active
-                        && roots.iter().any(|r| f.path.starts_with(r))
+                        && is_under_any(&f.path, &roots)
                         && last_seen.get(&f.path) != Some(&session)
                         && f.expected_hash.is_some()
                 })
@@ -739,8 +745,7 @@ impl FileStorage for InMemoryStore {
                 if f.status != FileStatus::Active {
                     continue;
                 }
-                let under_root = roots.iter().any(|r| f.path.starts_with(r));
-                if !under_root {
+                if !is_under_any(&f.path, &roots) {
                     continue;
                 }
                 if last_seen.get(&f.path) == Some(&session) {

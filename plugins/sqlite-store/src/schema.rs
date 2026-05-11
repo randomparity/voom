@@ -147,9 +147,8 @@ CREATE TABLE IF NOT EXISTS bad_files (
     last_seen_at TEXT NOT NULL
 );
 
--- Reserved for a future streaming-discovery phase (issue #358 follow-up).
--- Currently unused by the scan-session API. Do not delete; see issue #358
--- for the planned per-event streaming design.
+-- Staging table for discovered files (see `discovered_file_storage.rs`).
+-- Not used by the per-file scan-session ingest path.
 CREATE TABLE IF NOT EXISTS discovered_files (
     id TEXT PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,
