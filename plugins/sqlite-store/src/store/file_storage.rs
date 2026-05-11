@@ -644,11 +644,90 @@ impl FileStorage for SqliteStore {
 
     fn finish_scan_session(
         &self,
-        _session: voom_domain::transition::ScanSessionId,
+        session: voom_domain::transition::ScanSessionId,
     ) -> voom_domain::errors::Result<u32> {
-        Err(voom_domain::errors::VoomError::Other(
-            "finish_scan_session not yet implemented for SqliteStore".into(),
-        ))
+        let mut conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        let session_str = session.to_string();
+
+        let tx = conn
+            .transaction()
+            .map_err(storage_err("failed to begin finish_scan_session tx"))?;
+
+        let row: Option<(String, String)> = tx
+            .query_row(
+                "SELECT status, roots_json FROM scan_sessions WHERE id = ?1",
+                params![&session_str],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(storage_err("failed to load scan session"))?;
+
+        let (status, roots_json) = match row {
+            Some(v) => v,
+            None => {
+                return Err(voom_domain::errors::VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::Other,
+                    message: format!("unknown scan session {session_str}"),
+                });
+            }
+        };
+
+        if status != "in_progress" {
+            return Err(voom_domain::errors::VoomError::Storage {
+                kind: voom_domain::errors::StorageErrorKind::Other,
+                message: format!(
+                    "scan session {session_str} is not in_progress (status: {status})",
+                ),
+            });
+        }
+
+        let roots: Vec<String> = serde_json::from_str(&roots_json)
+            .map_err(other_storage_err("failed to parse roots_json"))?;
+        let roots: Vec<PathBuf> = roots.into_iter().map(PathBuf::from).collect();
+
+        // Collect active files not seen by this session; path-prefix filtering done in Rust,
+        // matching the pattern used by mark_missing_files at line ~680.
+        let candidates: Vec<(String, String)> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id, path FROM files \
+                     WHERE status = 'active' AND path IS NOT NULL \
+                       AND (last_seen_session_id IS NULL OR last_seen_session_id != ?1)",
+                )
+                .map_err(storage_err("failed to prepare missing-scan select"))?;
+            stmt.query_map(params![&session_str], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage_err("failed to query missing candidates"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err("failed to collect missing candidates"))?
+        };
+
+        let mut missing = 0u32;
+        for (id, path) in candidates {
+            let p = Path::new(&path);
+            if !roots.iter().any(|r| p.starts_with(r)) {
+                continue;
+            }
+            tx.execute(
+                "UPDATE files SET status = 'missing', missing_since = ?1, updated_at = ?1 \
+                 WHERE id = ?2 AND status = 'active'",
+                params![&now, &id],
+            )
+            .map_err(storage_err("failed to mark file missing in finish"))?;
+            missing += 1;
+        }
+
+        tx.execute(
+            "UPDATE scan_sessions SET status = 'completed', finished_at = ?1 WHERE id = ?2",
+            params![&now, &session_str],
+        )
+        .map_err(storage_err("failed to mark session completed"))?;
+
+        tx.commit()
+            .map_err(storage_err("failed to commit finish_scan_session"))?;
+        Ok(missing)
     }
 
     fn cancel_scan_session(
@@ -2118,5 +2197,83 @@ mod tests {
             )
             .unwrap();
         assert_eq!(file_status, "active");
+    }
+
+    #[test]
+    fn finish_session_with_no_ingest_marks_all_files_in_roots_missing() {
+        use std::path::PathBuf;
+
+        let store = test_store();
+        let roots = vec![PathBuf::from("/movies")];
+
+        let f = active_file("/movies/a.mkv");
+        store.upsert_file(&f).unwrap();
+        let g = active_file("/other/b.mkv");
+        store.upsert_file(&g).unwrap();
+
+        let session = store.begin_scan_session(&roots).unwrap();
+        let missing = store.finish_scan_session(session).unwrap();
+        assert_eq!(
+            missing, 1,
+            "only files under /movies should be marked missing"
+        );
+
+        let conn = store.conn().unwrap();
+        let a_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(a_status, "missing");
+
+        let b_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/other/b.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(b_status, "active");
+
+        let session_status: String = conn
+            .query_row(
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(session_status, "completed");
+
+        let finished_at: Option<String> = conn
+            .query_row(
+                "SELECT finished_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            finished_at.is_some(),
+            "completed session must have finished_at set"
+        );
+    }
+
+    #[test]
+    fn finish_session_errors_if_not_in_progress() {
+        use std::path::PathBuf;
+
+        let store = test_store();
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        store.finish_scan_session(session).unwrap();
+
+        let err = store.finish_scan_session(session).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not in_progress") || msg.contains("not in progress"),
+            "expected 'not in_progress' in error, got: {msg}"
+        );
     }
 }
