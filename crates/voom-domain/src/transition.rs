@@ -295,7 +295,7 @@ pub struct ReconcileResult {
 /// accidentally mix scan session IDs with the unrelated `voom process`
 /// `session_id` that lives on `plans` and `file_transitions`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ScanSessionId(pub Uuid);
+pub struct ScanSessionId(Uuid);
 
 impl ScanSessionId {
     /// Generate a fresh random session ID.
@@ -317,6 +317,12 @@ impl Default for ScanSessionId {
     }
 }
 
+impl From<Uuid> for ScanSessionId {
+    fn from(id: Uuid) -> Self {
+        Self(id)
+    }
+}
+
 impl std::fmt::Display for ScanSessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
@@ -326,8 +332,11 @@ impl std::fmt::Display for ScanSessionId {
 /// Lifecycle state of a [`ScanSession`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScanSessionStatus {
+    /// Session is open and ingesting files.
     InProgress,
+    /// Session completed successfully; missing-file pass has run.
     Completed,
+    /// Session was cancelled; no file was marked missing.
     Cancelled,
 }
 
@@ -417,10 +426,18 @@ impl IngestDecision {
         ingested_path: &std::path::Path,
     ) -> Option<std::path::PathBuf> {
         match self {
-            IngestDecision::New { .. }
+            IngestDecision::New {
+                needs_introspection: true,
+                ..
+            }
             | IngestDecision::ExternallyChanged { .. }
             | IngestDecision::Moved { .. } => Some(ingested_path.to_path_buf()),
-            IngestDecision::Unchanged { .. } | IngestDecision::Duplicate { .. } => None,
+            IngestDecision::New {
+                needs_introspection: false,
+                ..
+            }
+            | IngestDecision::Unchanged { .. }
+            | IngestDecision::Duplicate { .. } => None,
         }
     }
 }
@@ -719,6 +736,27 @@ mod tests {
 
         let dup = IngestDecision::Duplicate { file_id: id };
         assert_eq!(dup.needs_introspection_path(&path), None);
+    }
+
+    #[test]
+    fn test_ingest_decision_new_respects_needs_introspection_flag() {
+        use std::path::PathBuf;
+        use uuid::Uuid;
+
+        let id = Uuid::new_v4();
+        let path = PathBuf::from("/movies/a.mkv");
+
+        let needed = IngestDecision::New {
+            file_id: id,
+            needs_introspection: true,
+        };
+        assert_eq!(needed.needs_introspection_path(&path), Some(path.clone()));
+
+        let not_needed = IngestDecision::New {
+            file_id: id,
+            needs_introspection: false,
+        };
+        assert_eq!(not_needed.needs_introspection_path(&path), None);
     }
 
     #[test]
