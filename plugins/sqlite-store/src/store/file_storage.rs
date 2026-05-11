@@ -742,109 +742,148 @@ impl FileStorage for SqliteStore {
             .optional()
             .map_err(storage_err("failed to look up existing file"))?;
 
-        if let Some((existing_id, expected_hash, existing_size, last_seen)) = existing {
-            // Idempotency: if this path was already touched by this session,
-            // return Duplicate immediately. See spec §6.2 step 3.
-            if last_seen.as_deref() == Some(session_str.as_str()) {
-                let file_uuid = super::parse_uuid(&existing_id)?;
-                tx.commit()
-                    .map_err(storage_err("failed to commit duplicate ingest"))?;
-                return Ok(IngestDecision::Duplicate { file_id: file_uuid });
-            }
+        let stub_recovered =
+            if let Some((existing_id, expected_hash, existing_size, last_seen)) = existing {
+                // Duplicate fast-path
+                if last_seen.as_deref() == Some(session_str.as_str()) {
+                    let file_uuid = super::parse_uuid(&existing_id)?;
+                    tx.commit()
+                        .map_err(storage_err("failed to commit duplicate ingest"))?;
+                    return Ok(IngestDecision::Duplicate { file_id: file_uuid });
+                }
 
-            // Check for content match (Unchanged) vs hash mismatch (ExternallyChanged).
-            let hash_matches = expected_hash
-                .as_ref()
-                .is_none_or(|eh| eh == &file.content_hash);
+                // Stub recovery: if this row was last seen by a non-completed
+                // session (cancelled, in_progress, or unknown), it's a stub
+                // from an interrupted scan. Delete it and fall through.
+                let needs_recovery: bool = if let Some(prior) = &last_seen {
+                    let prior_status: Option<String> = tx
+                        .query_row(
+                            "SELECT status FROM scan_sessions WHERE id = ?1",
+                            params![prior],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(storage_err("failed to look up prior session status"))?;
+                    !matches!(prior_status.as_deref(), Some("completed"))
+                } else {
+                    false
+                };
 
-            if hash_matches {
-                tx.execute(
-                    "UPDATE files SET size = ?1, content_hash = ?2, \
+                let hash_matches = expected_hash
+                    .as_ref()
+                    .is_none_or(|eh| eh == &file.content_hash);
+
+                if hash_matches && !needs_recovery {
+                    // Unchanged
+                    tx.execute(
+                        "UPDATE files SET size = ?1, content_hash = ?2, \
                      status = 'active', missing_since = NULL, \
                      last_seen_session_id = ?3, \
                      updated_at = ?4 WHERE id = ?5",
-                    params![
-                        file.size as i64,
-                        &file.content_hash,
-                        &session_str,
-                        &now,
-                        &existing_id
-                    ],
-                )
-                .map_err(storage_err("failed to update unchanged file"))?;
-
-                if expected_hash.is_none() {
-                    tx.execute(
-                        "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
-                        params![&file.content_hash, &existing_id],
+                        params![
+                            file.size as i64,
+                            &file.content_hash,
+                            &session_str,
+                            &now,
+                            &existing_id
+                        ],
                     )
-                    .map_err(storage_err("failed to backfill expected_hash"))?;
+                    .map_err(storage_err("failed to update unchanged file"))?;
+
+                    if expected_hash.is_none() {
+                        tx.execute(
+                            "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
+                            params![&file.content_hash, &existing_id],
+                        )
+                        .map_err(storage_err("failed to backfill expected_hash"))?;
+                    }
+
+                    tx.commit()
+                        .map_err(storage_err("failed to commit unchanged ingest"))?;
+                    let file_uuid = super::parse_uuid(&existing_id)?;
+                    return Ok(IngestDecision::Unchanged { file_id: file_uuid });
                 }
 
-                tx.commit()
-                    .map_err(storage_err("failed to commit unchanged ingest"))?;
-                let file_uuid = super::parse_uuid(&existing_id)?;
-                return Ok(IngestDecision::Unchanged { file_id: file_uuid });
-            }
+                if hash_matches && needs_recovery {
+                    // Stub from a non-completed session. Clean up and re-process.
+                    tx.execute(
+                        "UPDATE files SET superseded_by = NULL WHERE superseded_by = ?1",
+                        params![&existing_id],
+                    )
+                    .map_err(storage_err(
+                        "failed to clear dangling supersession during stub recovery",
+                    ))?;
+                    tx.execute(
+                        "DELETE FROM file_transitions WHERE file_id = ?1",
+                        params![&existing_id],
+                    )
+                    .map_err(storage_err("failed to delete stub transitions"))?;
+                    tx.execute("DELETE FROM files WHERE id = ?1", params![&existing_id])
+                        .map_err(storage_err("failed to delete stub file row"))?;
+                    true // signal: stub was deleted, fall through to no-row path
+                } else {
+                    // Hash mismatch → ExternallyChanged (existing implementation).
+                    let old_uuid = super::parse_uuid(&existing_id)?;
+                    let new_id = Uuid::new_v4();
 
-            // Hash mismatch: external change. Mark old missing+superseded;
-            // insert a new row; emit External + Discovery transitions.
-            let old_uuid = super::parse_uuid(&existing_id)?;
-            let new_id = Uuid::new_v4();
+                    let ext_transition = FileTransition::new(
+                        old_uuid,
+                        file.path.clone(),
+                        file.content_hash.clone(),
+                        file.size,
+                        TransitionSource::External,
+                    )
+                    .with_from(expected_hash.clone(), Some(existing_size as u64));
+                    insert_transition_in_tx(&tx, &ext_transition, &now)?;
 
-            let ext_transition = FileTransition::new(
-                old_uuid,
-                file.path.clone(),
-                file.content_hash.clone(),
-                file.size,
-                TransitionSource::External,
-            )
-            .with_from(expected_hash.clone(), Some(existing_size as u64));
-            insert_transition_in_tx(&tx, &ext_transition, &now)?;
+                    tx.execute(
+                        "UPDATE files SET path = NULL, status = 'missing', \
+                     missing_since = ?1, superseded_by = ?2 WHERE id = ?3",
+                        params![&now, new_id.to_string(), &existing_id],
+                    )
+                    .map_err(storage_err("failed to clear old file for external change"))?;
+                    tx.execute(
+                        "INSERT INTO files \
+                     (id, path, filename, size, content_hash, \
+                      expected_hash, status, container, duration, \
+                      tags, plugin_metadata, introspected_at, \
+                      created_at, updated_at, last_seen_session_id) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
+                             'other', 0.0, '{}', '{}', ?7, ?7, ?7, ?8)",
+                        params![
+                            new_id.to_string(),
+                            &path_str,
+                            filename,
+                            file.size as i64,
+                            &file.content_hash,
+                            &file.content_hash,
+                            &now,
+                            &session_str,
+                        ],
+                    )
+                    .map_err(storage_err("failed to insert new file for external change"))?;
 
-            tx.execute(
-                "UPDATE files SET path = NULL, status = 'missing', \
-                 missing_since = ?1, superseded_by = ?2 WHERE id = ?3",
-                params![&now, new_id.to_string(), &existing_id],
-            )
-            .map_err(storage_err("failed to clear old file for external change"))?;
-            tx.execute(
-                "INSERT INTO files \
-                 (id, path, filename, size, content_hash, \
-                  expected_hash, status, container, duration, \
-                  tags, plugin_metadata, introspected_at, \
-                  created_at, updated_at, last_seen_session_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
-                         'other', 0.0, '{}', '{}', ?7, ?7, ?7, ?8)",
-                params![
-                    new_id.to_string(),
-                    &path_str,
-                    filename,
-                    file.size as i64,
-                    &file.content_hash,
-                    &file.content_hash,
-                    &now,
-                    &session_str,
-                ],
-            )
-            .map_err(storage_err("failed to insert new file for external change"))?;
+                    let disc_transition = FileTransition::new(
+                        new_id,
+                        file.path.clone(),
+                        file.content_hash.clone(),
+                        file.size,
+                        TransitionSource::Discovery,
+                    );
+                    insert_transition_in_tx(&tx, &disc_transition, &now)?;
 
-            let disc_transition = FileTransition::new(
-                new_id,
-                file.path.clone(),
-                file.content_hash.clone(),
-                file.size,
-                TransitionSource::Discovery,
-            );
-            insert_transition_in_tx(&tx, &disc_transition, &now)?;
+                    tx.commit()
+                        .map_err(storage_err("failed to commit external-change ingest"))?;
+                    return Ok(IngestDecision::ExternallyChanged {
+                        file_id: new_id,
+                        superseded: old_uuid,
+                    });
+                }
+            } else {
+                false
+            };
 
-            tx.commit()
-                .map_err(storage_err("failed to commit external-change ingest"))?;
-            return Ok(IngestDecision::ExternallyChanged {
-                file_id: new_id,
-                superseded: old_uuid,
-            });
-        }
+        let _ = stub_recovered; // Marker: control reaches here when no row at path, or after stub recovery deleted the row.
 
         // No row at this path. Check for move: a missing file with matching
         // expected_hash. The status='missing' filter is what prevents
@@ -3394,5 +3433,267 @@ mod tests {
             )
             .unwrap();
         assert!(after > before);
+    }
+
+    #[test]
+    fn unchanged_check_recovers_stub_from_cancelled_session() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let stub_id = "33333333-3333-3333-3333-333333333333";
+        let cancelled_session = "44444444-4444-4444-4444-444444444444";
+        let now = format_datetime(&chrono::Utc::now());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at, finished_at) \
+                 VALUES (?1, '[\"/m\"]', 'cancelled', ?2, ?2, ?2)",
+                params![cancelled_session, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at, last_seen_session_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 'active', 'other', 0.0, \
+                         '{}', '{}', ?6, ?6, ?6, ?7)",
+                params![
+                    stub_id,
+                    "/m/a.mkv",
+                    "a.mkv",
+                    100,
+                    "h-a",
+                    now,
+                    cancelled_session
+                ],
+            )
+            .unwrap();
+        }
+
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-a".to_string());
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+
+        match decision {
+            IngestDecision::New {
+                needs_introspection,
+                ..
+            } => {
+                assert!(
+                    needs_introspection,
+                    "stub recovery must mark needs_introspection"
+                );
+            }
+            other => panic!("expected New (stub recovery), got {other:?}"),
+        }
+
+        let conn = store.conn().unwrap();
+        let stub_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE id = ?1",
+                params![stub_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stub_exists, 0, "stub row must be deleted by recovery");
+
+        let (status, last_seen): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, last_seen_session_id FROM files WHERE path = ?1",
+                params!["/m/a.mkv"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "active");
+        assert_eq!(last_seen.as_deref(), Some(session.to_string().as_str()));
+    }
+
+    #[test]
+    fn unchanged_check_recovers_move_destination_from_cancelled_session() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let stub_id = "55555555-5555-5555-5555-555555555555";
+        let source_id = "66666666-6666-6666-6666-666666666666";
+        let cancelled_session = "77777777-7777-7777-7777-777777777777";
+        let now = format_datetime(&chrono::Utc::now());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at, finished_at) \
+                 VALUES (?1, '[\"/m\"]', 'cancelled', ?2, ?2, ?2)",
+                params![cancelled_session, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at, last_seen_session_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 'active', 'other', 0.0, \
+                         '{}', '{}', ?6, ?6, ?6, ?7)",
+                params![
+                    stub_id,
+                    "/m/new.mkv",
+                    "new.mkv",
+                    100,
+                    "h-c",
+                    now,
+                    cancelled_session
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'missing', 'other', 0.0, \
+                         '{}', '{}', ?7, ?7, ?7)",
+                params![source_id, "/m/old.mkv", "old.mkv", 100, "h-c", "h-c", now],
+            )
+            .unwrap();
+        }
+
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/m/new.mkv"), 100, "h-c".to_string());
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+
+        match decision {
+            IngestDecision::Moved { from_path, .. } => {
+                assert_eq!(from_path, PathBuf::from("/m/old.mkv"));
+            }
+            other => panic!("expected Moved (stub deleted, move detected), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unchanged_check_preserves_supersession_when_stub_was_replacement() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        let stub_id = "88888888-8888-8888-8888-888888888888";
+        let pred_id = "99999999-9999-9999-9999-999999999999";
+        let cancelled_session = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let now = format_datetime(&chrono::Utc::now());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at, finished_at) \
+                 VALUES (?1, '[\"/m\"]', 'cancelled', ?2, ?2, ?2)",
+                params![cancelled_session, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at, superseded_by, missing_since) \
+                 VALUES (?1, NULL, 'a.mkv', 100, ?2, ?2, 'missing', 'other', 0.0, \
+                         '{}', '{}', ?3, ?3, ?3, ?4, ?3)",
+                params![pred_id, "h-old", now, stub_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at, last_seen_session_id) \
+                 VALUES (?1, ?2, 'a.mkv', 100, ?3, ?3, 'active', 'other', 0.0, \
+                         '{}', '{}', ?4, ?4, ?4, ?5)",
+                params![stub_id, "/m/a.mkv", "h-new", now, cancelled_session],
+            )
+            .unwrap();
+        }
+
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-new".to_string());
+        let _decision = store.ingest_discovered_file(session, &df).unwrap();
+
+        let conn = store.conn().unwrap();
+
+        let stub_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE id = ?1",
+                params![stub_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stub_exists, 0);
+
+        let pred_superseded_by: Option<String> = conn
+            .query_row(
+                "SELECT superseded_by FROM files WHERE id = ?1",
+                params![pred_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            pred_superseded_by.is_none(),
+            "predecessor's superseded_by must be cleared after stub removal"
+        );
+
+        let pred_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE id = ?1",
+                params![pred_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pred_status, "missing");
+    }
+
+    #[test]
+    fn unchanged_with_completed_session_stays_unchanged() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let row_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let completed_session = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        let now = format_datetime(&chrono::Utc::now());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at, finished_at) \
+                 VALUES (?1, '[\"/m\"]', 'completed', ?2, ?2, ?2)",
+                params![completed_session, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size, content_hash, \
+                                    expected_hash, status, container, duration, \
+                                    tags, plugin_metadata, introspected_at, \
+                                    created_at, updated_at, last_seen_session_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 'active', 'other', 0.0, \
+                         '{}', '{}', ?6, ?6, ?6, ?7)",
+                params![
+                    row_id,
+                    "/m/a.mkv",
+                    "a.mkv",
+                    100,
+                    "h-a",
+                    now,
+                    completed_session
+                ],
+            )
+            .unwrap();
+        }
+
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-a".to_string());
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+        assert!(
+            matches!(decision, IngestDecision::Unchanged { .. }),
+            "completed-session row must stay Unchanged; got {decision:?}"
+        );
     }
 }
