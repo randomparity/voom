@@ -95,19 +95,17 @@ fn format_metadata(metadata: &MetadataNode, out: &mut String, level: usize) {
         indent(out, level + 1);
         let _ = writeln!(out, "requires_voom: \"{}\"", escape_string(requires_voom));
     }
-    if !metadata.requires_tools.is_empty() {
+    if let Some(requires_tools) = &metadata.requires_tools {
         indent(out, level + 1);
-        let tools: Vec<String> = metadata
-            .requires_tools
+        let tools: Vec<String> = requires_tools
             .iter()
             .map(|tool| format!("\"{}\"", escape_string(tool)))
             .collect();
         let _ = writeln!(out, "requires_tools: [{}]", tools.join(", "));
     }
-    if !metadata.test_fixtures.is_empty() {
+    if let Some(test_fixtures) = &metadata.test_fixtures {
         indent(out, level + 1);
-        let fixtures: Vec<String> = metadata
-            .test_fixtures
+        let fixtures: Vec<String> = test_fixtures
             .iter()
             .map(|fixture| format!("\"{}\"", escape_string(fixture)))
             .collect();

@@ -56,8 +56,8 @@ pub struct MetadataNode {
     pub author: Option<String>,
     pub description: Option<String>,
     pub requires_voom: Option<String>,
-    pub requires_tools: Vec<String>,
-    pub test_fixtures: Vec<String>,
+    pub requires_tools: Option<Vec<String>>,
+    pub test_fixtures: Option<Vec<String>>,
     pub span: Span,
 }
 

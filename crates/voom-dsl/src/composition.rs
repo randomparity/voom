@@ -251,16 +251,8 @@ fn merge_metadata(
             author: child.author.or(parent.author),
             description: child.description.or(parent.description),
             requires_voom: child.requires_voom.or(parent.requires_voom),
-            requires_tools: if child.requires_tools.is_empty() {
-                parent.requires_tools
-            } else {
-                child.requires_tools
-            },
-            test_fixtures: if child.test_fixtures.is_empty() {
-                parent.test_fixtures
-            } else {
-                child.test_fixtures
-            },
+            requires_tools: child.requires_tools.or(parent.requires_tools),
+            test_fixtures: child.test_fixtures.or(parent.test_fixtures),
             span: child.span,
         }),
     }
@@ -330,5 +322,55 @@ fn source_label(source_id: &PolicySourceId) -> String {
         PolicySourceId::Inline => "inline".to_owned(),
         PolicySourceId::Bundled(name) => name.clone(),
         PolicySourceId::File(path) => path.display().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::composition::resolve_policy_with_bundled;
+
+    #[test]
+    fn explicit_empty_metadata_list_clears_parent_value() {
+        let resolved = resolve_policy_with_bundled(
+            r#"policy "child" extends "anime-base" {
+                metadata {
+                    requires_tools: []
+                }
+
+                phase subtitles {
+                    keep subtitles
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let metadata = resolved.ast.metadata.unwrap();
+        assert_eq!(metadata.requires_tools, Some(Vec::new()));
+    }
+
+    #[test]
+    fn omitted_metadata_list_inherits_parent_value() {
+        let resolved = resolve_policy_with_bundled(
+            r#"policy "child" extends "anime-base" {
+                metadata {
+                    version: "1.1.0"
+                }
+
+                phase subtitles {
+                    keep subtitles
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let metadata = resolved.ast.metadata.unwrap();
+        assert_eq!(
+            metadata.requires_tools,
+            Some(vec![
+                "ffmpeg".to_owned(),
+                "mkvmerge".to_owned(),
+                "mkvextract".to_owned()
+            ])
+        );
     }
 }

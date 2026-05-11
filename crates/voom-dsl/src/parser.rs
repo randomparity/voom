@@ -145,8 +145,8 @@ fn build_metadata(pair: Pair<'_, Rule>) -> Result<MetadataNode> {
     let mut author = None;
     let mut description = None;
     let mut requires_voom = None;
-    let mut requires_tools = Vec::new();
-    let mut test_fixtures = Vec::new();
+    let mut requires_tools = None;
+    let mut test_fixtures = None;
 
     for item in pair.into_inner() {
         if item.as_rule() != Rule::metadata_item {
@@ -188,14 +188,14 @@ fn build_metadata(pair: Pair<'_, Rule>) -> Result<MetadataNode> {
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::list)
                     .unwrap();
-                requires_tools = build_list(list_pair);
+                requires_tools = Some(build_list(list_pair));
             }
             "test_fixtures" => {
                 let list_pair = item
                     .into_inner()
                     .find(|p| p.as_rule() == Rule::list)
                     .unwrap();
-                test_fixtures = build_list(list_pair);
+                test_fixtures = Some(build_list(list_pair));
             }
             other => {
                 let (line, col) = item.as_span().start_pos().line_col();
