@@ -69,11 +69,7 @@ pub fn run(args: &ReportArgs) -> Result<()> {
 }
 
 fn report_format(args: &ReportArgs) -> OutputFormat {
-    if args.json {
-        OutputFormat::Json
-    } else {
-        args.format
-    }
+    args.format
 }
 
 fn build_request(args: &ReportArgs) -> Result<ReportRequest> {
@@ -2005,7 +2001,6 @@ mod tests {
     fn test_build_request_no_flags_gives_summary() {
         let args = ReportArgs {
             format: OutputFormat::Table,
-            json: false,
             library: false,
             plans: false,
             savings: false,
@@ -2032,7 +2027,6 @@ mod tests {
     fn test_build_request_all_flag() {
         let args = ReportArgs {
             format: OutputFormat::Table,
-            json: false,
             library: false,
             plans: false,
             savings: false,
@@ -2060,7 +2054,6 @@ mod tests {
     fn test_build_request_specific_sections() {
         let args = ReportArgs {
             format: OutputFormat::Table,
-            json: false,
             library: false,
             plans: true,
             savings: false,
@@ -2105,7 +2098,6 @@ mod tests {
     fn test_is_summary_request() {
         let default_args = ReportArgs {
             format: OutputFormat::Table,
-            json: false,
             library: false,
             plans: false,
             savings: false,

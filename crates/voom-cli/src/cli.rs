@@ -304,16 +304,26 @@ fn parse_size_bytes(value: &str) -> std::result::Result<u64, String> {
 #[derive(Subcommand)]
 pub enum PolicyCommands {
     /// List loaded policies
-    List,
+    List {
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Validate a policy file
     Validate {
         /// Policy file to validate
         file: PathBuf,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
     /// Show compiled policy details
     Show {
         /// Policy file to show
         file: PathBuf,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
     /// Auto-format a policy file in place
     Format {
@@ -329,6 +339,9 @@ pub enum PolicyCommands {
         /// Evaluate both policies against this JSON media fixture and diff the plans
         #[arg(long)]
         fixture: Option<PathBuf>,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
     /// Author and inspect policy fixtures
     Fixture {
@@ -346,9 +359,9 @@ pub enum PolicyCommands {
         /// Update snapshot expectations (not available until snapshot mode lands)
         #[arg(long)]
         update: bool,
-        /// Emit machine-readable JSON output
-        #[arg(long)]
-        json: bool,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
 }
 
@@ -366,11 +379,18 @@ pub enum PolicyFixtureCommands {
 #[derive(Subcommand)]
 pub enum PluginCommands {
     /// List registered plugins
-    List,
+    List {
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Show detailed info about a plugin
     Info {
         /// Plugin name
         name: String,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
     /// Enable a plugin
     Enable {
@@ -404,11 +424,17 @@ pub enum JobsCommands {
         /// Number of jobs to skip
         #[arg(long, default_value = "0")]
         offset: u32,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
     /// Show job details
     Status {
         /// Job ID
         id: String,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
     /// Cancel a running job
     Cancel {
@@ -439,12 +465,8 @@ pub enum JobsCommands {
 #[derive(clap::Args)]
 pub struct ReportArgs {
     /// Output format (auto-detected: table for TTY, json for pipe)
-    #[arg(short, long, default_value = "table", conflicts_with = "json")]
+    #[arg(short, long, default_value = "table")]
     pub format: OutputFormat,
-
-    /// Emit JSON output
-    #[arg(long)]
-    pub json: bool,
 
     /// Show full library statistics
     #[arg(long)]
@@ -566,13 +588,20 @@ pub enum DbCommands {
 #[derive(Subcommand)]
 pub enum ConfigCommands {
     /// Show current configuration
-    Show,
+    Show {
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Open configuration in $EDITOR
     Edit,
     /// Get a configuration value by dot-notation key
     Get {
         /// Dot-notation key (e.g. `auth_token`, `plugins.wasm_dir`, plugin.ffmpeg-executor.hw_accel)
         key: String,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
     /// Set a configuration value by dot-notation key
     Set {
@@ -891,11 +920,8 @@ pub enum EnvCommands {
     /// Run live environment checks
     Check {
         /// Output format
-        #[arg(short, long, default_value = "table", conflicts_with = "json")]
+        #[arg(short, long, default_value = "table")]
         format: OutputFormat,
-        /// Emit JSON output
-        #[arg(long)]
-        json: bool,
     },
     /// Show environment check history from the database
     History {
@@ -1070,6 +1096,29 @@ mod tests {
     fn test_global_yes_with_db_reset() {
         let cli = parse(&["voom", "-y", "db", "reset"]);
         assert!(cli.yes);
+    }
+
+    #[test]
+    fn test_global_yes_available_to_destructive_commands() {
+        let cases = [
+            vec!["voom", "-y", "db", "reset"],
+            vec!["voom", "-y", "db", "clean-bad"],
+            vec!["voom", "-y", "jobs", "clear"],
+            vec![
+                "voom",
+                "-y",
+                "files",
+                "delete",
+                "550e8400-e29b-41d4-a716-446655440000",
+            ],
+            vec!["voom", "-y", "backup", "restore", "/tmp/movie.vbak"],
+            vec!["voom", "-y", "backup", "cleanup", "/tmp"],
+        ];
+
+        for args in &cases {
+            let cli = parse(args);
+            assert!(cli.yes, "expected global yes for {args:?}");
+        }
     }
 
     // ── Scan ─────────────────────────────────────────────────
@@ -1345,8 +1394,19 @@ mod tests {
         let cli = parse(&["voom", "policy", "list"]);
         assert!(matches!(
             cli.command,
-            Commands::Policy(PolicyCommands::List)
+            Commands::Policy(PolicyCommands::List { .. })
         ));
+    }
+
+    #[test]
+    fn test_policy_list_json_format() {
+        let cli = parse(&["voom", "policy", "list", "--format", "json"]);
+        match cli.command {
+            Commands::Policy(PolicyCommands::List { format }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Policy List"),
+        }
     }
 
     #[test]
@@ -1358,8 +1418,9 @@ mod tests {
     fn test_policy_validate() {
         let cli = parse(&["voom", "policy", "validate", "my.voom"]);
         match cli.command {
-            Commands::Policy(PolicyCommands::Validate { file }) => {
+            Commands::Policy(PolicyCommands::Validate { file, format }) => {
                 assert_eq!(file, PathBuf::from("my.voom"));
+                assert!(matches!(format, OutputFormat::Table));
             }
             _ => panic!("expected Policy Validate"),
         }
@@ -1369,8 +1430,9 @@ mod tests {
     fn test_policy_show() {
         let cli = parse(&["voom", "policy", "show", "my.voom"]);
         match cli.command {
-            Commands::Policy(PolicyCommands::Show { file }) => {
+            Commands::Policy(PolicyCommands::Show { file, format }) => {
                 assert_eq!(file, PathBuf::from("my.voom"));
+                assert!(matches!(format, OutputFormat::Table));
             }
             _ => panic!("expected Policy Show"),
         }
@@ -1391,10 +1453,16 @@ mod tests {
     fn test_policy_diff() {
         let cli = parse(&["voom", "policy", "diff", "a.voom", "b.voom"]);
         match cli.command {
-            Commands::Policy(PolicyCommands::Diff { a, b, fixture }) => {
+            Commands::Policy(PolicyCommands::Diff {
+                a,
+                b,
+                fixture,
+                format,
+            }) => {
                 assert_eq!(a, PathBuf::from("a.voom"));
                 assert_eq!(b, PathBuf::from("b.voom"));
                 assert_eq!(fixture, None);
+                assert!(matches!(format, OutputFormat::Table));
             }
             _ => panic!("expected Policy Diff"),
         }
@@ -1412,7 +1480,7 @@ mod tests {
             "movie.json",
         ]);
         match cli.command {
-            Commands::Policy(PolicyCommands::Diff { a, b, fixture }) => {
+            Commands::Policy(PolicyCommands::Diff { a, b, fixture, .. }) => {
                 assert_eq!(a, PathBuf::from("a.voom"));
                 assert_eq!(b, PathBuf::from("b.voom"));
                 assert_eq!(fixture, Some(PathBuf::from("movie.json")));
@@ -1448,12 +1516,12 @@ mod tests {
                 paths,
                 policy,
                 update,
-                json,
+                format,
             }) => {
                 assert_eq!(paths, vec![PathBuf::from(".")]);
                 assert_eq!(policy, None);
                 assert!(!update);
-                assert!(!json);
+                assert!(matches!(format, OutputFormat::Table));
             }
             _ => panic!("expected Policy Test"),
         }
@@ -1470,14 +1538,15 @@ mod tests {
             "--policy",
             "override.voom",
             "--update",
-            "--json",
+            "--format",
+            "json",
         ]);
         match cli.command {
             Commands::Policy(PolicyCommands::Test {
                 paths,
                 policy,
                 update,
-                json,
+                format,
             }) => {
                 assert_eq!(
                     paths,
@@ -1488,10 +1557,15 @@ mod tests {
                 );
                 assert_eq!(policy, Some(PathBuf::from("override.voom")));
                 assert!(update);
-                assert!(json);
+                assert!(matches!(format, OutputFormat::Json));
             }
             _ => panic!("expected Policy Test"),
         }
+    }
+
+    #[test]
+    fn test_policy_test_rejects_json_alias() {
+        assert!(try_parse(&["voom", "policy", "test", "--json"]).is_err());
     }
 
     // ── Plugin subcommands ───────────────────────────────────
@@ -1501,16 +1575,28 @@ mod tests {
         let cli = parse(&["voom", "plugin", "list"]);
         assert!(matches!(
             cli.command,
-            Commands::Plugin(PluginCommands::List)
+            Commands::Plugin(PluginCommands::List { .. })
         ));
+    }
+
+    #[test]
+    fn test_plugin_list_json_format() {
+        let cli = parse(&["voom", "plugin", "list", "--format", "json"]);
+        match cli.command {
+            Commands::Plugin(PluginCommands::List { format }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Plugin List"),
+        }
     }
 
     #[test]
     fn test_plugin_info() {
         let cli = parse(&["voom", "plugin", "info", "ffmpeg-executor"]);
         match cli.command {
-            Commands::Plugin(PluginCommands::Info { name }) => {
+            Commands::Plugin(PluginCommands::Info { name, format }) => {
                 assert_eq!(name, "ffmpeg-executor");
+                assert!(matches!(format, OutputFormat::Table));
             }
             _ => panic!("expected Plugin Info"),
         }
@@ -1559,10 +1645,12 @@ mod tests {
                 status,
                 limit,
                 offset,
+                format,
             }) => {
                 assert!(status.is_none());
                 assert_eq!(limit, 50);
                 assert_eq!(offset, 0);
+                assert!(matches!(format, OutputFormat::Table));
             }
             _ => panic!("expected Jobs List"),
         }
@@ -1634,8 +1722,22 @@ mod tests {
     fn test_jobs_status() {
         let cli = parse(&["voom", "jobs", "status", "abc-123"]);
         match cli.command {
-            Commands::Jobs(JobsCommands::Status { id }) => assert_eq!(id, "abc-123"),
+            Commands::Jobs(JobsCommands::Status { id, format }) => {
+                assert_eq!(id, "abc-123");
+                assert!(matches!(format, OutputFormat::Table));
+            }
             _ => panic!("expected Jobs Status"),
+        }
+    }
+
+    #[test]
+    fn test_jobs_list_json_format() {
+        let cli = parse(&["voom", "jobs", "list", "--format", "json"]);
+        match cli.command {
+            Commands::Jobs(JobsCommands::List { format, .. }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Jobs List"),
         }
     }
 
@@ -1666,6 +1768,11 @@ mod tests {
             Commands::Report(args) => assert!(matches!(args.format, OutputFormat::Json)),
             _ => panic!("expected Report"),
         }
+    }
+
+    #[test]
+    fn test_report_rejects_json_alias() {
+        assert!(try_parse(&["voom", "report", "--json"]).is_err());
     }
 
     // ── Serve ────────────────────────────────────────────────
@@ -1791,8 +1898,19 @@ mod tests {
         let cli = parse(&["voom", "config", "show"]);
         assert!(matches!(
             cli.command,
-            Commands::Config(ConfigCommands::Show)
+            Commands::Config(ConfigCommands::Show { .. })
         ));
+    }
+
+    #[test]
+    fn test_config_show_json_format() {
+        let cli = parse(&["voom", "config", "show", "--format", "json"]);
+        match cli.command {
+            Commands::Config(ConfigCommands::Show { format }) => {
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Config Show"),
+        }
     }
 
     #[test]
@@ -1808,8 +1926,9 @@ mod tests {
     fn test_config_get() {
         let cli = parse(&["voom", "config", "get", "auth_token"]);
         match cli.command {
-            Commands::Config(ConfigCommands::Get { key }) => {
+            Commands::Config(ConfigCommands::Get { key, format }) => {
                 assert_eq!(key, "auth_token");
+                assert!(matches!(format, OutputFormat::Table));
             }
             _ => panic!("expected Config Get"),
         }
@@ -1819,7 +1938,7 @@ mod tests {
     fn test_config_get_nested_key() {
         let cli = parse(&["voom", "config", "get", "plugin.ffmpeg-executor.hw_accel"]);
         match cli.command {
-            Commands::Config(ConfigCommands::Get { key }) => {
+            Commands::Config(ConfigCommands::Get { key, .. }) => {
                 assert_eq!(key, "plugin.ffmpeg-executor.hw_accel");
             }
             _ => panic!("expected Config Get"),
@@ -1913,9 +2032,8 @@ mod tests {
     fn test_env_check() {
         let cli = parse(&["voom", "env", "check"]);
         match cli.command {
-            Commands::Env(EnvCommands::Check { format, json }) => {
+            Commands::Env(EnvCommands::Check { format }) => {
                 assert!(matches!(format, OutputFormat::Table));
-                assert!(!json);
             }
             _ => panic!("expected Env Check"),
         }
@@ -1925,24 +2043,16 @@ mod tests {
     fn test_env_check_json_format() {
         let cli = parse(&["voom", "env", "check", "--format", "json"]);
         match cli.command {
-            Commands::Env(EnvCommands::Check { format, json }) => {
+            Commands::Env(EnvCommands::Check { format }) => {
                 assert!(matches!(format, OutputFormat::Json));
-                assert!(!json);
             }
             _ => panic!("expected Env Check"),
         }
     }
 
     #[test]
-    fn test_env_check_json_alias() {
-        let cli = parse(&["voom", "env", "check", "--json"]);
-        match cli.command {
-            Commands::Env(EnvCommands::Check { format, json }) => {
-                assert!(matches!(format, OutputFormat::Table));
-                assert!(json);
-            }
-            _ => panic!("expected Env Check"),
-        }
+    fn test_env_check_rejects_json_alias() {
+        assert!(try_parse(&["voom", "env", "check", "--json"]).is_err());
     }
 
     #[test]

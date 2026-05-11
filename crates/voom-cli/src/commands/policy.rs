@@ -9,22 +9,28 @@ use voom_policy_testing::{
     CapabilityFixture, Fixture, SnapshotOutcome, TestSuite, assert_snapshot_file,
 };
 
-use crate::cli::{PolicyCommands, PolicyFixtureCommands};
+use crate::cli::{OutputFormat, PolicyCommands, PolicyFixtureCommands};
+use crate::output;
 
 pub async fn run(cmd: PolicyCommands) -> Result<()> {
     match cmd {
-        PolicyCommands::List => list(),
-        PolicyCommands::Validate { file } => validate(&file),
-        PolicyCommands::Show { file } => show(&file),
+        PolicyCommands::List { format } => list(format),
+        PolicyCommands::Validate { file, format } => validate(&file, format),
+        PolicyCommands::Show { file, format } => show(&file, format),
         PolicyCommands::Format { file } => format(&file),
-        PolicyCommands::Diff { a, b, fixture } => diff(&a, &b, fixture.as_deref()),
+        PolicyCommands::Diff {
+            a,
+            b,
+            fixture,
+            format,
+        } => diff(&a, &b, fixture.as_deref(), format),
         PolicyCommands::Fixture { command } => fixture(command).await,
         PolicyCommands::Test {
             paths,
             policy,
             update,
-            json,
-        } => test(&paths, policy.as_deref(), update, json),
+            format,
+        } => test(&paths, policy.as_deref(), update, format),
     }
 }
 
@@ -73,17 +79,21 @@ fn fixture_from_media(media: voom_domain::media::MediaFile) -> Result<Fixture> {
     })
 }
 
-fn list() -> Result<()> {
+fn list(format: OutputFormat) -> Result<()> {
     // Scan standard policy directories
     let config_dir = crate::config::policies_dir();
 
     if !config_dir.exists() {
+        if matches!(format, OutputFormat::Json) {
+            output::print_json(&Vec::<serde_json::Value>::new())?;
+            return Ok(());
+        }
         println!("{}", style("No policies directory found.").dim());
         println!("Create policies in: {}", style(config_dir.display()).cyan());
         return Ok(());
     }
 
-    let mut found = false;
+    let mut policies = Vec::new();
     for entry in std::fs::read_dir(&config_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -94,32 +104,58 @@ fn list() -> Result<()> {
                 .to_string_lossy();
             match voom_dsl::compile_policy(&std::fs::read_to_string(&path)?) {
                 Ok(policy) => {
-                    println!(
-                        "  {} {} ({} phases)",
-                        style("OK").green(),
-                        style(&policy.name).bold(),
-                        policy.phases.len()
-                    );
+                    let policy_name = policy.name.clone();
+                    let phase_count = policy.phases.len();
+                    policies.push(serde_json::json!({
+                        "name": policy_name,
+                        "path": path,
+                        "valid": true,
+                        "phase_count": phase_count,
+                        "phase_order": policy.phase_order,
+                    }));
+                    if !matches!(format, OutputFormat::Json) {
+                        println!(
+                            "  {} {} ({} phases)",
+                            style("OK").green(),
+                            style(&policy_name).bold(),
+                            phase_count
+                        );
+                    }
                 }
                 Err(e) => {
-                    println!("  {} {} — {e}", style("ERR").red(), style(&name).bold());
+                    let error = e.to_string();
+                    let policy_name = name.to_string();
+                    policies.push(serde_json::json!({
+                        "name": policy_name,
+                        "path": path,
+                        "valid": false,
+                        "error": error,
+                    }));
+                    if !matches!(format, OutputFormat::Json) {
+                        println!(
+                            "  {} {} — {error}",
+                            style("ERR").red(),
+                            style(&policy_name).bold()
+                        );
+                    }
                 }
             }
-            found = true;
         }
     }
 
-    if !found {
+    if matches!(format, OutputFormat::Json) {
+        output::print_json(&policies)?;
+    } else if policies.is_empty() {
         println!("{}", style("No .voom policy files found.").dim());
     }
 
     Ok(())
 }
 
-fn validate(file: &std::path::Path) -> Result<()> {
+fn validate(file: &std::path::Path, format: OutputFormat) -> Result<()> {
     // If the file has a .toml extension, treat it as a policy map.
     if file.extension().is_some_and(|e| e == "toml") {
-        return validate_policy_map(file);
+        return validate_policy_map(file, format);
     }
 
     let file = crate::config::resolve_policy_path(file);
@@ -128,14 +164,23 @@ fn validate(file: &std::path::Path) -> Result<()> {
 
     match voom_dsl::compile_policy(&source) {
         Ok(policy) => {
-            println!(
-                "{} Policy \"{}\" is valid ({} phases, {} phase order: [{}])",
-                style("OK").bold().green(),
-                policy.name,
-                policy.phases.len(),
-                policy.phase_order.len(),
-                policy.phase_order.join(", ")
-            );
+            if matches!(format, OutputFormat::Json) {
+                output::print_json(&serde_json::json!({
+                    "valid": true,
+                    "policy": policy.name,
+                    "phase_count": policy.phases.len(),
+                    "phase_order": policy.phase_order,
+                }))?;
+            } else {
+                println!(
+                    "{} Policy \"{}\" is valid ({} phases, {} phase order: [{}])",
+                    style("OK").bold().green(),
+                    policy.name,
+                    policy.phases.len(),
+                    policy.phase_order.len(),
+                    policy.phase_order.join(", ")
+                );
+            }
         }
         Err(e) => {
             anyhow::bail!("Policy validation failed: {e}");
@@ -146,7 +191,7 @@ fn validate(file: &std::path::Path) -> Result<()> {
 }
 
 /// Validate a `.toml` policy map file and all policies it references.
-fn validate_policy_map(file: &std::path::Path) -> Result<()> {
+fn validate_policy_map(file: &std::path::Path, format: OutputFormat) -> Result<()> {
     use crate::policy_map::PolicyResolver;
 
     // Use a dummy root — we only care about compilation, not prefix matching.
@@ -155,6 +200,27 @@ fn validate_policy_map(file: &std::path::Path) -> Result<()> {
         .with_context(|| format!("Policy map validation failed: {}", file.display()))?;
 
     let policies = resolver.policies();
+    if matches!(format, OutputFormat::Json) {
+        let policies: Vec<serde_json::Value> = policies
+            .iter()
+            .map(|(name, compiled)| {
+                serde_json::json!({
+                    "name": name,
+                    "policy": compiled.name,
+                    "phase_count": compiled.phases.len(),
+                    "phase_order": compiled.phase_order,
+                })
+            })
+            .collect();
+        output::print_json(&serde_json::json!({
+            "valid": true,
+            "policy_map": file,
+            "policy_count": policies.len(),
+            "policies": policies,
+        }))?;
+        return Ok(());
+    }
+
     println!(
         "{} Policy map \"{}\" is valid ({} policies)",
         style("OK").bold().green(),
@@ -174,12 +240,16 @@ fn validate_policy_map(file: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn show(file: &std::path::Path) -> Result<()> {
+fn show(file: &std::path::Path, format: OutputFormat) -> Result<()> {
     let file = crate::config::resolve_policy_path(file);
     let source = std::fs::read_to_string(&file)
         .with_context(|| format!("Failed to read: {}", file.display()))?;
 
     let compiled = voom_dsl::compile_policy(&source).context("policy compilation failed")?;
+    if matches!(format, OutputFormat::Json) {
+        output::print_json(&compiled)?;
+        return Ok(());
+    }
 
     println!(
         "{} \"{}\"",
@@ -255,7 +325,12 @@ fn format(file: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-fn diff(a: &std::path::Path, b: &std::path::Path, fixture: Option<&std::path::Path>) -> Result<()> {
+fn diff(
+    a: &std::path::Path,
+    b: &std::path::Path,
+    fixture: Option<&std::path::Path>,
+    format: OutputFormat,
+) -> Result<()> {
     let a_path = crate::config::resolve_policy_path(a);
     let b_path = crate::config::resolve_policy_path(b);
 
@@ -277,6 +352,18 @@ fn diff(a: &std::path::Path, b: &std::path::Path, fixture: Option<&std::path::Pa
     let mut lines = Vec::new();
     diff_values("", &a_json, &b_json, &mut lines);
 
+    if matches!(format, OutputFormat::Json) {
+        let differences: Vec<String> = lines.iter().map(render_diff_line).collect();
+        output::print_json(&serde_json::json!({
+            "identical": lines.is_empty(),
+            "differences": differences,
+        }))?;
+        if fixture.is_some() && !lines.is_empty() {
+            anyhow::bail!("fixture plan diff found differences");
+        }
+        return Ok(());
+    }
+
     if lines.is_empty() {
         println!("{} Policies are identical.", style("OK").bold().green());
         return Ok(());
@@ -296,7 +383,12 @@ fn diff(a: &std::path::Path, b: &std::path::Path, fixture: Option<&std::path::Pa
     Ok(())
 }
 
-fn test(paths: &[PathBuf], policy_override: Option<&Path>, update: bool, json: bool) -> Result<()> {
+fn test(
+    paths: &[PathBuf],
+    policy_override: Option<&Path>,
+    update: bool,
+    format: OutputFormat,
+) -> Result<()> {
     let suites = discover_test_suites(paths)?;
     if suites.is_empty() {
         bail!("no *.test.json files found");
@@ -311,7 +403,7 @@ fn test(paths: &[PathBuf], policy_override: Option<&Path>, update: bool, json: b
     }
 
     let output = TestOutput::from_cases(cases, snapshots_updated);
-    if json {
+    if matches!(format, OutputFormat::Json) {
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         print_human_test_output(&output);
@@ -717,6 +809,25 @@ fn diff_named_arrays(path: &str, a_arr: &[Value], b_arr: &[Value], lines: &mut V
     }
 }
 
+fn render_diff_line(line: &DiffLine) -> String {
+    match line {
+        DiffLine::Added { path, value } => {
+            format!("+ {}: {}", strip_section(path), format_value(value))
+        }
+        DiffLine::Removed { path, value } => {
+            format!("- {}: {}", strip_section(path), format_value(value))
+        }
+        DiffLine::Changed { path, old, new } => {
+            format!(
+                "~ {}: {} -> {}",
+                strip_section(path),
+                format_value(old),
+                format_value(new)
+            )
+        }
+    }
+}
+
 fn print_diff_lines(lines: &[DiffLine]) {
     let mut last_section = String::new();
     for line in lines {
@@ -798,7 +909,7 @@ policy "test-policy" {
         std::fs::write(&file, MINIMAL_POLICY).unwrap();
 
         // validate reads the file and calls voom_dsl::compile_policy
-        let result = validate(&file);
+        let result = validate(&file, OutputFormat::Table);
         assert!(result.is_ok());
     }
 
@@ -815,7 +926,10 @@ policy "test-policy" {
 
     #[test]
     fn validate_nonexistent_file_returns_error() {
-        let result = validate(std::path::Path::new("/nonexistent/test.voom"));
+        let result = validate(
+            std::path::Path::new("/nonexistent/test.voom"),
+            OutputFormat::Table,
+        );
         assert!(result.is_err());
     }
 
@@ -846,13 +960,16 @@ policy "test-policy" {
         let file = dir.path().join("test.voom");
         std::fs::write(&file, MINIMAL_POLICY).unwrap();
 
-        let result = show(&file);
+        let result = show(&file, OutputFormat::Table);
         assert!(result.is_ok());
     }
 
     #[test]
     fn show_nonexistent_file_returns_error() {
-        let result = show(std::path::Path::new("/nonexistent/test.voom"));
+        let result = show(
+            std::path::Path::new("/nonexistent/test.voom"),
+            OutputFormat::Table,
+        );
         assert!(result.is_err());
     }
 
@@ -862,7 +979,7 @@ policy "test-policy" {
         let file = dir.path().join("bad.voom");
         std::fs::write(&file, "garbage content here").unwrap();
 
-        let result = show(&file);
+        let result = show(&file, OutputFormat::Table);
         assert!(result.is_err());
     }
 
@@ -1008,7 +1125,7 @@ policy "test-policy" {
         std::fs::write(&a_file, MINIMAL_POLICY).unwrap();
         std::fs::write(&b_file, MINIMAL_POLICY).unwrap();
 
-        let result = diff(&a_file, &b_file, None);
+        let result = diff(&a_file, &b_file, None, OutputFormat::Table);
         assert!(result.is_ok());
     }
 
@@ -1019,7 +1136,12 @@ policy "test-policy" {
         let fixture_file = write_movie_fixture(dir.path());
         std::fs::write(&policy_file, MINIMAL_POLICY).unwrap();
 
-        let result = diff(&policy_file, &policy_file, Some(&fixture_file));
+        let result = diff(
+            &policy_file,
+            &policy_file,
+            Some(&fixture_file),
+            OutputFormat::Table,
+        );
 
         assert!(result.is_ok());
     }
@@ -1042,7 +1164,7 @@ policy "noop" {
         )
         .unwrap();
 
-        let result = diff(&a_file, &b_file, Some(&fixture_file));
+        let result = diff(&a_file, &b_file, Some(&fixture_file), OutputFormat::Table);
 
         assert!(result.is_err());
     }
@@ -1053,7 +1175,12 @@ policy "noop" {
         let a_file = dir.path().join("a.voom");
         std::fs::write(&a_file, MINIMAL_POLICY).unwrap();
 
-        let result = diff(&a_file, std::path::Path::new("/nonexistent/b.voom"), None);
+        let result = diff(
+            &a_file,
+            std::path::Path::new("/nonexistent/b.voom"),
+            None,
+            OutputFormat::Table,
+        );
         assert!(result.is_err());
     }
 

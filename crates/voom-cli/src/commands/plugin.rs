@@ -2,21 +2,21 @@ use anyhow::{Context, Result, bail};
 use console::style;
 
 use crate::app;
-use crate::cli::PluginCommands;
+use crate::cli::{OutputFormat, PluginCommands};
 use crate::config;
 use crate::output;
 
 pub fn run(cmd: PluginCommands) -> Result<()> {
     match cmd {
-        PluginCommands::List => list(),
-        PluginCommands::Info { name } => info(&name),
+        PluginCommands::List { format } => list(format),
+        PluginCommands::Info { name, format } => info(&name, format),
         PluginCommands::Enable { name } => enable(&name),
         PluginCommands::Disable { name } => disable(&name),
         PluginCommands::Install { path } => install(&path),
     }
 }
 
-fn list() -> Result<()> {
+fn list(format: OutputFormat) -> Result<()> {
     let config = config::load_config()?;
     let disabled = &config.plugins.disabled_plugins;
     let kernel = app::bootstrap_kernel(&config)?;
@@ -50,7 +50,12 @@ fn list() -> Result<()> {
     }
 
     let total = plugins.len() + disabled_list.len();
-    if total == 0 {
+    if matches!(format, OutputFormat::Json) {
+        output::print_json(&serde_json::json!({
+            "plugins": plugins,
+            "disabled_plugins": disabled_list,
+        }))?;
+    } else if total == 0 {
         println!("{}", style("No plugins registered.").dim());
     } else {
         println!(
@@ -75,13 +80,20 @@ fn list() -> Result<()> {
     Ok(())
 }
 
-fn info(name: &str) -> Result<()> {
+fn info(name: &str, format: OutputFormat) -> Result<()> {
     let config = config::load_config()?;
 
     // Check if it's a known but disabled plugin
     if config.plugins.disabled_plugins.iter().any(|d| d == name)
         && config::KNOWN_PLUGIN_NAMES.contains(&name)
     {
+        if matches!(format, OutputFormat::Json) {
+            output::print_json(&serde_json::json!({
+                "name": name,
+                "status": "disabled",
+            }))?;
+            return Ok(());
+        }
         println!("{} {}", style("Plugin:").bold(), style(name).cyan());
         println!("{} {}", style("Status:").bold(), style("disabled").yellow());
         println!(
@@ -92,10 +104,28 @@ fn info(name: &str) -> Result<()> {
     }
 
     let result = app::bootstrap_kernel_with_store(&config)?;
-    let capabilities = result.collector.snapshot();
+    let executor_capabilities = result.collector.snapshot();
 
     match result.kernel.registry.get(name) {
         Some(plugin) => {
+            let capabilities: Vec<String> = plugin
+                .capabilities()
+                .iter()
+                .map(|cap| cap.kind().to_string())
+                .collect();
+            if matches!(format, OutputFormat::Json) {
+                output::print_json(&serde_json::json!({
+                    "name": plugin.name(),
+                    "version": plugin.version(),
+                    "description": plugin.description(),
+                    "author": plugin.author(),
+                    "license": plugin.license(),
+                    "homepage": plugin.homepage(),
+                    "status": "enabled",
+                    "capabilities": capabilities,
+                }))?;
+                return Ok(());
+            }
             println!(
                 "{} {}",
                 style("Plugin:").bold(),
@@ -116,12 +146,12 @@ fn info(name: &str) -> Result<()> {
             }
             println!("{} {}", style("Status:").bold(), style("enabled").green());
             println!("{}", style("Capabilities:").bold());
-            for cap in plugin.capabilities() {
-                println!("  - {}", cap.kind());
+            for cap in capabilities {
+                println!("  - {cap}");
             }
 
             // Show executor details if available
-            output::format_executor_capabilities(name, &capabilities);
+            output::format_executor_capabilities(name, &executor_capabilities);
         }
         _ => {
             let available = result.kernel.registry.plugin_names().join(", ");

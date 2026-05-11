@@ -17,7 +17,7 @@ mod recovery;
 pub mod retention;
 mod tools;
 
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, OutputFormat};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -48,9 +48,7 @@ async fn main() -> Result<()> {
     // blocking the tokio runtime with filesystem I/O at startup.
     tokio::task::spawn_blocking(cleanup_wasm_temp_files);
 
-    // Compute effective quiet: explicit --quiet OR machine-readable format
-    let quiet = cli.quiet
-        || matches!(&cli.command, Commands::Scan(args) if args.format.is_some_and(cli::OutputFormat::is_machine));
+    let quiet = effective_quiet(&cli);
 
     let global_yes = cli.yes;
 
@@ -114,6 +112,51 @@ fn command_needs_lock(command: &Commands) -> bool {
         ),
         Commands::Verify(sub) => matches!(sub, VerifyCommands::Run(_)),
         _ => false,
+    }
+}
+
+fn effective_quiet(cli: &Cli) -> bool {
+    cli.quiet || command_output_format(&cli.command).is_some_and(OutputFormat::is_machine)
+}
+
+fn command_output_format(command: &Commands) -> Option<OutputFormat> {
+    use cli::{
+        BackupCommands, ConfigCommands, DbCommands, EnvCommands, FilesCommands, JobsCommands,
+        PluginCommands, PolicyCommands, ToolsCommands, VerifyCommands,
+    };
+
+    match command {
+        Commands::Scan(args) => args.format,
+        Commands::Inspect(args) => Some(args.format),
+        Commands::Report(args) => Some(args.format),
+        Commands::Events(args) => Some(args.format),
+        Commands::History(args) => Some(args.format),
+        Commands::Plans(cli::PlansCommands::Show { format, .. }) => Some(*format),
+        Commands::Policy(PolicyCommands::List { format }) => Some(*format),
+        Commands::Policy(PolicyCommands::Validate { format, .. }) => Some(*format),
+        Commands::Policy(PolicyCommands::Show { format, .. }) => Some(*format),
+        Commands::Policy(PolicyCommands::Diff { format, .. }) => Some(*format),
+        Commands::Policy(PolicyCommands::Test { format, .. }) => Some(*format),
+        Commands::Plugin(PluginCommands::List { format }) => Some(*format),
+        Commands::Plugin(PluginCommands::Info { format, .. }) => Some(*format),
+        Commands::Jobs(JobsCommands::List { format, .. }) => Some(*format),
+        Commands::Jobs(JobsCommands::Status { format, .. }) => Some(*format),
+        Commands::Config(ConfigCommands::Show { format }) => Some(*format),
+        Commands::Config(ConfigCommands::Get { format, .. }) => Some(*format),
+        Commands::Db(DbCommands::ListBad { format, .. }) => Some(*format),
+        Commands::Env(EnvCommands::Check { format }) => Some(*format),
+        Commands::Env(EnvCommands::History { format, .. }) => Some(*format),
+        Commands::Health(EnvCommands::Check { format }) => Some(*format),
+        Commands::Health(EnvCommands::History { format, .. }) => Some(*format),
+        Commands::Tools(ToolsCommands::List { format }) => Some(*format),
+        Commands::Tools(ToolsCommands::Info { format, .. }) => Some(*format),
+        Commands::Verify(VerifyCommands::Run(args)) => args.format,
+        Commands::Verify(VerifyCommands::Report(args)) => Some(args.format),
+        Commands::Files(FilesCommands::List { format, .. }) => Some(*format),
+        Commands::Files(FilesCommands::Show { format, .. }) => Some(*format),
+        Commands::Backup(BackupCommands::List { format, .. }) => Some(*format),
+        Commands::Backup(BackupCommands::Verify { format, .. }) => Some(*format),
+        _ => None,
     }
 }
 
@@ -247,6 +290,34 @@ mod tests {
         assert!(cli.force);
         let cli = Cli::parse_from(["voom", "scan", "/media", "--force"]);
         assert!(cli.force);
+    }
+
+    #[test]
+    fn test_effective_quiet_for_machine_formats() {
+        use clap::Parser;
+        let cases = [
+            vec!["voom", "scan", "/media", "--format", "json"],
+            vec!["voom", "inspect", "movie.mkv", "--format", "json"],
+            vec!["voom", "events", "--format", "json"],
+            vec!["voom", "report", "--format", "json"],
+            vec!["voom", "tools", "list", "--format", "json"],
+            vec!["voom", "env", "check", "--format", "json"],
+        ];
+
+        for args in &cases {
+            let cli = Cli::parse_from(args);
+            assert!(effective_quiet(&cli), "expected quiet for {args:?}");
+        }
+    }
+
+    #[test]
+    fn test_effective_quiet_for_human_formats() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["voom", "inspect", "movie.mkv"]);
+        assert!(!effective_quiet(&cli));
+
+        let cli = Cli::parse_from(["voom", "--quiet", "inspect", "movie.mkv"]);
+        assert!(effective_quiet(&cli));
     }
 
     #[test]

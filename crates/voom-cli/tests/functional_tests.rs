@@ -4665,9 +4665,9 @@ mod test_verify {
 
         let output = env
             .voom()
-            .args(["report", "--vmaf", "--json"])
+            .args(["report", "--vmaf", "--format", "json"])
             .output()
-            .expect("run report --vmaf --json");
+            .expect("run report --vmaf --format json");
         assert!(output.status.success());
         let json: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("parse report JSON");

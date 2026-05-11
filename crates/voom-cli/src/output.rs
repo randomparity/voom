@@ -2,14 +2,21 @@
 
 use std::path::Path;
 
+use anyhow::Result;
 use comfy_table::presets::UTF8_FULL_CONDENSED;
 use comfy_table::{Cell, ContentArrangement, Table};
 use console::style;
+use serde::Serialize;
 use voom_domain::media::{MediaFile, Track};
 use voom_domain::transition::{FileTransition, TransitionSource};
 use voom_domain::utils::format;
 
 use crate::cli::OutputFormat;
+
+pub fn print_json(value: &impl Serialize) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
 
 /// Strip control characters (ANSI escapes, newlines, null bytes, etc.)
 /// from a string before displaying it in the terminal.
@@ -354,6 +361,7 @@ fn track_details(track: &Track) -> String {
 }
 
 /// Entry for the plugin list table.
+#[derive(Serialize)]
 pub struct PluginListEntry {
     pub name: String,
     pub version: String,

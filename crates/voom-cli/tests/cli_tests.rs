@@ -17,6 +17,41 @@ fn voom() -> Command {
     cmd
 }
 
+fn assert_stdout_is_json(args: &[&str]) -> Value {
+    let output = voom().args(args).assert().success().get_output().clone();
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "stdout was not valid JSON for {args:?}: {error}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
+fn assert_no_human_status_on_json_stdout(args: &[&str], banned: &[&str]) {
+    let output = voom().args(args).assert().success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<Value>(&stdout).unwrap_or_else(|error| {
+        panic!("stdout was not valid JSON for {args:?}: {error}\nstdout:\n{stdout}")
+    });
+
+    for needle in banned {
+        assert!(
+            !stdout.contains(needle),
+            "stdout for {args:?} contained human status {needle:?}:\n{stdout}"
+        );
+    }
+}
+
+fn assert_human_notes_on_stderr(args: &[&str], needle: &str) {
+    let output = voom().args(args).assert().success().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(needle),
+        "stderr for {args:?} did not contain {needle:?}:\n{stderr}"
+    );
+}
+
 fn write_policy_test_suite(dir: &std::path::Path, expected_phase: &str) -> std::path::PathBuf {
     let policy_path = dir.join("minimal.voom");
     let fixture_path = dir.join("movie.json");
@@ -266,6 +301,123 @@ fn test_completions_fish() {
         .stdout(predicate::str::contains("voom"));
 }
 
+// === Agent-facing output contracts ===
+
+#[test]
+fn test_existing_json_outputs_are_parseable() {
+    let dir = tempfile::tempdir().unwrap();
+    let empty_scan = assert_stdout_is_json(&[
+        "scan",
+        dir.path().to_str().unwrap(),
+        "--format",
+        "json",
+        "--no-hash",
+    ]);
+    assert_eq!(empty_scan, Value::Array(vec![]));
+
+    let tools = assert_stdout_is_json(&["tools", "list", "--format", "json"]);
+    assert!(tools.is_array());
+
+    let env = assert_stdout_is_json(&["env", "check", "--format", "json"]);
+    assert!(env.get("passed").is_some());
+    assert!(env.get("issue_count").is_some());
+}
+
+#[test]
+fn test_new_query_json_outputs_are_parseable() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/voom-dsl/tests/fixtures/production-normalize.voom");
+
+    let policy = assert_stdout_is_json(&[
+        "policy",
+        "validate",
+        fixture.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(policy["valid"], true);
+
+    let plugins = assert_stdout_is_json(&["plugin", "list", "--format", "json"]);
+    assert!(plugins["plugins"].is_array());
+    assert!(plugins["disabled_plugins"].is_array());
+
+    let config = assert_stdout_is_json(&["config", "show", "--format", "json"]);
+    assert!(config["data_dir"].is_string());
+
+    let jobs = assert_stdout_is_json(&["jobs", "list", "--format", "json"]);
+    assert!(jobs["jobs"].is_array());
+}
+
+#[test]
+fn test_policy_validate_map_json_is_parseable() {
+    let dir = tempfile::tempdir().unwrap();
+    let policy = dir.path().join("minimal.voom");
+    let policy_map = dir.path().join("map.toml");
+
+    std::fs::write(
+        &policy,
+        r#"policy "minimal" {
+  phase containerize {
+    container mkv
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        &policy_map,
+        r#"default = "minimal.voom"
+
+[[mapping]]
+prefix = "movies"
+policy = "minimal.voom"
+"#,
+    )
+    .unwrap();
+
+    let json = assert_stdout_is_json(&[
+        "policy",
+        "validate",
+        policy_map.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+
+    assert_eq!(json["valid"], true);
+    assert_eq!(json["policy_count"], 1);
+    assert!(json["policies"].is_array());
+    assert_eq!(json["policies"][0]["policy"], "minimal");
+}
+
+#[test]
+fn test_json_stdout_excludes_human_status_text() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_no_human_status_on_json_stdout(
+        &[
+            "scan",
+            dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+            "--no-hash",
+        ],
+        &["No media files found", "Scanning", "Pruned"],
+    );
+    assert_no_human_status_on_json_stdout(
+        &["tools", "list", "--format", "json"],
+        &["tool(s) detected", "No external tools detected"],
+    );
+}
+
+#[test]
+fn test_human_notes_use_stderr_for_human_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_human_notes_on_stderr(
+        &["scan", dir.path().to_str().unwrap()],
+        "No media files found",
+    );
+}
+
 // === Policy validation ===
 
 #[test]
@@ -356,7 +508,13 @@ fn test_policy_test_json_reports_failures_and_exits_one() {
     let suite = write_policy_test_suite(tmp.path(), "missing");
 
     let output = voom()
-        .args(["policy", "test", "--json", suite.to_str().unwrap()])
+        .args([
+            "policy",
+            "test",
+            "--format",
+            "json",
+            suite.to_str().unwrap(),
+        ])
         .assert()
         .failure()
         .get_output()
