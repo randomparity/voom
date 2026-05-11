@@ -291,6 +291,140 @@ pub struct ReconcileResult {
     pub needs_introspection: Vec<PathBuf>,
 }
 
+/// Identifier for a scan session. Newtype around `Uuid` so callers can't
+/// accidentally mix scan session IDs with the unrelated `voom process`
+/// `session_id` that lives on `plans` and `file_transitions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ScanSessionId(pub Uuid);
+
+impl ScanSessionId {
+    /// Generate a fresh random session ID.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Borrow the inner UUID.
+    #[must_use]
+    pub fn as_uuid(&self) -> &Uuid {
+        &self.0
+    }
+}
+
+impl Default for ScanSessionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for ScanSessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Lifecycle state of a [`ScanSession`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScanSessionStatus {
+    InProgress,
+    Completed,
+    Cancelled,
+}
+
+impl ScanSessionStatus {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScanSessionStatus::InProgress => "in_progress",
+            ScanSessionStatus::Completed => "completed",
+            ScanSessionStatus::Cancelled => "cancelled",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "in_progress" => Some(ScanSessionStatus::InProgress),
+            "completed" => Some(ScanSessionStatus::Completed),
+            "cancelled" => Some(ScanSessionStatus::Cancelled),
+            _ => None,
+        }
+    }
+}
+
+/// A scan session: a durable record bounding one "walk the filesystem and
+/// reconcile" pass. Per-file ingestion happens while a session is `InProgress`;
+/// missing-file detection runs only at `finish_scan_session`. See
+/// `docs/superpowers/specs/2026-05-11-scan-sessions-design.md`.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanSession {
+    pub id: ScanSessionId,
+    pub roots: Vec<std::path::PathBuf>,
+    pub status: ScanSessionStatus,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Outcome of a single per-file `ingest_discovered_file` call.
+///
+/// `Duplicate` indicates the same path was already ingested in this session
+/// (e.g. overlapping scan roots). It is a no-op; the caller may use it to
+/// count duplicates for reporting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IngestDecision {
+    New {
+        file_id: Uuid,
+        needs_introspection: bool,
+    },
+    Unchanged {
+        file_id: Uuid,
+    },
+    ExternallyChanged {
+        file_id: Uuid,
+        superseded: Uuid,
+    },
+    Moved {
+        file_id: Uuid,
+        from_path: std::path::PathBuf,
+    },
+    Duplicate {
+        file_id: Uuid,
+    },
+}
+
+impl IngestDecision {
+    /// Return the file ID this decision pertains to.
+    #[must_use]
+    pub fn file_id(&self) -> Uuid {
+        match self {
+            IngestDecision::New { file_id, .. }
+            | IngestDecision::Unchanged { file_id }
+            | IngestDecision::ExternallyChanged { file_id, .. }
+            | IngestDecision::Moved { file_id, .. }
+            | IngestDecision::Duplicate { file_id } => *file_id,
+        }
+    }
+
+    /// If this decision means "introspect this file next," return the path.
+    ///
+    /// Matches today's `ReconcileResult.needs_introspection` set: `New`,
+    /// `ExternallyChanged`, and `Moved` all require introspection; `Unchanged`
+    /// and `Duplicate` do not. See spec §6.3.
+    #[must_use]
+    pub fn needs_introspection_path(
+        &self,
+        ingested_path: &std::path::Path,
+    ) -> Option<std::path::PathBuf> {
+        match self {
+            IngestDecision::New { .. }
+            | IngestDecision::ExternallyChanged { .. }
+            | IngestDecision::Moved { .. } => Some(ingested_path.to_path_buf()),
+            IngestDecision::Unchanged { .. } | IngestDecision::Duplicate { .. } => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,5 +668,82 @@ mod tests {
             serde_json::to_string(&TransitionSource::Unknown).unwrap(),
             "\"unknown\""
         );
+    }
+
+    #[test]
+    fn test_scan_session_status_roundtrip() {
+        for status in [
+            ScanSessionStatus::InProgress,
+            ScanSessionStatus::Completed,
+            ScanSessionStatus::Cancelled,
+        ] {
+            assert_eq!(ScanSessionStatus::parse(status.as_str()), Some(status));
+        }
+    }
+
+    #[test]
+    fn test_scan_session_status_unknown_is_none() {
+        assert_eq!(ScanSessionStatus::parse(""), None);
+        assert_eq!(ScanSessionStatus::parse("bogus"), None);
+    }
+
+    #[test]
+    fn test_ingest_decision_needs_introspection_path() {
+        use std::path::PathBuf;
+        use uuid::Uuid;
+
+        let id = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let path = PathBuf::from("/movies/a.mkv");
+
+        let new = IngestDecision::New {
+            file_id: id,
+            needs_introspection: true,
+        };
+        assert_eq!(new.needs_introspection_path(&path), Some(path.clone()));
+
+        let unchanged = IngestDecision::Unchanged { file_id: id };
+        assert_eq!(unchanged.needs_introspection_path(&path), None);
+
+        let moved = IngestDecision::Moved {
+            file_id: id,
+            from_path: PathBuf::from("/old.mkv"),
+        };
+        assert_eq!(moved.needs_introspection_path(&path), Some(path.clone()));
+
+        let ext = IngestDecision::ExternallyChanged {
+            file_id: id,
+            superseded: other,
+        };
+        assert_eq!(ext.needs_introspection_path(&path), Some(path.clone()));
+
+        let dup = IngestDecision::Duplicate { file_id: id };
+        assert_eq!(dup.needs_introspection_path(&path), None);
+    }
+
+    #[test]
+    fn test_ingest_decision_file_id_is_always_present() {
+        use std::path::PathBuf;
+        use uuid::Uuid;
+        let id = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        for d in [
+            IngestDecision::New {
+                file_id: id,
+                needs_introspection: true,
+            },
+            IngestDecision::Unchanged { file_id: id },
+            IngestDecision::ExternallyChanged {
+                file_id: id,
+                superseded: other,
+            },
+            IngestDecision::Moved {
+                file_id: id,
+                from_path: PathBuf::from("/p"),
+            },
+            IngestDecision::Duplicate { file_id: id },
+        ] {
+            assert_eq!(d.file_id(), id);
+        }
     }
 }
