@@ -349,6 +349,48 @@ fn test_new_query_json_outputs_are_parseable() {
 }
 
 #[test]
+fn test_policy_validate_map_json_is_parseable() {
+    let dir = tempfile::tempdir().unwrap();
+    let policy = dir.path().join("minimal.voom");
+    let policy_map = dir.path().join("map.toml");
+
+    std::fs::write(
+        &policy,
+        r#"policy "minimal" {
+  phase containerize {
+    container mkv
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        &policy_map,
+        r#"default = "minimal.voom"
+
+[[mapping]]
+prefix = "movies"
+policy = "minimal.voom"
+"#,
+    )
+    .unwrap();
+
+    let json = assert_stdout_is_json(&[
+        "policy",
+        "validate",
+        policy_map.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+
+    assert_eq!(json["valid"], true);
+    assert_eq!(json["policy_count"], 1);
+    assert!(json["policies"].is_array());
+    assert_eq!(json["policies"][0]["policy"], "minimal");
+}
+
+#[test]
 fn test_json_stdout_excludes_human_status_text() {
     let dir = tempfile::tempdir().unwrap();
     assert_no_human_status_on_json_stdout(

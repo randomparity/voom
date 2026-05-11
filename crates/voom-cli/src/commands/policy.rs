@@ -155,7 +155,7 @@ fn list(format: OutputFormat) -> Result<()> {
 fn validate(file: &std::path::Path, format: OutputFormat) -> Result<()> {
     // If the file has a .toml extension, treat it as a policy map.
     if file.extension().is_some_and(|e| e == "toml") {
-        return validate_policy_map(file);
+        return validate_policy_map(file, format);
     }
 
     let file = crate::config::resolve_policy_path(file);
@@ -191,7 +191,7 @@ fn validate(file: &std::path::Path, format: OutputFormat) -> Result<()> {
 }
 
 /// Validate a `.toml` policy map file and all policies it references.
-fn validate_policy_map(file: &std::path::Path) -> Result<()> {
+fn validate_policy_map(file: &std::path::Path, format: OutputFormat) -> Result<()> {
     use crate::policy_map::PolicyResolver;
 
     // Use a dummy root — we only care about compilation, not prefix matching.
@@ -200,6 +200,27 @@ fn validate_policy_map(file: &std::path::Path) -> Result<()> {
         .with_context(|| format!("Policy map validation failed: {}", file.display()))?;
 
     let policies = resolver.policies();
+    if matches!(format, OutputFormat::Json) {
+        let policies: Vec<serde_json::Value> = policies
+            .iter()
+            .map(|(name, compiled)| {
+                serde_json::json!({
+                    "name": name,
+                    "policy": compiled.name,
+                    "phase_count": compiled.phases.len(),
+                    "phase_order": compiled.phase_order,
+                })
+            })
+            .collect();
+        output::print_json(&serde_json::json!({
+            "valid": true,
+            "policy_map": file,
+            "policy_count": policies.len(),
+            "policies": policies,
+        }))?;
+        return Ok(());
+    }
+
     println!(
         "{} Policy map \"{}\" is valid ({} policies)",
         style("OK").bold().green(),
