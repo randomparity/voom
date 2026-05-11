@@ -255,6 +255,22 @@ There is no duplication of side effects. CLI commands never call storage methods
 
 Both commands dispatch `FileDiscovered` events so sqlite-store records files in the `discovered_files` staging table and ffprobe-introspector enqueues introspection jobs. Introspection is still driven directly by the CLI for deterministic progress reporting; the enqueued jobs exist for future daemon-mode use.
 
+### Scan sessions (issue #358, phase 1)
+
+Scan reconciliation runs through three explicit primitives on `FileStorage`:
+`begin_scan_session(roots)`, `ingest_discovered_file(session, file)`, and
+`finish_scan_session(session)`. Per-file ingest makes the file visible in the
+`files` table immediately and stamps `files.last_seen_session_id`. Missing-file
+detection runs only at session finish, marking active files under the session's
+roots whose `last_seen_session_id` is not the finishing session. An interrupted
+session is auto-cancelled when the next `begin_scan_session` runs; no file is
+ever marked missing without a successful `finish`. The legacy
+`reconcile_discovered_files` is a thin wrapper around these primitives, so any
+existing caller continues to work.
+
+See `docs/superpowers/specs/2026-05-11-scan-sessions-design.md` and issue #358
+for the full specification.
+
 ## Data Flow
 
 ```
