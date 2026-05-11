@@ -507,6 +507,10 @@ fn policy_describe_json_reports_file_parent_composition() {
 
     assert_eq!(json["policy"], "child");
     assert_eq!(json["extends_chain"], serde_json::json!([parent]));
+    assert_eq!(
+        json["metadata"]["extends_chain"],
+        serde_json::json!([parent])
+    );
     assert_describe_phase_composition(&json, "containerize", "Inherited", Some(&parent), 0);
     assert_describe_phase_composition(&json, "audio", "Extended", Some(&parent), 1);
     assert_describe_phase_composition(&json, "subtitles", "Overridden", Some(&child_source), 0);
