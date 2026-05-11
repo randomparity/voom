@@ -138,6 +138,36 @@ fn extending_unknown_phase_is_rejected() {
 }
 
 #[test]
+fn inherited_root_policy_with_unresolved_phase_extend_is_rejected() {
+    let dir = tempdir().unwrap();
+    let base = dir.path().join("base.voom");
+    let child = dir.path().join("child.voom");
+    fs::write(
+        &base,
+        r#"policy "base" {
+            phase base {
+                extend
+                keep audio
+            }
+        }"#,
+    )
+    .unwrap();
+    fs::write(
+        &child,
+        r#"policy "child" extends "file://./base.voom" {
+            phase child {
+                keep subtitles
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let err = compile_policy_file(&child).unwrap_err().to_string();
+
+    assert!(err.contains("phase \"base\" uses extend but policy composition was not resolved"));
+}
+
+#[test]
 fn compile_policy_rejects_unresolved_bundled_extends() {
     let err = compile_policy(
         r#"policy "child" extends "anime-base" {

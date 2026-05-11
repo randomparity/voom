@@ -92,6 +92,7 @@ fn resolve_ast(
     stack: &mut Vec<PolicySourceId>,
 ) -> Result<ResolvedPolicyAst, DslPipelineError> {
     let Some(extends) = ast.extends.take() else {
+        reject_unresolved_phase_extends(&ast)?;
         return Ok(ResolvedPolicyAst {
             ast,
             source_id,
@@ -116,6 +117,16 @@ fn resolve_ast(
     };
 
     merge_policy(parent, ast, source_id)
+}
+
+fn reject_unresolved_phase_extends(ast: &PolicyAst) -> Result<(), DslPipelineError> {
+    if let Some(phase) = ast.phases.iter().find(|phase| phase.extend) {
+        return Err(DslPipelineError::Compile(DslError::compile(format!(
+            "phase \"{}\" uses extend but policy composition was not resolved",
+            phase.name
+        ))));
+    }
+    Ok(())
 }
 
 fn merge_policy(
