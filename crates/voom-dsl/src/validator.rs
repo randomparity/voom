@@ -3329,6 +3329,7 @@ mod tests {
             .collect();
         PhaseNode {
             name: name.into(),
+            extend: false,
             skip_when: None,
             depends_on: vec![],
             run_if: None,

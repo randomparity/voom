@@ -1,12 +1,14 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 221
 expression: ast
 ---
 name: clean-convert
+extends: ~
+metadata: ~
 config: ~
 phases:
   - name: clean
+    extend: false
     skip_when: ~
     depends_on: []
     run_if: ~
@@ -49,6 +51,7 @@ phases:
       line: 2
       col: 3
   - name: metadata
+    extend: false
     skip_when: ~
     depends_on:
       - clean

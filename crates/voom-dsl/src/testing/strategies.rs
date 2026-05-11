@@ -625,6 +625,7 @@ fn phase_strategy() -> impl Strategy<Value = PhaseNode> {
         .prop_map(
             |(name, skip_when, depends_on, run_if, operations)| PhaseNode {
                 name,
+                extend: false,
                 skip_when,
                 depends_on,
                 run_if,
@@ -659,6 +660,8 @@ pub fn policy_ast_strategy() -> impl Strategy<Value = PolicyAst> {
     )
         .prop_map(|(name, config, phases)| PolicyAst {
             name,
+            extends: None,
+            metadata: None,
             config,
             phases,
             span: dummy_span(),

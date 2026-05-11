@@ -3,6 +3,8 @@ source: crates/voom-dsl/tests/parser_snapshots.rs
 expression: ast
 ---
 name: speech-transcription-check
+extends: ~
+metadata: ~
 config:
   audio_languages:
     - eng
@@ -19,6 +21,7 @@ config:
     col: 3
 phases:
   - name: classify-speech
+    extend: false
     skip_when: ~
     depends_on: []
     run_if: ~
@@ -97,6 +100,7 @@ phases:
       line: 13
       col: 3
   - name: validate
+    extend: false
     skip_when: ~
     depends_on:
       - classify-speech

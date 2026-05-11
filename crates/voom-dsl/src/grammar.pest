@@ -4,7 +4,19 @@
 WHITESPACE = _{ " " | "\t" | NEWLINE }
 COMMENT    = _{ "//" ~ (!NEWLINE ~ ANY)* }
 
-policy = { SOI ~ "policy" ~ string ~ "{" ~ config? ~ phase+ ~ "}" ~ EOI }
+policy = { SOI ~ "policy" ~ string ~ extends_clause? ~ "{" ~ metadata? ~ config? ~ phase+ ~ "}" ~ EOI }
+extends_clause = { "extends" ~ string }
+
+// Metadata block
+metadata = { "metadata" ~ "{" ~ metadata_item* ~ "}" }
+metadata_item = {
+    "version" ~ ":" ~ string
+  | "author" ~ ":" ~ string
+  | "description" ~ ":" ~ string
+  | "requires_voom" ~ ":" ~ string
+  | "requires_tools" ~ ":" ~ list
+  | "test_fixtures" ~ ":" ~ list
+}
 
 // Config block
 config = { "config" ~ "{" ~ config_item* ~ "}" }
@@ -17,7 +29,8 @@ config_item = {
 lang_target = { "audio" | "subtitle" }
 
 // Phase block
-phase = { "phase" ~ ident ~ "{" ~ phase_item* ~ "}" }
+phase = { "phase" ~ ident ~ "{" ~ phase_extend? ~ phase_item* ~ "}" }
+phase_extend = { "extend" }
 phase_item = {
     skip_when | depends_on | run_if | on_error
   | clear_tags_op | set_tag_op | delete_tag_op

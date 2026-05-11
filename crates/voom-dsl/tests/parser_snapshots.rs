@@ -30,6 +30,47 @@ fn snapshot_config_block() {
 }
 
 #[test]
+fn snapshot_policy_extends_and_phase_extend() {
+    let input = r#"policy "my-anime" extends "anime-base" {
+        metadata {
+            version: "1.2.0"
+            author: "user@example.com"
+            description: "Archive-quality anime preservation"
+            requires_voom: ">=0.5.0"
+            requires_tools: [ffmpeg, mkvmerge, mkvextract]
+            test_fixtures: ["fixtures/anime/"]
+        }
+
+        phase audio {
+            extend
+            synthesize "AC3 5.1" {
+                codec: ac3
+                channels: 5.1
+                source: prefer(channels >= 5.1 and lang == jpn)
+            }
+        }
+    }"#;
+    let ast = parse_policy(input).unwrap();
+    assert_yaml_snapshot!(ast);
+}
+
+#[test]
+fn format_preserves_policy_composition_syntax() {
+    let input = r#"policy "child" extends "file://./base.voom" {
+        metadata { version: "1.0.0" }
+        phase audio { extend keep audio where lang == eng }
+    }"#;
+    let ast = parse_policy(input).unwrap();
+    let formatted = voom_dsl::format_policy(&ast);
+
+    assert!(formatted.contains("policy \"child\" extends \"file://./base.voom\""));
+    assert!(formatted.contains("metadata {"));
+    assert!(formatted.contains("extend"));
+    let reparsed = parse_policy(&formatted).unwrap();
+    assert_eq!(voom_dsl::format_policy(&reparsed), formatted);
+}
+
+#[test]
 fn snapshot_keep_remove_operations() {
     let input = r#"policy "track-ops" {
         phase normalize {

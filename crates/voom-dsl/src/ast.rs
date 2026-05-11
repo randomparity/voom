@@ -33,8 +33,31 @@ impl Span {
 #[derive(Debug, Clone, Serialize)]
 pub struct PolicyAst {
     pub name: String,
+    pub extends: Option<ExtendsSource>,
+    pub metadata: Option<MetadataNode>,
     pub config: Option<ConfigNode>,
     pub phases: Vec<PhaseNode>,
+    pub span: Span,
+}
+
+/// Source of a parent policy extended by this policy.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub enum ExtendsSource {
+    Bundled(String),
+    File(String),
+}
+
+/// Policy metadata block.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize)]
+pub struct MetadataNode {
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub description: Option<String>,
+    pub requires_voom: Option<String>,
+    pub requires_tools: Vec<String>,
+    pub test_fixtures: Vec<String>,
     pub span: Span,
 }
 
@@ -55,6 +78,7 @@ pub struct ConfigNode {
 #[derive(Debug, Clone, Serialize)]
 pub struct PhaseNode {
     pub name: String,
+    pub extend: bool,
     pub skip_when: Option<ConditionNode>,
     pub depends_on: Vec<String>,
     pub run_if: Option<RunIfNode>,

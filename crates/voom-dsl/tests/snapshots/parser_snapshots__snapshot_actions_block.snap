@@ -3,9 +3,12 @@ source: crates/voom-dsl/tests/parser_snapshots.rs
 expression: ast
 ---
 name: actions
+extends: ~
+metadata: ~
 config: ~
 phases:
   - name: normalize
+    extend: false
     skip_when: ~
     depends_on: []
     run_if: ~

@@ -1,12 +1,14 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 172
 expression: ast
 ---
 name: metadata
+extends: ~
+metadata: ~
 config: ~
 phases:
   - name: metadata
+    extend: false
     skip_when: ~
     depends_on: []
     run_if: ~
