@@ -1339,6 +1339,19 @@ mod tests {
         SqliteStore::in_memory().expect("in-memory store")
     }
 
+    /// Return the variant name without exposing inner fields (which carry
+    /// UUIDs that CodeQL's `rust/cleartext-logging` rule mistakenly flags
+    /// when Debug-formatted into panic/assert messages).
+    fn decision_variant(d: &IngestDecision) -> &'static str {
+        match d {
+            IngestDecision::New { .. } => "New",
+            IngestDecision::Unchanged { .. } => "Unchanged",
+            IngestDecision::ExternallyChanged { .. } => "ExternallyChanged",
+            IngestDecision::Moved { .. } => "Moved",
+            IngestDecision::Duplicate { .. } => "Duplicate",
+        }
+    }
+
     fn active_file(path: &str) -> MediaFile {
         let mut file = MediaFile::new(PathBuf::from(path));
         file.content_hash = Some("abc123".to_string());
@@ -2522,7 +2535,7 @@ mod tests {
             } => {
                 assert!(needs_introspection);
             }
-            other => panic!("expected New, got {other:?}"),
+            other => panic!("expected New, got {}", decision_variant(&other)),
         }
 
         // File row created with status=active, last_seen_session_id stamped
@@ -2632,7 +2645,10 @@ mod tests {
                 file_id,
                 superseded,
             } => (file_id, superseded),
-            other => panic!("expected ExternallyChanged, got {other:?}"),
+            other => panic!(
+                "expected ExternallyChanged, got {}",
+                decision_variant(&other)
+            ),
         };
         assert_eq!(superseded, old_id);
         assert_ne!(new_id, old_id);
@@ -2720,7 +2736,7 @@ mod tests {
         let decision = store.ingest_discovered_file(session, &df).unwrap();
         let (file_id, from_path) = match decision {
             IngestDecision::Moved { file_id, from_path } => (file_id, from_path),
-            other => panic!("expected Moved, got {other:?}"),
+            other => panic!("expected Moved, got {}", decision_variant(&other)),
         };
         assert_eq!(file_id, original_id);
         assert_eq!(from_path, PathBuf::from("/movies/old.mkv"));
@@ -2787,7 +2803,11 @@ mod tests {
         assert!(matches!(d1, IngestDecision::Moved { .. }));
         // The first one consumed the missing row by flipping it to active; the second
         // sees no missing match and must be a fresh New row.
-        assert!(matches!(d2, IngestDecision::New { .. }), "got {d2:?}");
+        assert!(
+            matches!(d2, IngestDecision::New { .. }),
+            "got {}",
+            decision_variant(&d2)
+        );
     }
 
     #[test]
@@ -2806,11 +2826,14 @@ mod tests {
 
         let id1 = match d1 {
             IngestDecision::New { file_id, .. } => file_id,
-            other => panic!("expected New first, got {other:?}"),
+            other => panic!("expected New first, got {}", decision_variant(&other)),
         };
         let id2 = match d2 {
             IngestDecision::Duplicate { file_id } => file_id,
-            other => panic!("expected Duplicate second, got {other:?}"),
+            other => panic!(
+                "expected Duplicate second, got {}",
+                decision_variant(&other)
+            ),
         };
         assert_eq!(id1, id2);
 
@@ -3119,7 +3142,8 @@ mod tests {
         let decision = store.ingest_discovered_file(session, &df).unwrap();
         assert!(
             matches!(decision, IngestDecision::New { .. }),
-            "cross-root hash collision must NOT be treated as a move; got {decision:?}",
+            "cross-root hash collision must NOT be treated as a move; got {}",
+            decision_variant(&decision),
         );
 
         // Confirm the TV row is still in its original state.
@@ -3515,7 +3539,10 @@ mod tests {
                     "stub recovery must mark needs_introspection"
                 );
             }
-            other => panic!("expected New (stub recovery), got {other:?}"),
+            other => panic!(
+                "expected New (stub recovery), got {}",
+                decision_variant(&other)
+            ),
         }
 
         let conn = store.conn().unwrap();
@@ -3596,7 +3623,10 @@ mod tests {
             IngestDecision::Moved { from_path, .. } => {
                 assert_eq!(from_path, PathBuf::from("/m/old.mkv"));
             }
-            other => panic!("expected Moved (stub deleted, move detected), got {other:?}"),
+            other => panic!(
+                "expected Moved (stub deleted, move detected), got {}",
+                decision_variant(&other)
+            ),
         }
     }
 
@@ -3721,7 +3751,8 @@ mod tests {
         let decision = store.ingest_discovered_file(session, &df).unwrap();
         assert!(
             matches!(decision, IngestDecision::Unchanged { .. }),
-            "completed-session row must stay Unchanged; got {decision:?}"
+            "completed-session row must stay Unchanged; got {}",
+            decision_variant(&decision)
         );
     }
 
@@ -3868,7 +3899,10 @@ mod tests {
             } => {
                 assert!(needs_introspection);
             }
-            other => panic!("expected New (stub recovery), got {other:?}"),
+            other => panic!(
+                "expected New (stub recovery), got {}",
+                decision_variant(&other)
+            ),
         }
 
         let conn = store.conn().unwrap();

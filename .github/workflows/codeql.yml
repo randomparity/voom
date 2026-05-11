@@ -34,7 +34,6 @@ jobs:
         uses: github/codeql-action/init@68bde559dea0fdcac2102bfdf6230c5f70eb485e  # v4.35.4
         with:
           languages: rust, python
-          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Build Rust workspace
         run: cargo build --workspace
