@@ -593,19 +593,33 @@ impl FileStorage for SqliteStore {
         let tx = conn
             .transaction()
             .map_err(storage_err("failed to begin scan_session transaction"))?;
-        // Auto-abandon: any previously in_progress session is cancelled.
-        let abandoned = tx
-            .execute(
+        // SELECT the IDs before the UPDATE so the warn! log preserves them for
+        // forensic trace (after the UPDATE, those rows no longer match
+        // status='in_progress').
+        let abandoned_ids: Vec<String> = {
+            let mut stmt = tx
+                .prepare("SELECT id FROM scan_sessions WHERE status = 'in_progress'")
+                .map_err(storage_err("failed to prepare prior-session lookup"))?;
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .map_err(storage_err("failed to query prior in_progress sessions"))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(storage_err(
+                    "failed to collect prior in_progress session IDs",
+                ))?
+        };
+        if !abandoned_ids.is_empty() {
+            let abandoned = abandoned_ids.len();
+            tracing::warn!(
+                abandoned,
+                cancelled_ids = ?abandoned_ids,
+                "auto-cancelled stale in_progress scan session(s) at begin",
+            );
+            tx.execute(
                 "UPDATE scan_sessions SET status = 'cancelled', finished_at = ?1 \
                  WHERE status = 'in_progress'",
                 params![now],
             )
             .map_err(storage_err("failed to auto-abandon prior scan sessions"))?;
-        if abandoned > 0 {
-            tracing::warn!(
-                abandoned,
-                "auto-cancelled {abandoned} stale in_progress scan session(s) at begin",
-            );
         }
         tx.execute(
             "INSERT INTO scan_sessions (id, roots_json, status, started_at) \
@@ -2039,6 +2053,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(first_status, "cancelled");
+        let first_finished_at: Option<String> = conn
+            .query_row(
+                "SELECT finished_at FROM scan_sessions WHERE id = ?1",
+                params![first.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            first_finished_at.is_some(),
+            "cancelled session must have finished_at set"
+        );
         let second_status: String = conn
             .query_row(
                 "SELECT status FROM scan_sessions WHERE id = ?1",
