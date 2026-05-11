@@ -111,6 +111,11 @@ fn resolve_ast(
             resolve_bundled_policy(&name, stack)?
         }
         ExtendsSource::File(uri) => {
+            if source_id == PolicySourceId::Inline {
+                return Err(DslPipelineError::Compile(DslError::compile(
+                    "file:// policy extends requires compile_policy_file(path)",
+                )));
+            }
             let path = resolve_file_uri(&uri, base_dir)?;
             resolve_file_path(&path, stack)?
         }

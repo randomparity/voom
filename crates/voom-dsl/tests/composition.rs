@@ -1,6 +1,7 @@
 use std::fs;
 
 use tempfile::tempdir;
+use voom_dsl::compiled::{CompiledOperation, TrackTarget};
 use voom_dsl::{compile_policy, compile_policy_file, compile_policy_with_bundled};
 
 #[test]
@@ -51,7 +52,22 @@ fn phase_extend_appends_operations_and_inherits_controls() {
         .find(|phase| phase.name == "audio")
         .unwrap();
     assert_eq!(audio.depends_on, ["containerize"]);
-    assert!(audio.operations.len() > 1);
+    assert_eq!(audio.operations.len(), 3);
+    assert!(matches!(
+        audio.operations[0],
+        CompiledOperation::Keep {
+            target: TrackTarget::Audio,
+            ..
+        }
+    ));
+    assert!(matches!(
+        audio.operations[1],
+        CompiledOperation::SetDefaults(_)
+    ));
+    let CompiledOperation::Synthesize(synthesize) = &audio.operations[2] else {
+        panic!("expected appended synthesize operation");
+    };
+    assert_eq!(synthesize.name, "AAC Stereo");
 }
 
 #[test]
@@ -184,6 +200,22 @@ fn compile_policy_rejects_unresolved_bundled_extends() {
 }
 
 #[test]
+fn compile_policy_rejects_unresolved_file_extends() {
+    let err = compile_policy(
+        r#"policy "child" extends "file://./base.voom" {
+            phase subtitles {
+                keep subtitles
+            }
+        }"#,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(err.contains("policy extends requires composition resolution"));
+    assert!(err.contains("compile_policy_file(path)"));
+}
+
+#[test]
 fn unsupported_extends_scheme_is_rejected() {
     let err = compile_policy_with_bundled(
         r#"policy "child" extends "registry://x" {
@@ -199,6 +231,28 @@ fn unsupported_extends_scheme_is_rejected() {
 }
 
 #[test]
+fn compile_policy_with_bundled_rejects_absolute_file_extends() {
+    let dir = tempdir().unwrap();
+    let base = dir.path().join("base.voom");
+    fs::write(&base, r#"this file should not be parsed"#).unwrap();
+    let source = format!(
+        r#"policy "child" extends "file://{}" {{
+            phase subtitles {{
+                keep subtitles
+            }}
+        }}"#,
+        base.display()
+    );
+
+    let err = compile_policy_with_bundled(&source)
+        .unwrap_err()
+        .to_string();
+
+    assert!(err.contains("file:// policy extends requires compile_policy_file(path)"));
+    assert!(!err.contains("parse error"));
+}
+
+#[test]
 fn empty_file_extends_uri_is_rejected() {
     let err = compile_policy_with_bundled(
         r#"policy "child" extends "file://" {
@@ -210,7 +264,7 @@ fn empty_file_extends_uri_is_rejected() {
     .unwrap_err()
     .to_string();
 
-    assert!(err.contains("file:// policy extends URI must include a path"));
+    assert!(err.contains("file:// policy extends requires compile_policy_file(path)"));
 }
 
 #[test]
