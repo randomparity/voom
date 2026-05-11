@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use uuid::Uuid;
 
 use crate::bad_file::BadFile;
@@ -202,6 +202,192 @@ impl InMemoryStore {
 impl Default for InMemoryStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// Private helpers for ingest_discovered_file. Kept in a dedicated impl
+// block so they sit alongside the dispatcher without disturbing the
+// builder block above or the trait impls below.
+impl InMemoryStore {
+    /// Validate the session is `InProgress`, bump heartbeat, return the
+    /// session's roots plus a snapshot of all session statuses. Releases
+    /// the sessions lock before returning.
+    fn ingest_validate_session(
+        &self,
+        session: crate::transition::ScanSessionId,
+    ) -> Result<(
+        Vec<std::path::PathBuf>,
+        HashMap<crate::transition::ScanSessionId, crate::transition::ScanSessionStatus>,
+    )> {
+        let mut sessions = self.sessions.lock();
+        let row = sessions.get_mut(&session).ok_or_else(|| {
+            crate::errors::VoomError::Other(format!("unknown scan session {session}").into())
+        })?;
+        if row.status != crate::transition::ScanSessionStatus::InProgress {
+            return Err(crate::errors::VoomError::Other(
+                format!(
+                    "scan session {session} is not in_progress (status: {:?})",
+                    row.status,
+                )
+                .into(),
+            ));
+        }
+        row.last_heartbeat_at = chrono::Utc::now();
+        let roots = row.roots.clone();
+        let statuses: HashMap<
+            crate::transition::ScanSessionId,
+            crate::transition::ScanSessionStatus,
+        > = sessions.iter().map(|(k, v)| (*k, v.status)).collect();
+        Ok((roots, statuses))
+    }
+
+    /// Handle the three existing-row sub-branches: stub recovery (delete
+    /// the row and signal fall-through with `Ok(None)`), unchanged, or
+    /// ExternallyChanged.
+    ///
+    /// Takes ownership of the `last_seen` and `files` guards. On stub
+    /// recovery the helper removes the row from `files`, clears the entry
+    /// in `file_session_affinity`, and drops the upper guards before
+    /// returning `Ok(None)`. The dispatcher then re-acquires `last_seen`
+    /// and `files` in documented lock order before falling through to
+    /// `ingest_handle_no_row`.
+    fn ingest_handle_existing_row(
+        &self,
+        session: crate::transition::ScanSessionId,
+        file: &DiscoveredFile,
+        existing: MediaFile,
+        session_status_snapshot: &HashMap<
+            crate::transition::ScanSessionId,
+            crate::transition::ScanSessionStatus,
+        >,
+        mut last_seen: MutexGuard<
+            '_,
+            HashMap<std::path::PathBuf, crate::transition::ScanSessionId>,
+        >,
+        mut files: MutexGuard<'_, HashMap<Uuid, MediaFile>>,
+    ) -> Result<Option<crate::transition::IngestDecision>> {
+        let affinity_lookup: Option<crate::transition::ScanSessionId> = {
+            let affinity = self.file_session_affinity.lock();
+            affinity.get(&existing.id).copied()
+        };
+        let needs_recovery = match affinity_lookup {
+            Some(prior_session) => !matches!(
+                session_status_snapshot.get(&prior_session),
+                Some(crate::transition::ScanSessionStatus::Completed)
+            ),
+            None => false,
+        };
+
+        let hash_matches = existing
+            .expected_hash
+            .as_ref()
+            .is_none_or(|eh| eh == &file.content_hash);
+
+        if needs_recovery {
+            // Stub from a non-completed session — delete unconditionally
+            // (regardless of hash match), then signal fall-through to the
+            // no-row path.
+            let stub_id = existing.id;
+            files.remove(&stub_id);
+            drop(files);
+            drop(last_seen);
+            self.file_session_affinity.lock().remove(&stub_id);
+            Ok(None)
+        } else if hash_matches {
+            let mut updated = existing;
+            updated.status = FileStatus::Active;
+            if updated.expected_hash.is_none() {
+                updated.expected_hash = Some(file.content_hash.clone());
+            }
+            let id = updated.id;
+            files.insert(updated.id, updated);
+            last_seen.insert(file.path.clone(), session);
+            drop(files);
+            drop(last_seen);
+            self.file_session_affinity.lock().insert(id, session);
+            Ok(Some(crate::transition::IngestDecision::Unchanged {
+                file_id: id,
+            }))
+        } else {
+            let old_id = existing.id;
+            let mut superseded = existing;
+            superseded.status = FileStatus::Missing;
+            files.insert(old_id, superseded);
+
+            let new_id = Uuid::new_v4();
+            files.insert(new_id, fresh_active_file(new_id, file));
+            last_seen.insert(file.path.clone(), session);
+            drop(files);
+            drop(last_seen);
+            self.file_session_affinity.lock().insert(new_id, session);
+            Ok(Some(crate::transition::IngestDecision::ExternallyChanged {
+                file_id: new_id,
+                superseded: old_id,
+            }))
+        }
+    }
+
+    /// Handle the no-row path: move detection by hash+missing-status,
+    /// otherwise insert a new active row.
+    ///
+    /// Takes ownership of the `last_seen` and `files` guards and drops
+    /// them before acquiring the leaf locks `new_in_session` and
+    /// `file_session_affinity`.
+    fn ingest_handle_no_row(
+        &self,
+        session: crate::transition::ScanSessionId,
+        file: &DiscoveredFile,
+        session_roots: &[std::path::PathBuf],
+        mut last_seen: MutexGuard<
+            '_,
+            HashMap<std::path::PathBuf, crate::transition::ScanSessionId>,
+        >,
+        mut files: MutexGuard<'_, HashMap<Uuid, MediaFile>>,
+    ) -> Result<crate::transition::IngestDecision> {
+        // Move detection: constrain to session roots to avoid cross-root
+        // hash-collision false positives.
+        let move_match = files
+            .values()
+            .find(|f| {
+                f.status == FileStatus::Missing
+                    && f.expected_hash.as_deref() == Some(file.content_hash.as_str())
+                    && is_under_any(&f.path, session_roots)
+            })
+            .cloned();
+        if let Some(mut m) = move_match {
+            let from_path = m.path.clone();
+            m.path = file.path.clone();
+            m.status = FileStatus::Active;
+            m.size = file.size;
+            m.content_hash = Some(file.content_hash.clone());
+            let id = m.id;
+            files.insert(id, m);
+            last_seen.insert(file.path.clone(), session);
+            drop(files);
+            drop(last_seen);
+            self.file_session_affinity.lock().insert(id, session);
+            return Ok(crate::transition::IngestDecision::Moved {
+                file_id: id,
+                from_path,
+            });
+        }
+
+        // Truly new file.
+        let new_id = Uuid::new_v4();
+        files.insert(new_id, fresh_active_file(new_id, file));
+        last_seen.insert(file.path.clone(), session);
+        drop(files);
+        drop(last_seen);
+        self.new_in_session
+            .lock()
+            .entry(session)
+            .or_default()
+            .insert(new_id);
+        self.file_session_affinity.lock().insert(new_id, session);
+        Ok(crate::transition::IngestDecision::New {
+            file_id: new_id,
+            needs_introspection: true,
+        })
     }
 }
 
@@ -457,34 +643,10 @@ impl FileStorage for InMemoryStore {
         session: crate::transition::ScanSessionId,
         file: &crate::transition::DiscoveredFile,
     ) -> Result<crate::transition::IngestDecision> {
-        // Step 1: Acquire sessions: validate, bump heartbeat, snapshot roots + statuses.
-        // Lock is released before acquiring last_seen/files (lock order: 1→2→3→4).
-        let (session_roots, session_status_snapshot) = {
-            let mut sessions = self.sessions.lock();
-            let row = sessions.get_mut(&session).ok_or_else(|| {
-                crate::errors::VoomError::Other(format!("unknown scan session {session}").into())
-            })?;
-            if row.status != crate::transition::ScanSessionStatus::InProgress {
-                return Err(crate::errors::VoomError::Other(
-                    format!(
-                        "scan session {session} is not in_progress (status: {:?})",
-                        row.status,
-                    )
-                    .into(),
-                ));
-            }
-            row.last_heartbeat_at = chrono::Utc::now();
-            let roots = row.roots.clone();
-            // Snapshot all session statuses so we can do stub-recovery lookups
-            // without re-acquiring the sessions lock later.
-            let statuses: HashMap<
-                crate::transition::ScanSessionId,
-                crate::transition::ScanSessionStatus,
-            > = sessions.iter().map(|(k, v)| (*k, v.status)).collect();
-            (roots, statuses)
-        };
+        // Step 1: validate session, snapshot statuses (releases sessions lock).
+        let (session_roots, session_status_snapshot) = self.ingest_validate_session(session)?;
 
-        // Step 2: Acquire last_seen, do duplicate fast-path.
+        // Step 2: acquire last_seen, duplicate fast-path.
         let mut last_seen = self.last_seen.lock();
         if last_seen.get(&file.path) == Some(&session) {
             let files = self.files.lock();
@@ -504,124 +666,29 @@ impl FileStorage for InMemoryStore {
             return Ok(crate::transition::IngestDecision::Duplicate { file_id: id });
         }
 
-        // Step 3: Acquire files, do existing-row branches.
+        // Step 3: acquire files, existing-row dispatch.
         let mut files = self.files.lock();
         let existing = files.values().find(|f| f.path == file.path).cloned();
 
-        if let Some(mut existing) = existing {
-            // Look up affinity (lock order: sessions→last_seen→files→file_session_affinity).
-            // We already hold last_seen and files, so we acquire affinity now.
-            let affinity_lookup: Option<crate::transition::ScanSessionId> = {
-                let affinity = self.file_session_affinity.lock();
-                affinity.get(&existing.id).copied()
-            };
-            // Stub recovery: check whether this row was last touched by a
-            // non-completed session. If so, it's a stub from an interrupted scan.
-            let needs_recovery = match affinity_lookup {
-                Some(prior_session) => !matches!(
-                    session_status_snapshot.get(&prior_session),
-                    Some(crate::transition::ScanSessionStatus::Completed)
-                ),
-                None => false,
-            };
-
-            let hash_matches = existing
-                .expected_hash
-                .as_ref()
-                .is_none_or(|eh| eh == &file.content_hash);
-
-            if needs_recovery {
-                // Stub from a non-completed session — delete unconditionally
-                // (regardless of hash match), then fall through to the no-row path.
-                let stub_id = existing.id;
-                files.remove(&stub_id);
-                drop(files);
-                drop(last_seen);
-                self.file_session_affinity.lock().remove(&stub_id);
-                // Re-acquire locks in documented order so the no-row path proceeds normally.
-                last_seen = self.last_seen.lock();
-                files = self.files.lock();
-                // Fall through to no-row path (existing is dropped; files has no entry now).
-            } else if hash_matches {
-                // Unchanged
-                existing.status = FileStatus::Active;
-                if existing.expected_hash.is_none() {
-                    existing.expected_hash = Some(file.content_hash.clone());
-                }
-                let id = existing.id;
-                files.insert(existing.id, existing);
-                last_seen.insert(file.path.clone(), session);
-                drop(files);
-                drop(last_seen);
-                self.file_session_affinity.lock().insert(id, session);
-                return Ok(crate::transition::IngestDecision::Unchanged { file_id: id });
-            } else {
-                // !hash_matches && !needs_recovery: ExternallyChanged
-                let old_id = existing.id;
-                existing.status = FileStatus::Missing;
-                files.insert(old_id, existing);
-
-                let new_id = Uuid::new_v4();
-                files.insert(new_id, fresh_active_file(new_id, file));
-                last_seen.insert(file.path.clone(), session);
-                drop(files);
-                drop(last_seen);
-                self.file_session_affinity.lock().insert(new_id, session);
-                return Ok(crate::transition::IngestDecision::ExternallyChanged {
-                    file_id: new_id,
-                    superseded: old_id,
-                });
+        if let Some(existing) = existing {
+            if let Some(decision) = self.ingest_handle_existing_row(
+                session,
+                file,
+                existing,
+                &session_status_snapshot,
+                last_seen,
+                files,
+            )? {
+                return Ok(decision);
             }
+            // Stub recovery: helper already cleared file_session_affinity and
+            // dropped the upper guards. Re-acquire in documented order.
+            last_seen = self.last_seen.lock();
+            files = self.files.lock();
         }
 
-        // No row at this path (either never existed, or stub was just deleted above).
-        // Check for move via missing+expected_hash match.
-        // Constrain to session roots to avoid cross-root hash-collision false positives.
-        let move_match = files
-            .values()
-            .find(|f| {
-                f.status == FileStatus::Missing
-                    && f.expected_hash.as_deref() == Some(file.content_hash.as_str())
-                    && is_under_any(&f.path, &session_roots)
-            })
-            .cloned();
-        if let Some(mut m) = move_match {
-            let from_path = m.path.clone();
-            m.path = file.path.clone();
-            m.status = FileStatus::Active;
-            m.size = file.size;
-            m.content_hash = Some(file.content_hash.clone());
-            let id = m.id;
-            files.insert(id, m);
-            last_seen.insert(file.path.clone(), session);
-            drop(files);
-            drop(last_seen);
-            self.file_session_affinity.lock().insert(id, session);
-            return Ok(crate::transition::IngestDecision::Moved {
-                file_id: id,
-                from_path,
-            });
-        }
-
-        // Truly new
-        let new_id = Uuid::new_v4();
-        files.insert(new_id, fresh_active_file(new_id, file));
-        last_seen.insert(file.path.clone(), session);
-        // Release other locks before acquiring new_in_session and affinity
-        // (preserve lock order — these are both isolation-only locks).
-        drop(files);
-        drop(last_seen);
-        // Track this file ID as new in the session for move-promotion at finish time.
-        self.new_in_session
-            .lock()
-            .entry(session)
-            .or_default()
-            .insert(new_id);
-        self.file_session_affinity.lock().insert(new_id, session);
-        Ok(crate::transition::IngestDecision::New {
-            file_id: new_id,
-            needs_introspection: true,
-        })
+        // Step 4: no-row path.
+        self.ingest_handle_no_row(session, file, &session_roots, last_seen, files)
     }
 
     fn finish_scan_session(
