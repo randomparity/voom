@@ -717,6 +717,13 @@ impl FileStorage for SqliteStore {
             }
         }
 
+        // Bump heartbeat as part of this ingest transaction.
+        tx.execute(
+            "UPDATE scan_sessions SET last_heartbeat_at = ?1 WHERE id = ?2",
+            params![&now, &session_str],
+        )
+        .map_err(storage_err("failed to bump scan session heartbeat"))?;
+
         // Look up existing row by path
         let existing: Option<(String, Option<String>, i64, Option<String>)> = tx
             .query_row(
@@ -1177,7 +1184,9 @@ impl FileStorage for SqliteStore {
         }
 
         tx.execute(
-            "UPDATE scan_sessions SET status = 'completed', finished_at = ?1 WHERE id = ?2",
+            "UPDATE scan_sessions SET status = 'completed', finished_at = ?1, \
+             last_heartbeat_at = ?1 \
+             WHERE id = ?2",
             params![&now, &session_str],
         )
         .map_err(storage_err("failed to mark session completed"))?;
@@ -1195,7 +1204,7 @@ impl FileStorage for SqliteStore {
         let now = format_datetime(&Utc::now());
         conn.execute(
             "UPDATE scan_sessions \
-             SET status = 'cancelled', finished_at = ?1 \
+             SET status = 'cancelled', finished_at = ?1, last_heartbeat_at = ?1 \
              WHERE id = ?2 AND status = 'in_progress'",
             params![now, session.to_string()],
         )
@@ -3290,5 +3299,100 @@ mod tests {
             )
             .unwrap();
         assert_eq!(live_status, "in_progress");
+    }
+
+    #[test]
+    fn ingest_bumps_heartbeat() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+
+        let before: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-a".to_string());
+        store.ingest_discovered_file(session, &df).unwrap();
+
+        let after: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert!(
+            after > before,
+            "heartbeat must advance after ingest; before={before} after={after}"
+        );
+    }
+
+    #[test]
+    fn finish_bumps_heartbeat() {
+        use std::path::PathBuf;
+        let store = test_store();
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let before: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        store.finish_scan_session(session).unwrap();
+        let after: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(after > before);
+    }
+
+    #[test]
+    fn cancel_bumps_heartbeat() {
+        use std::path::PathBuf;
+        let store = test_store();
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let before: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        store.cancel_scan_session(session).unwrap();
+        let after: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(after > before);
     }
 }
