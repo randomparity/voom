@@ -18,6 +18,8 @@ voom [OPTIONS] <COMMAND>
 Verbosity can also be controlled via the `RUST_LOG` environment variable (e.g., `RUST_LOG=debug`).
 
 Output formats accept `table`, `json`, `plain`, or `csv` where applicable.
+When a machine-readable format is requested, stdout contains only that format;
+progress, warnings, status notes, and deprecation notices are written to stderr.
 
 ---
 
@@ -168,7 +170,7 @@ Policy file management.
 List all loaded policies.
 
 ```bash
-voom policy list
+voom policy list [--format table|json]
 ```
 
 #### `voom policy validate`
@@ -176,7 +178,7 @@ voom policy list
 Validate a policy file for syntax and semantic errors.
 
 ```
-voom policy validate <FILE>
+voom policy validate <FILE> [--format table|json]
 ```
 
 Reports errors with source locations and suggestions (e.g., "Unknown codec 'h256'. Did you mean 'h265'?").
@@ -186,7 +188,7 @@ Reports errors with source locations and suggestions (e.g., "Unknown codec 'h256
 Show the compiled form of a policy.
 
 ```
-voom policy show <FILE>
+voom policy show <FILE> [--format table|json]
 ```
 
 #### `voom policy format`
@@ -202,16 +204,26 @@ voom policy format <FILE>
 Compare two compiled policies side by side.
 
 ```
-voom policy diff <A> <B>
+voom policy diff <A> <B> [--fixture <JSON>] [--format table|json]
+```
+
+#### `voom policy test`
+
+Run JSON policy test suites.
+
+```
+voom policy test [PATHS]... [--policy <FILE>] [--update] [--format table|json]
 ```
 
 **Examples:**
 
 ```bash
 voom policy validate my-policy.voom
+voom policy validate my-policy.voom --format json
 voom policy format my-policy.voom
-voom policy show my-policy.voom
+voom policy show my-policy.voom --format json
 voom policy diff old-policy.voom new-policy.voom
+voom policy test docs/examples/tests --format json
 ```
 
 ---
@@ -225,7 +237,7 @@ Plugin management.
 List all registered plugins (native and WASM) with their status and capabilities.
 
 ```bash
-voom plugin list
+voom plugin list [--format table|json]
 ```
 
 #### `voom plugin info`
@@ -233,7 +245,7 @@ voom plugin list
 Show detailed information about a plugin.
 
 ```
-voom plugin info <NAME>
+voom plugin info <NAME> [--format table|json]
 ```
 
 #### `voom plugin enable` / `voom plugin disable`
@@ -274,6 +286,7 @@ voom jobs list [OPTIONS]
 | `--status <STATUS>` | *none* | Filter by status |
 | `-n`, `--limit <N>` | `50` | Maximum number of jobs to display |
 | `--offset <N>` | `0` | Number of jobs to skip |
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table` or `json` |
 
 Status values: `pending`, `running`, `completed`, `failed`, `cancelled`.
 
@@ -282,7 +295,7 @@ Status values: `pending`, `running`, `completed`, `failed`, `cancelled`.
 Show details for a specific job.
 
 ```
-voom jobs status <ID>
+voom jobs status <ID> [--format table|json]
 ```
 
 #### `voom jobs cancel`
@@ -314,6 +327,13 @@ voom jobs clear [OPTIONS]
 | `--status <STATUS>` | *none* | Only delete jobs with this status |
 | `--yes` | `false` | Skip confirmation prompt |
 
+**Examples:**
+
+```bash
+voom jobs list --format json
+voom jobs status <ID> --format json
+```
+
 ---
 
 ### `voom report`
@@ -340,6 +360,8 @@ voom report [OPTIONS]
 | `--integrity` | `false` | Show aggregate verification and integrity counts |
 | `--loudness` | `false` | Show aggregate audio LUFS and true-peak measurements |
 
+`--format json` replaces the old `--json` flag.
+
 `voom report --integrity` reports aggregate counts for total files, never verified files,
 stale files using a 30-day cutoff, files with errors, files with warnings, and hash
 mismatches. The integrity summary supports `table`, `json`, `plain`, and `csv` formats
@@ -348,6 +370,13 @@ through `--format`.
 `voom report --loudness` reports measured audio tracks, average integrated LUFS,
 average true peak, and files outside the -23 LUFS broadcast target by more than
 0.5 LUFS. Use it after running a policy with `normalize`.
+
+**Examples:**
+
+```bash
+voom report --format json
+voom report --errors --session <UUID> --format json
+```
 
 ---
 
@@ -478,6 +507,7 @@ Run live environment checks. Verifies:
 
 ```bash
 voom env check
+voom env check --format json
 ```
 
 When `[plugin.backup-manager].destinations` is configured, the check reports
@@ -610,7 +640,7 @@ Configuration management.
 Display the current configuration.
 
 ```bash
-voom config show
+voom config show [--format table|json]
 ```
 
 #### `voom config edit`
@@ -626,13 +656,14 @@ voom config edit
 Get a configuration value by dot-notation key.
 
 ```
-voom config get <KEY>
+voom config get <KEY> [--format table|json]
 ```
 
 **Examples:**
 
 ```bash
 voom config get auth_token
+voom config get auth_token --format json
 voom config get plugin.ffmpeg-executor.hw_accel
 voom config get plugin.ffmpeg-executor.nvenc_max_parallel
 ```
