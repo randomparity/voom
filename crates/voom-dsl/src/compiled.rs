@@ -75,6 +75,7 @@ impl<'de> Deserialize<'de> for CompiledRegex {
 #[non_exhaustive]
 pub struct CompiledPolicy {
     pub name: String,
+    #[serde(default)]
     pub metadata: CompiledMetadata,
     pub config: CompiledConfig,
     pub phases: Vec<CompiledPhase>,
@@ -168,6 +169,7 @@ pub struct CompiledPhase {
     pub skip_when: Option<CompiledCondition>,
     pub run_if: Option<CompiledRunIf>,
     pub on_error: ErrorStrategy,
+    #[serde(default)]
     pub composition: CompiledPhaseComposition,
     pub operations: Vec<CompiledOperation>,
 }
@@ -177,8 +179,25 @@ pub struct CompiledPhase {
 #[non_exhaustive]
 pub struct CompiledPhaseComposition {
     pub kind: PhaseCompositionKind,
+    /// The policy source that supplied the inherited parent phase.
+    ///
+    /// `Inherited` and `Extended` point at the parent policy source. `Overridden`
+    /// points at the source that replaced the parent phase. `Local` has no source.
     pub source: Option<String>,
+    /// Number of child operations appended to an inherited phase during `extend`.
+    ///
+    /// This is non-zero only for `Extended` phases.
     pub added_operations: usize,
+}
+
+impl Default for CompiledPhaseComposition {
+    fn default() -> Self {
+        Self {
+            kind: PhaseCompositionKind::Local,
+            source: None,
+            added_operations: 0,
+        }
+    }
 }
 
 /// How a compiled phase was produced during policy composition.

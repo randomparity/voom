@@ -1,7 +1,8 @@
 use std::fs;
 
+use serde_json::json;
 use tempfile::tempdir;
-use voom_dsl::compiled::{CompiledOperation, TrackTarget};
+use voom_dsl::compiled::{CompiledOperation, CompiledPolicy, TrackTarget};
 use voom_dsl::{compile_policy, compile_policy_file, compile_policy_with_bundled};
 
 #[test]
@@ -58,25 +59,70 @@ fn phase_composition_is_serialized_for_describe() {
     )
     .unwrap();
 
-    let audio = policy
-        .phases
-        .iter()
-        .find(|phase| phase.name == "audio")
-        .unwrap();
-    let subtitles = policy
-        .phases
-        .iter()
-        .find(|phase| phase.name == "subtitles")
-        .unwrap();
+    let value = serde_json::to_value(&policy).unwrap();
+    assert_phase_composition_json(&value, "containerize", "Inherited", Some("anime-base"), 0);
+    assert_phase_composition_json(&value, "audio", "Extended", Some("anime-base"), 1);
+    assert_phase_composition_json(&value, "subtitles", "Overridden", Some("inline"), 0);
 
-    assert!(matches!(
-        audio.composition.kind,
-        voom_dsl::compiled::PhaseCompositionKind::Extended
-    ));
-    assert!(matches!(
-        subtitles.composition.kind,
-        voom_dsl::compiled::PhaseCompositionKind::Overridden
-    ));
+    let local_policy = compile_policy(
+        r#"policy "standalone" {
+            phase local { keep audio }
+        }"#,
+    )
+    .unwrap();
+    let local_value = serde_json::to_value(&local_policy).unwrap();
+    assert_phase_composition_json(&local_value, "local", "Local", None, 0);
+}
+
+#[test]
+fn old_compiled_json_defaults_metadata_and_phase_composition() {
+    let policy: CompiledPolicy = serde_json::from_value(json!({
+        "name": "legacy",
+        "config": {
+            "audio_languages": [],
+            "subtitle_languages": [],
+            "on_error": "Abort",
+            "commentary_patterns": [],
+            "keep_backups": false
+        },
+        "phases": [{
+            "name": "local",
+            "depends_on": [],
+            "skip_when": null,
+            "run_if": null,
+            "on_error": "Abort",
+            "operations": []
+        }],
+        "phase_order": ["local"],
+        "source_hash": "abc"
+    }))
+    .unwrap();
+
+    assert!(policy.metadata.extends_chain.is_empty());
+    let phase = policy.phases.first().unwrap();
+    assert_eq!(
+        phase.composition.kind,
+        voom_dsl::compiled::PhaseCompositionKind::Local
+    );
+    assert_eq!(phase.composition.source, None);
+    assert_eq!(phase.composition.added_operations, 0);
+}
+
+fn assert_phase_composition_json(
+    policy: &serde_json::Value,
+    name: &str,
+    kind: &str,
+    source: Option<&str>,
+    added_operations: usize,
+) {
+    let phases = policy["phases"].as_array().unwrap();
+    let phase = phases
+        .iter()
+        .find(|phase| phase["name"] == name)
+        .unwrap_or_else(|| panic!("missing phase {name}"));
+    assert_eq!(phase["composition"]["kind"], kind);
+    assert_eq!(phase["composition"]["source"], json!(source));
+    assert_eq!(phase["composition"]["added_operations"], added_operations);
 }
 
 #[test]
