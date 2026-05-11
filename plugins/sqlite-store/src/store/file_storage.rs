@@ -694,12 +694,47 @@ impl FileStorage for SqliteStore {
             .optional()
             .map_err(storage_err("failed to look up existing file"))?;
 
-        if existing.is_some() {
-            // Unchanged / ExternallyChanged / Duplicate are implemented in later tasks.
+        if let Some((existing_id, expected_hash, _existing_size, _last_seen)) = existing {
+            // Check for content match (Unchanged) vs hash mismatch (ExternallyChanged).
+            // ExternallyChanged is implemented in the next task.
+            let hash_matches = expected_hash
+                .as_ref()
+                .is_none_or(|eh| eh == &file.content_hash);
+
+            if hash_matches {
+                tx.execute(
+                    "UPDATE files SET size = ?1, content_hash = ?2, \
+                     status = 'active', missing_since = NULL, \
+                     last_seen_session_id = ?3, \
+                     updated_at = ?4 WHERE id = ?5",
+                    params![
+                        file.size as i64,
+                        &file.content_hash,
+                        &session_str,
+                        &now,
+                        &existing_id
+                    ],
+                )
+                .map_err(storage_err("failed to update unchanged file"))?;
+
+                if expected_hash.is_none() {
+                    tx.execute(
+                        "UPDATE files SET expected_hash = ?1 WHERE id = ?2",
+                        params![&file.content_hash, &existing_id],
+                    )
+                    .map_err(storage_err("failed to backfill expected_hash"))?;
+                }
+
+                tx.commit()
+                    .map_err(storage_err("failed to commit unchanged ingest"))?;
+                let file_uuid = super::parse_uuid(&existing_id)?;
+                return Ok(IngestDecision::Unchanged { file_id: file_uuid });
+            }
+
+            // ExternallyChanged — next task
             return Err(voom_domain::errors::VoomError::Other(
                 format!(
-                    "ingest_discovered_file existing-path branches not yet implemented \
-                     for {path_str}"
+                    "ingest_discovered_file ExternallyChanged not yet implemented for {path_str}"
                 )
                 .into(),
             ));
@@ -2425,5 +2460,56 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tx_count, 1);
+    }
+
+    #[test]
+    fn ingest_unchanged_file_stamps_session_and_backfills_expected_hash() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        // Seed an existing file with NULL expected_hash
+        let mut f = active_file("/movies/a.mkv");
+        f.expected_hash = None;
+        // Make sure content_hash matches what we'll ingest
+        f.content_hash = Some("h-a".to_string());
+        store.upsert_file(&f).unwrap();
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), f.size, "h-a".to_string());
+
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+        assert!(matches!(decision, IngestDecision::Unchanged { .. }));
+
+        let conn = store.conn().unwrap();
+        let (expected_hash, last_seen): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT expected_hash, last_seen_session_id FROM files WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            expected_hash.as_deref(),
+            Some("h-a"),
+            "expected_hash should be backfilled"
+        );
+        assert_eq!(
+            last_seen.as_deref(),
+            Some(session.to_string().as_str()),
+            "last_seen_session_id should be stamped"
+        );
+
+        // No new transition row for unchanged
+        let tx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tx_count, 0, "unchanged should not create transitions");
     }
 }
