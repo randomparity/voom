@@ -474,8 +474,7 @@ fn policy_describe_reports_extended_phase() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Extends: anime-base"))
-        .stdout(predicate::str::contains("audio"))
-        .stdout(predicate::str::contains("extended"));
+        .stdout(predicate::str::contains("extended from anime-base"));
 }
 
 #[test]
@@ -501,21 +500,8 @@ fn policy_describe_json_reports_file_parent_composition() {
     )
     .unwrap();
 
-    let output = voom()
-        .args([
-            "policy",
-            "describe",
-            child.to_str().unwrap(),
-            "--format",
-            "json",
-        ])
-        .assert()
-        .success()
-        .get_output()
-        .clone();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|error| panic!("stdout was not valid JSON: {error}\nstdout:\n{stdout}"));
+    let child_arg = child.to_str().unwrap();
+    let json = assert_stdout_is_json(&["policy", "describe", child_arg, "--format", "json"]);
     let parent = std::fs::canonicalize(&base).unwrap().display().to_string();
     let child_source = std::fs::canonicalize(&child).unwrap().display().to_string();
 
@@ -555,7 +541,7 @@ fn assert_describe_phase_composition(
 ) {
     let phase = value["phases"]
         .as_array()
-        .unwrap()
+        .unwrap_or_else(|| panic!("describe output missing phases array: {value}"))
         .iter()
         .find(|phase| phase["name"] == name)
         .unwrap_or_else(|| panic!("missing describe phase {name:?}: {value}"));
