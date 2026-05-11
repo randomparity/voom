@@ -9,7 +9,7 @@ use voom_policy_testing::{
     CapabilityFixture, Fixture, SnapshotOutcome, TestSuite, assert_snapshot_file,
 };
 
-use crate::cli::{PolicyCommands, PolicyFixtureCommands};
+use crate::cli::{OutputFormat, PolicyCommands, PolicyFixtureCommands};
 
 pub async fn run(cmd: PolicyCommands) -> Result<()> {
     match cmd {
@@ -23,8 +23,8 @@ pub async fn run(cmd: PolicyCommands) -> Result<()> {
             paths,
             policy,
             update,
-            json,
-        } => test(&paths, policy.as_deref(), update, json),
+            format,
+        } => test(&paths, policy.as_deref(), update, format),
     }
 }
 
@@ -296,7 +296,12 @@ fn diff(a: &std::path::Path, b: &std::path::Path, fixture: Option<&std::path::Pa
     Ok(())
 }
 
-fn test(paths: &[PathBuf], policy_override: Option<&Path>, update: bool, json: bool) -> Result<()> {
+fn test(
+    paths: &[PathBuf],
+    policy_override: Option<&Path>,
+    update: bool,
+    format: OutputFormat,
+) -> Result<()> {
     let suites = discover_test_suites(paths)?;
     if suites.is_empty() {
         bail!("no *.test.json files found");
@@ -311,7 +316,7 @@ fn test(paths: &[PathBuf], policy_override: Option<&Path>, update: bool, json: b
     }
 
     let output = TestOutput::from_cases(cases, snapshots_updated);
-    if json {
+    if matches!(format, OutputFormat::Json) {
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         print_human_test_output(&output);

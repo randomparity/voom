@@ -318,7 +318,7 @@ fn test_existing_json_outputs_are_parseable() {
     let tools = assert_stdout_is_json(&["tools", "list", "--format", "json"]);
     assert!(tools.is_array());
 
-    let env = assert_stdout_is_json(&["env", "check", "--json"]);
+    let env = assert_stdout_is_json(&["env", "check", "--format", "json"]);
     assert!(env.get("passed").is_some());
     assert!(env.get("issue_count").is_some());
 }
@@ -438,7 +438,7 @@ fn test_policy_test_json_reports_failures_and_exits_one() {
     let suite = write_policy_test_suite(tmp.path(), "missing");
 
     let output = voom()
-        .args(["policy", "test", "--json", suite.to_str().unwrap()])
+        .args(["policy", "test", "--format", "json", suite.to_str().unwrap()])
         .assert()
         .failure()
         .get_output()

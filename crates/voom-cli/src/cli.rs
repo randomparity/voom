@@ -346,9 +346,9 @@ pub enum PolicyCommands {
         /// Update snapshot expectations (not available until snapshot mode lands)
         #[arg(long)]
         update: bool,
-        /// Emit machine-readable JSON output
-        #[arg(long)]
-        json: bool,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
     },
 }
 
@@ -439,12 +439,8 @@ pub enum JobsCommands {
 #[derive(clap::Args)]
 pub struct ReportArgs {
     /// Output format (auto-detected: table for TTY, json for pipe)
-    #[arg(short, long, default_value = "table", conflicts_with = "json")]
+    #[arg(short, long, default_value = "table")]
     pub format: OutputFormat,
-
-    /// Emit JSON output
-    #[arg(long)]
-    pub json: bool,
 
     /// Show full library statistics
     #[arg(long)]
@@ -891,11 +887,8 @@ pub enum EnvCommands {
     /// Run live environment checks
     Check {
         /// Output format
-        #[arg(short, long, default_value = "table", conflicts_with = "json")]
+        #[arg(short, long, default_value = "table")]
         format: OutputFormat,
-        /// Emit JSON output
-        #[arg(long)]
-        json: bool,
     },
     /// Show environment check history from the database
     History {
@@ -1448,12 +1441,12 @@ mod tests {
                 paths,
                 policy,
                 update,
-                json,
+                format,
             }) => {
                 assert_eq!(paths, vec![PathBuf::from(".")]);
                 assert_eq!(policy, None);
                 assert!(!update);
-                assert!(!json);
+                assert!(matches!(format, OutputFormat::Table));
             }
             _ => panic!("expected Policy Test"),
         }
@@ -1470,14 +1463,15 @@ mod tests {
             "--policy",
             "override.voom",
             "--update",
-            "--json",
+            "--format",
+            "json",
         ]);
         match cli.command {
             Commands::Policy(PolicyCommands::Test {
                 paths,
                 policy,
                 update,
-                json,
+                format,
             }) => {
                 assert_eq!(
                     paths,
@@ -1488,10 +1482,15 @@ mod tests {
                 );
                 assert_eq!(policy, Some(PathBuf::from("override.voom")));
                 assert!(update);
-                assert!(json);
+                assert!(matches!(format, OutputFormat::Json));
             }
             _ => panic!("expected Policy Test"),
         }
+    }
+
+    #[test]
+    fn test_policy_test_rejects_json_alias() {
+        assert!(try_parse(&["voom", "policy", "test", "--json"]).is_err());
     }
 
     // ── Plugin subcommands ───────────────────────────────────
@@ -1666,6 +1665,11 @@ mod tests {
             Commands::Report(args) => assert!(matches!(args.format, OutputFormat::Json)),
             _ => panic!("expected Report"),
         }
+    }
+
+    #[test]
+    fn test_report_rejects_json_alias() {
+        assert!(try_parse(&["voom", "report", "--json"]).is_err());
     }
 
     // ── Serve ────────────────────────────────────────────────
@@ -1913,9 +1917,8 @@ mod tests {
     fn test_env_check() {
         let cli = parse(&["voom", "env", "check"]);
         match cli.command {
-            Commands::Env(EnvCommands::Check { format, json }) => {
+            Commands::Env(EnvCommands::Check { format }) => {
                 assert!(matches!(format, OutputFormat::Table));
-                assert!(!json);
             }
             _ => panic!("expected Env Check"),
         }
@@ -1925,24 +1928,16 @@ mod tests {
     fn test_env_check_json_format() {
         let cli = parse(&["voom", "env", "check", "--format", "json"]);
         match cli.command {
-            Commands::Env(EnvCommands::Check { format, json }) => {
+            Commands::Env(EnvCommands::Check { format }) => {
                 assert!(matches!(format, OutputFormat::Json));
-                assert!(!json);
             }
             _ => panic!("expected Env Check"),
         }
     }
 
     #[test]
-    fn test_env_check_json_alias() {
-        let cli = parse(&["voom", "env", "check", "--json"]);
-        match cli.command {
-            Commands::Env(EnvCommands::Check { format, json }) => {
-                assert!(matches!(format, OutputFormat::Table));
-                assert!(json);
-            }
-            _ => panic!("expected Env Check"),
-        }
+    fn test_env_check_rejects_json_alias() {
+        assert!(try_parse(&["voom", "env", "check", "--json"]).is_err());
     }
 
     #[test]

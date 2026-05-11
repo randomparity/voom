@@ -27,7 +27,7 @@ agent-friendly output work. It should be updated as phases land.
 | `policy format` | yes | no | no | n/a | no | file-editing command |
 | `policy diff` | no | no | no | n/a | no | human diff only |
 | `policy fixture extract` | no | no | yes | n/a | no | always JSON today |
-| `policy test` | no | `--json` boolean | yes | summary object | no | should move to `--format json` |
+| `policy test` | no | yes | yes | summary object | no | uses `--format json` |
 | `plugin list` | no | no | no | n/a | no | human-only |
 | `plugin info` | no | no | no | n/a | no | human-only |
 | `plugin enable` | config | no | no | n/a | no | status text |
@@ -38,15 +38,15 @@ agent-friendly output work. It should be updated as phases land.
 | `jobs cancel` | yes | no | no | n/a | no | status text |
 | `jobs retry` | yes | no | no | n/a | no | status text |
 | `jobs clear` | yes | no | no | n/a | yes | command/global yes paths need coverage |
-| `report` | no, except `--snapshot` | `--format` plus `--json` | yes | object/arrays by section | no | mixed section output |
+| `report` | no, except `--snapshot` | yes | yes | object/arrays by section | no | mixed section output |
 | `files list` | no | yes | yes | `[]` | no | query command |
 | `files show` | no | yes | yes | n/a | no | query command |
 | `files delete` | yes | no | no | n/a | yes | global yes path should be covered |
 | `plans show` | no | yes | yes | `[]` | no | query command |
 | `events` | no | yes | yes | `[]` | no | follow mode streams JSON lines |
-| `env check` | yes, stores checks | `--format` plus `--json` | yes | status object | no | should move to `--format json` |
+| `env check` | yes, stores checks | yes | yes | status object | no | uses `--format json` |
 | `env history` | no | yes | yes | `[]` | no | query command |
-| `health` | yes, deprecated alias | `--format` plus `--json` | yes | status object | no | deprecation warning on stderr |
+| `health` | yes, deprecated alias | yes | yes | status object | no | deprecation warning on stderr |
 | `doctor` | yes, deprecated alias | no | no | n/a | no | deprecation warning on stderr |
 | `serve` | no | no | no | n/a | no | long-running server command |
 | `db prune` | yes | no | no | n/a | no | has dry-run |
@@ -78,6 +78,6 @@ agent-friendly output work. It should be updated as phases land.
 The initial contract tests cover:
 
 - Existing JSON stdout parses for `scan --format json`, `tools list --format
-  json`, and `env check --json`.
+  json`, and `env check --format json`.
 - JSON stdout excludes representative human status text.
 - Human scan status is emitted on stderr for table/human output.

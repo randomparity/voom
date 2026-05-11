@@ -110,10 +110,7 @@ mod retention_coverage {
 /// Dispatch environment diagnostic subcommands.
 pub fn run(cmd: EnvCommands) -> Result<()> {
     match cmd {
-        EnvCommands::Check { format, json } => {
-            let format = if json { OutputFormat::Json } else { format };
-            check(format)
-        }
+        EnvCommands::Check { format } => check(format),
         EnvCommands::History {
             check,
             since,
