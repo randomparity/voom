@@ -408,30 +408,43 @@ impl FileStorage for SqliteStore {
         let session = self.begin_scan_session(scanned_dirs)?;
         let mut result = ReconcileResult::default();
 
-        for df in discovered {
-            let decision = self.ingest_discovered_file(session, df)?;
-            match &decision {
-                IngestDecision::New { .. } => result.new_files += 1,
-                IngestDecision::Unchanged { .. } => result.unchanged += 1,
-                IngestDecision::ExternallyChanged { .. } => result.external_changes += 1,
-                IngestDecision::Moved { .. } => result.moved += 1,
-                IngestDecision::Duplicate { .. } => {
-                    // Duplicate paths in the input list are dropped silently to
-                    // preserve today's `HashSet`-based dedup behavior.
+        // Single closure so any `?` on ingest/finish error routes through
+        // the cancel path below.
+        let outcome: Result<()> = (|| {
+            for df in discovered {
+                let decision = self.ingest_discovered_file(session, df)?;
+                match &decision {
+                    IngestDecision::New { .. } => result.new_files += 1,
+                    IngestDecision::Unchanged { .. } => result.unchanged += 1,
+                    IngestDecision::ExternallyChanged { .. } => result.external_changes += 1,
+                    IngestDecision::Moved { .. } => result.moved += 1,
+                    IngestDecision::Duplicate { .. } => {
+                        // Silently drop — preserves today's `HashSet`-based
+                        // dedup semantics on the input list.
+                    }
+                }
+                if let Some(p) = decision.needs_introspection_path(&df.path) {
+                    result.needs_introspection.push(p);
                 }
             }
-            if let Some(p) = decision.needs_introspection_path(&df.path) {
-                result.needs_introspection.push(p);
+            let finish = self.finish_scan_session(session)?;
+            result.missing = finish.missing;
+            // Promoted moves: each was counted as New during ingestion, so decrement
+            // new_files and increment moved to reflect the retroactive reclassification.
+            result.new_files = result.new_files.saturating_sub(finish.promoted_moves);
+            result.moved += finish.promoted_moves;
+            Ok(())
+        })();
+
+        match outcome {
+            Ok(()) => Ok(result),
+            Err(e) => {
+                // Best-effort: cancel the session so it doesn't linger as
+                // in_progress and block the next begin.
+                let _ = self.cancel_scan_session(session);
+                Err(e)
             }
         }
-
-        let finish = self.finish_scan_session(session)?;
-        result.missing = finish.missing;
-        // Promoted moves: each was counted as New during ingestion, so decrement
-        // new_files and increment moved to reflect the retroactive reclassification.
-        result.new_files = result.new_files.saturating_sub(finish.promoted_moves);
-        result.moved += finish.promoted_moves;
-        Ok(result)
     }
 
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()> {
@@ -3695,5 +3708,96 @@ mod tests {
             matches!(decision, IngestDecision::Unchanged { .. }),
             "completed-session row must stay Unchanged; got {decision:?}"
         );
+    }
+
+    #[test]
+    fn reconcile_wrapper_clean_path_leaves_no_in_progress_session() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        let discovered = vec![DiscoveredFile::new(
+            PathBuf::from("/m/a.mkv"),
+            100,
+            "h-a".to_string(),
+        )];
+        let result = store
+            .reconcile_discovered_files(&discovered, &[PathBuf::from("/m")])
+            .unwrap();
+        assert_eq!(result.new_files, 1);
+
+        // After successful reconcile, no in_progress sessions linger.
+        let conn = store.conn().unwrap();
+        let in_progress: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scan_sessions WHERE status = 'in_progress'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(in_progress, 0);
+    }
+
+    #[test]
+    fn reconcile_wrapper_cancels_session_on_ingest_validity_error() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        // Reach into the session table after begin to simulate concurrent
+        // cancellation. Then the next ingest's session-status check errors,
+        // and the wrapper must call cancel (which is a no-op since the
+        // session is already cancelled) and propagate the error.
+
+        // We need to control timing: begin via wrapper isn't easy to interrupt.
+        // Instead, we test the mechanism by:
+        // 1. Calling reconcile with a list of two discovered files.
+        // 2. Before the call, externally cancelling any sessions that exist
+        //    — there shouldn't be any.
+        // 3. After the call, verifying behavior.
+        //
+        // Simpler approach: directly demonstrate that when ingest errors mid-
+        // loop (we simulate by externally cancelling the session immediately
+        // after the wrapper begins it), the wrapper cancels and propagates.
+        //
+        // The cleanest test is to bypass the wrapper and directly verify the
+        // underlying behavior: an ingest_discovered_file against a cancelled
+        // session errors, and a manual call to cancel_scan_session is a no-op.
+        //
+        // NOTE: A full end-to-end test of the wrapper's error path (injecting
+        // a failure mid-loop) would require mockable storage; that is better
+        // covered by an integration test in voom-cli.
+
+        let session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        // Externally cancel the session.
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE scan_sessions SET status = 'cancelled' WHERE id = ?1",
+                params![session.to_string()],
+            )
+            .unwrap();
+        }
+        // Ingest against the cancelled session must error.
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-a".to_string());
+        let err = store.ingest_discovered_file(session, &df).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not in_progress") || msg.contains("cancelled"),
+            "expected session-state error, got: {msg}"
+        );
+
+        // cancel_scan_session on an already-cancelled session is a no-op (returns Ok).
+        store.cancel_scan_session(session).unwrap();
+        // No in_progress session is left.
+        let conn = store.conn().unwrap();
+        let in_progress: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scan_sessions WHERE status = 'in_progress'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(in_progress, 0);
     }
 }

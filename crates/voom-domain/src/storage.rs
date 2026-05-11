@@ -145,6 +145,16 @@ pub trait FileStorage: Send + Sync {
     /// Returns the number of rows purged.
     fn purge_missing(&self, older_than: DateTime<Utc>) -> Result<u64>;
     /// Reconcile a batch of discovered files against stored state.
+    ///
+    /// Implemented in terms of the scan-session API: `begin_scan_session`,
+    /// `ingest_discovered_file` per file, then `finish_scan_session`.
+    ///
+    /// **Error semantics (phase 1 change):** if any per-file ingest or the
+    /// final finish call errors, the session is cancelled and the error is
+    /// returned. **Already-ingested file rows remain visible** — this matches
+    /// the per-file-visibility design of the new session API. Callers that
+    /// require atomic all-or-nothing reconciliation must use a different
+    /// mechanism (none is provided in phase 1).
     fn reconcile_discovered_files(
         &self,
         discovered: &[DiscoveredFile],
