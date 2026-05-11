@@ -653,11 +653,18 @@ impl FileStorage for SqliteStore {
 
     fn cancel_scan_session(
         &self,
-        _session: voom_domain::transition::ScanSessionId,
+        session: voom_domain::transition::ScanSessionId,
     ) -> voom_domain::errors::Result<()> {
-        Err(voom_domain::errors::VoomError::Other(
-            "cancel_scan_session not yet implemented for SqliteStore".into(),
-        ))
+        let conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        conn.execute(
+            "UPDATE scan_sessions \
+             SET status = 'cancelled', finished_at = ?1 \
+             WHERE id = ?2 AND status = 'in_progress'",
+            params![now, session.to_string()],
+        )
+        .map_err(storage_err("failed to cancel scan session"))?;
+        Ok(())
     }
 }
 
@@ -2072,5 +2079,44 @@ mod tests {
             )
             .unwrap();
         assert_eq!(second_status, "in_progress");
+    }
+
+    #[test]
+    fn cancel_scan_session_marks_cancelled_and_leaves_files_unchanged() {
+        use std::path::PathBuf;
+
+        let store = test_store();
+        let roots = vec![PathBuf::from("/movies")];
+
+        // Seed an active file
+        let f = active_file("/movies/a.mkv");
+        store.upsert_file(&f).unwrap();
+
+        let session = store.begin_scan_session(&roots).unwrap();
+        store.cancel_scan_session(session).unwrap();
+
+        let conn = store.conn().unwrap();
+        let (status, finished_at): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, finished_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "cancelled");
+        assert!(
+            finished_at.is_some(),
+            "cancelled session must have finished_at set"
+        );
+
+        // file row is still active
+        let file_status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(file_status, "active");
     }
 }
