@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS files (
     tags TEXT,
     plugin_metadata TEXT,
     introspected_at TEXT NOT NULL,
+    last_seen_session_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -158,6 +159,16 @@ CREATE TABLE IF NOT EXISTS discovered_files (
 
 CREATE INDEX IF NOT EXISTS idx_discovered_status ON discovered_files(status);
 
+CREATE TABLE IF NOT EXISTS scan_sessions (
+    id TEXT PRIMARY KEY,
+    roots_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_sessions_status ON scan_sessions(status);
+
 CREATE TABLE IF NOT EXISTS health_checks (
     id TEXT PRIMARY KEY,
     check_name TEXT NOT NULL,
@@ -185,6 +196,7 @@ CREATE INDEX IF NOT EXISTS idx_files_hash ON files(content_hash);
 CREATE INDEX IF NOT EXISTS idx_files_superseded_by ON files(superseded_by);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_files_superseded_by_unique
     ON files(superseded_by) WHERE superseded_by IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_files_last_seen_session ON files(last_seen_session_id);
 CREATE INDEX IF NOT EXISTS idx_tracks_file ON tracks(file_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, priority);
 CREATE INDEX IF NOT EXISTS idx_plans_file ON plans(file_id);
@@ -323,6 +335,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "plugin_data",
         "bad_files",
         "discovered_files",
+        "scan_sessions",
         "health_checks",
         "event_log",
         "subtitles",
@@ -349,6 +362,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     migrate_transitions_table(conn)?;
     migrate_plans_columns(conn, &has_column)?;
     migrate_files_columns(conn, &has_column)?;
+    migrate_scan_sessions(conn, &has_column)?;
     migrate_tracks_columns(conn, &has_column)?;
     migrate_indexes_and_constraints(conn)?;
     migrate_processing_stats_into_transitions(conn, &has_column)?;
@@ -462,6 +476,36 @@ fn migrate_files_columns(
     }
     if !has_column("files", "crop_settings_fingerprint")? {
         conn.execute_batch("ALTER TABLE files ADD COLUMN crop_settings_fingerprint TEXT")?;
+    }
+    Ok(())
+}
+
+/// Add `last_seen_session_id` column to `files` and create the `scan_sessions`
+/// table on databases that predate scan-session support. Idempotent: skips
+/// either step if it's already in place.
+fn migrate_scan_sessions(
+    conn: &Connection,
+    has_column: &dyn Fn(&str, &str) -> rusqlite::Result<bool>,
+) -> rusqlite::Result<()> {
+    if !has_column("files", "last_seen_session_id")? {
+        conn.execute_batch(
+            "ALTER TABLE files ADD COLUMN last_seen_session_id TEXT; \
+             CREATE INDEX IF NOT EXISTS idx_files_last_seen_session \
+                 ON files(last_seen_session_id);",
+        )?;
+    }
+    if !table_exists(conn, "scan_sessions")? {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS scan_sessions (
+                id TEXT PRIMARY KEY,
+                roots_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_scan_sessions_status \
+                ON scan_sessions(status);",
+        )?;
     }
     Ok(())
 }
@@ -1288,5 +1332,87 @@ mod tests {
 
         assert!(table_exists);
         assert!(index_exists);
+    }
+
+    #[test]
+    fn scan_sessions_table_exists_on_fresh_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='scan_sessions'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists, "scan_sessions table should exist on fresh schema");
+    }
+
+    #[test]
+    fn files_has_last_seen_session_id_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        let mut stmt = conn.prepare("PRAGMA table_info(files)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            cols.iter().any(|c| c == "last_seen_session_id"),
+            "files table should have last_seen_session_id column; got {cols:?}"
+        );
+    }
+
+    #[test]
+    fn migration_adds_last_seen_session_id_to_existing_files_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        // Build an "old" files table without the new column
+        conn.execute_batch(
+            "CREATE TABLE files (
+                id TEXT PRIMARY KEY,
+                path TEXT UNIQUE,
+                filename TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                expected_hash TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                missing_since TEXT,
+                superseded_by TEXT,
+                container TEXT NOT NULL,
+                duration REAL,
+                bitrate INTEGER,
+                tags TEXT,
+                plugin_metadata TEXT,
+                introspected_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let mut stmt = conn.prepare("PRAGMA table_info(files)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(cols.iter().any(|c| c == "last_seen_session_id"));
+    }
+
+    #[test]
+    fn idx_files_last_seen_session_exists() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master \
+                 WHERE type='index' AND name='idx_files_last_seen_session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists);
     }
 }
