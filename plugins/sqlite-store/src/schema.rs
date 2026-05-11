@@ -196,6 +196,7 @@ CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(event_type);
 
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 CREATE INDEX IF NOT EXISTS idx_files_hash ON files(content_hash);
+CREATE INDEX IF NOT EXISTS idx_files_expected_hash_status ON files(expected_hash, status);
 CREATE INDEX IF NOT EXISTS idx_files_superseded_by ON files(superseded_by);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_files_superseded_by_unique
     ON files(superseded_by) WHERE superseded_by IS NOT NULL;
@@ -854,6 +855,13 @@ fn migrate_indexes_and_constraints(conn: &Connection) -> rusqlite::Result<()> {
         )?;
     }
 
+    if !has_index("idx_files_expected_hash_status")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_files_expected_hash_status \
+             ON files(expected_hash, status);",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -1430,6 +1438,21 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) > 0 FROM sqlite_master \
                  WHERE type='index' AND name='idx_files_last_seen_session'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists);
+    }
+
+    #[test]
+    fn idx_files_expected_hash_status_exists_on_fresh_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master \
+                 WHERE type='index' AND name='idx_files_expected_hash_status'",
                 [],
                 |row| row.get(0),
             )

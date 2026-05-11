@@ -419,7 +419,12 @@ impl FileStorage for InMemoryStore {
         let existing = files.values().find(|f| f.path == file.path).cloned();
 
         if let Some(mut existing) = existing {
-            if existing.content_hash.as_deref() == Some(file.content_hash.as_str()) {
+            let hash_matches = existing
+                .expected_hash
+                .as_ref()
+                .is_none_or(|eh| eh == &file.content_hash);
+
+            if hash_matches {
                 // Unchanged
                 existing.status = FileStatus::Active;
                 if existing.expected_hash.is_none() {
