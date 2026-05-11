@@ -823,164 +823,9 @@ impl FileStorage for SqliteStore {
         let roots: Vec<PathBuf> = serde_json::from_str(&roots_json)
             .map_err(other_storage_err("failed to parse roots_json"))?;
 
-        // ---- MOVE PROMOTION ----
-        // Files ingested as New this session may actually be moves from an active
-        // file that's about to be marked missing. Detect these by matching
-        // content_hash (New-this-session row) against expected_hash (missing candidate).
-        // "New this session" == last_seen_session_id == this session AND created_at >= started_at.
-
-        struct MissingCandidate {
-            id: String,
-            path: String,
-            expected_hash: String,
-        }
-
-        let candidates_for_move: Vec<MissingCandidate> = {
-            let mut stmt = tx
-                .prepare(
-                    "SELECT id, path, expected_hash FROM files \
-                     WHERE status = 'active' AND path IS NOT NULL \
-                       AND expected_hash IS NOT NULL \
-                       AND (last_seen_session_id IS NULL OR last_seen_session_id != ?1)",
-                )
-                .map_err(storage_err("failed to prepare move-candidate select"))?;
-            stmt.query_map(params![&session_str], |row| {
-                Ok(MissingCandidate {
-                    id: row.get(0)?,
-                    path: row.get(1)?,
-                    expected_hash: row.get(2)?,
-                })
-            })
-            .map_err(storage_err("failed to query move candidates"))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(storage_err("failed to collect move candidates"))?
-            .into_iter()
-            .filter(|c| is_under_any(Path::new(&c.path), &roots))
-            .collect()
-        };
-
-        let mut promoted_moves = 0u32;
-
-        for candidate in &candidates_for_move {
-            // Find a New-this-session row with content_hash matching this candidate's
-            // expected_hash. "New this session" == last_seen_session_id == this session
-            // AND created_at >= session started_at.
-            // Exclude rows that are part of a supersession chain — these are
-            // ExternallyChanged replacement rows (their id appears as superseded_by
-            // on the old row) and must not be hijacked as move targets.
-            let new_match: Option<(String, String, i64)> = tx
-                .query_row(
-                    "SELECT id, path, size FROM files \
-                     WHERE last_seen_session_id = ?1 \
-                       AND content_hash = ?2 \
-                       AND created_at >= ?3 \
-                       AND path IS NOT NULL \
-                       AND id != ?4 \
-                       AND id NOT IN (SELECT superseded_by FROM files \
-                                      WHERE superseded_by IS NOT NULL) \
-                     LIMIT 1",
-                    params![
-                        &session_str,
-                        &candidate.expected_hash,
-                        &session_started_at,
-                        &candidate.id,
-                    ],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, i64>(2)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(storage_err("failed to look up move-promotion target"))?;
-
-            let Some((new_id, new_path, new_size)) = new_match else {
-                continue;
-            };
-
-            // Delete the New row's transitions so the move transition is the only record.
-            tx.execute(
-                "DELETE FROM file_transitions WHERE file_id = ?1",
-                params![&new_id],
-            )
-            .map_err(storage_err("failed to delete New row's transitions"))?;
-
-            // Delete the New row itself.
-            tx.execute("DELETE FROM files WHERE id = ?1", params![&new_id])
-                .map_err(storage_err("failed to delete New row for move promotion"))?;
-
-            // Update the candidate row to reflect the new path and keep it active.
-            let new_filename = filename_string(Path::new(&new_path));
-            tx.execute(
-                "UPDATE files SET path = ?1, filename = ?2, size = ?3, \
-                 content_hash = ?4, \
-                 status = 'active', missing_since = NULL, \
-                 last_seen_session_id = ?5, updated_at = ?6 \
-                 WHERE id = ?7",
-                params![
-                    &new_path,
-                    new_filename,
-                    new_size,
-                    &candidate.expected_hash,
-                    &session_str,
-                    &now,
-                    &candidate.id,
-                ],
-            )
-            .map_err(storage_err("failed to promote candidate to moved"))?;
-
-            // Record a Discovery transition with from_path set to signal the move.
-            let file_uuid = super::parse_uuid(&candidate.id)?;
-            let move_tx = FileTransition::new(
-                file_uuid,
-                PathBuf::from(&new_path),
-                candidate.expected_hash.clone(),
-                new_size as u64,
-                TransitionSource::Discovery,
-            )
-            .with_from_path(PathBuf::from(&candidate.path))
-            .with_detail("detected_move");
-            insert_transition_in_tx(&tx, &move_tx, &now)?;
-
-            promoted_moves += 1;
-        }
-
-        // ---- MISSING PASS ----
-        // Mark every active file under a scanned root that wasn't seen this
-        // session. The `AND status = 'active'` clause on the UPDATE guards
-        // against a race between SELECT and UPDATE. Promoted candidates already
-        // have last_seen_session_id == this session, so they're excluded here.
-        let candidates: Vec<(String, String)> = {
-            let mut stmt = tx
-                .prepare(
-                    "SELECT id, path FROM files \
-                     WHERE status = 'active' AND path IS NOT NULL \
-                       AND (last_seen_session_id IS NULL OR last_seen_session_id != ?1)",
-                )
-                .map_err(storage_err("failed to prepare missing-scan select"))?;
-            stmt.query_map(params![&session_str], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(storage_err("failed to query missing candidates"))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(storage_err("failed to collect missing candidates"))?
-        };
-
-        let mut missing = 0u32;
-        for (id, path) in candidates {
-            if !is_under_any(Path::new(&path), &roots) {
-                continue;
-            }
-            tx.execute(
-                "UPDATE files SET status = 'missing', missing_since = ?1, updated_at = ?1 \
-                 WHERE id = ?2 AND status = 'active'",
-                params![&now, &id],
-            )
-            .map_err(storage_err("failed to mark file missing in finish"))?;
-            missing += 1;
-        }
+        let promoted_moves =
+            promote_moves_in_tx(&tx, &session_str, &session_started_at, &roots, &now)?;
+        let missing = mark_missing_in_finish_tx(&tx, &session_str, &roots, &now)?;
 
         tx.execute(
             "UPDATE scan_sessions SET status = 'completed', finished_at = ?1, \
@@ -1339,6 +1184,193 @@ fn ingest_new_in_tx(tx: &rusqlite::Transaction<'_>, ctx: &IngestCtx<'_>) -> Resu
     insert_transition_in_tx(tx, &disc_transition, ctx.now)?;
 
     Ok(new_id)
+}
+
+/// A currently-active file row that wasn't seen in this scan session and is
+/// eligible to be promoted to a `detected_move` if a matching New-this-session
+/// row exists with the same `content_hash`.
+struct MissingCandidate {
+    id: String,
+    path: String,
+    expected_hash: String,
+}
+
+/// Promote New-this-session rows whose content_hash matches a missing
+/// candidate's expected_hash into a `detected_move`. Run during
+/// `finish_scan_session` before the missing pass so promoted candidates retain
+/// their active status.
+///
+/// Returns the number of files promoted to a moved state.
+fn promote_moves_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_str: &str,
+    session_started_at: &str,
+    roots: &[PathBuf],
+    now: &str,
+) -> Result<u32> {
+    let candidates_for_move: Vec<MissingCandidate> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, path, expected_hash FROM files \
+                 WHERE status = 'active' AND path IS NOT NULL \
+                   AND expected_hash IS NOT NULL \
+                   AND (last_seen_session_id IS NULL OR last_seen_session_id != ?1)",
+            )
+            .map_err(storage_err("failed to prepare move-candidate select"))?;
+        stmt.query_map(params![session_str], |row| {
+            Ok(MissingCandidate {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                expected_hash: row.get(2)?,
+            })
+        })
+        .map_err(storage_err("failed to query move candidates"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(storage_err("failed to collect move candidates"))?
+        .into_iter()
+        .filter(|c| is_under_any(Path::new(&c.path), roots))
+        .collect()
+    };
+
+    let mut promoted_moves = 0u32;
+
+    for candidate in &candidates_for_move {
+        if try_promote_one_move_in_tx(tx, candidate, session_str, session_started_at, now)? {
+            promoted_moves += 1;
+        }
+    }
+
+    Ok(promoted_moves)
+}
+
+/// Attempt to promote one missing candidate to a moved row by finding a
+/// matching New-this-session row with the same `content_hash`. Returns `true`
+/// if a promotion happened, `false` if no matching target was found.
+fn try_promote_one_move_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    candidate: &MissingCandidate,
+    session_str: &str,
+    session_started_at: &str,
+    now: &str,
+) -> Result<bool> {
+    let new_match: Option<(String, String, i64)> = tx
+        .query_row(
+            "SELECT id, path, size FROM files \
+             WHERE last_seen_session_id = ?1 \
+               AND content_hash = ?2 \
+               AND created_at >= ?3 \
+               AND path IS NOT NULL \
+               AND id != ?4 \
+               AND id NOT IN (SELECT superseded_by FROM files \
+                              WHERE superseded_by IS NOT NULL) \
+             LIMIT 1",
+            params![
+                session_str,
+                &candidate.expected_hash,
+                session_started_at,
+                &candidate.id,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(storage_err("failed to look up move-promotion target"))?;
+
+    let Some((new_id, new_path, new_size)) = new_match else {
+        return Ok(false);
+    };
+
+    tx.execute(
+        "DELETE FROM file_transitions WHERE file_id = ?1",
+        params![&new_id],
+    )
+    .map_err(storage_err("failed to delete New row's transitions"))?;
+
+    tx.execute("DELETE FROM files WHERE id = ?1", params![&new_id])
+        .map_err(storage_err("failed to delete New row for move promotion"))?;
+
+    let new_filename = filename_string(Path::new(&new_path));
+    tx.execute(
+        "UPDATE files SET path = ?1, filename = ?2, size = ?3, \
+         content_hash = ?4, \
+         status = 'active', missing_since = NULL, \
+         last_seen_session_id = ?5, updated_at = ?6 \
+         WHERE id = ?7",
+        params![
+            &new_path,
+            new_filename,
+            new_size,
+            &candidate.expected_hash,
+            session_str,
+            now,
+            &candidate.id,
+        ],
+    )
+    .map_err(storage_err("failed to promote candidate to moved"))?;
+
+    let file_uuid = super::parse_uuid(&candidate.id)?;
+    let move_tx = FileTransition::new(
+        file_uuid,
+        PathBuf::from(&new_path),
+        candidate.expected_hash.clone(),
+        new_size as u64,
+        TransitionSource::Discovery,
+    )
+    .with_from_path(PathBuf::from(&candidate.path))
+    .with_detail("detected_move");
+    insert_transition_in_tx(tx, &move_tx, now)?;
+
+    Ok(true)
+}
+
+/// Mark every active file under a scanned root that wasn't seen during this
+/// session as `missing`. The `AND status = 'active'` clause on the UPDATE
+/// guards against a race between SELECT and UPDATE. Promoted candidates
+/// already have `last_seen_session_id` == this session, so they're excluded.
+///
+/// Returns the number of files newly marked missing.
+fn mark_missing_in_finish_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_str: &str,
+    roots: &[PathBuf],
+    now: &str,
+) -> Result<u32> {
+    let candidates: Vec<(String, String)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, path FROM files \
+                 WHERE status = 'active' AND path IS NOT NULL \
+                   AND (last_seen_session_id IS NULL OR last_seen_session_id != ?1)",
+            )
+            .map_err(storage_err("failed to prepare missing-scan select"))?;
+        stmt.query_map(params![session_str], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(storage_err("failed to query missing candidates"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(storage_err("failed to collect missing candidates"))?
+    };
+
+    let mut missing = 0u32;
+    for (id, path) in candidates {
+        if !is_under_any(Path::new(&path), roots) {
+            continue;
+        }
+        tx.execute(
+            "UPDATE files SET status = 'missing', missing_since = ?1, updated_at = ?1 \
+             WHERE id = ?2 AND status = 'active'",
+            params![now, &id],
+        )
+        .map_err(storage_err("failed to mark file missing in finish"))?;
+        missing += 1;
+    }
+
+    Ok(missing)
 }
 
 /// Parameters for [`insert_active_file_in_tx`]. Bundled into a struct so the
