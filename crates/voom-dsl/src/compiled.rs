@@ -75,6 +75,7 @@ impl<'de> Deserialize<'de> for CompiledRegex {
 #[non_exhaustive]
 pub struct CompiledPolicy {
     pub name: String,
+    pub metadata: CompiledMetadata,
     pub config: CompiledConfig,
     pub phases: Vec<CompiledPhase>,
     /// Topologically sorted phase execution order.
@@ -88,6 +89,7 @@ impl CompiledPolicy {
     #[must_use]
     pub fn new(
         name: String,
+        metadata: CompiledMetadata,
         config: CompiledConfig,
         phases: Vec<CompiledPhase>,
         phase_order: Vec<String>,
@@ -95,12 +97,26 @@ impl CompiledPolicy {
     ) -> Self {
         Self {
             name,
+            metadata,
             config,
             phases,
             phase_order,
             source_hash,
         }
     }
+}
+
+/// Compiled policy metadata and policy composition summary.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CompiledMetadata {
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub description: Option<String>,
+    pub requires_voom: Option<String>,
+    pub requires_tools: Vec<String>,
+    pub test_fixtures: Vec<String>,
+    pub extends_chain: Vec<String>,
 }
 
 /// Compiled configuration block.
@@ -152,7 +168,26 @@ pub struct CompiledPhase {
     pub skip_when: Option<CompiledCondition>,
     pub run_if: Option<CompiledRunIf>,
     pub on_error: ErrorStrategy,
+    pub composition: CompiledPhaseComposition,
     pub operations: Vec<CompiledOperation>,
+}
+
+/// Compiled phase provenance for policy composition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CompiledPhaseComposition {
+    pub kind: PhaseCompositionKind,
+    pub source: Option<String>,
+    pub added_operations: usize,
+}
+
+/// How a compiled phase was produced during policy composition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PhaseCompositionKind {
+    Local,
+    Inherited,
+    Extended,
+    Overridden,
 }
 
 /// Compiled `run_if` trigger.

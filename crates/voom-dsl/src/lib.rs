@@ -39,7 +39,9 @@ pub use ast::{
     SynthSetting, TrackQueryNode, TrackRefNode, Value, ValueOrField, WhenNode,
 };
 pub use bundled::{bundled_policy, bundled_policy_names};
-pub use compiled::CompiledPolicy;
+pub use compiled::{
+    CompiledMetadata, CompiledPhaseComposition, CompiledPolicy, PhaseCompositionKind,
+};
 pub use errors::{DslError, DslPipelineError, DslWarning, ValidationErrors};
 pub use formatter::format_policy;
 pub use parser::parse_policy;
@@ -94,7 +96,8 @@ pub fn compile_policy(source: &str) -> Result<CompiledPolicy, DslPipelineError> 
 pub fn compile_policy_with_bundled(source: &str) -> Result<CompiledPolicy, DslPipelineError> {
     let resolved = composition::resolve_policy_with_bundled(source)?;
     validate(&resolved.ast).map_err(DslPipelineError::Validation)?;
-    let mut policy = compiler::compile_ast(&resolved.ast).map_err(DslPipelineError::Compile)?;
+    let mut policy =
+        compiler::compile_resolved_ast(&resolved).map_err(DslPipelineError::Compile)?;
     let resolved_source = format_policy(&resolved.ast);
     policy.source_hash = format!(
         "{:016x}",
@@ -113,7 +116,8 @@ pub fn compile_policy_with_bundled(source: &str) -> Result<CompiledPolicy, DslPi
 pub fn compile_policy_file(path: &std::path::Path) -> Result<CompiledPolicy, DslPipelineError> {
     let resolved = composition::resolve_policy_file(path)?;
     validate(&resolved.ast).map_err(DslPipelineError::Validation)?;
-    let mut policy = compiler::compile_ast(&resolved.ast).map_err(DslPipelineError::Compile)?;
+    let mut policy =
+        compiler::compile_resolved_ast(&resolved).map_err(DslPipelineError::Compile)?;
     let resolved_source = format_policy(&resolved.ast);
     policy.source_hash = format!(
         "{:016x}",

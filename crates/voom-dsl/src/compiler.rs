@@ -11,20 +11,22 @@ use std::collections::{HashMap, HashSet};
 
 use crate::compiled::{
     ClearActionsSettings, CompiledAction, CompiledCompareOp, CompiledCondition,
-    CompiledConditional, CompiledConfig, CompiledDefault, CompiledFilter, CompiledOperation,
-    CompiledPhase, CompiledPolicy, CompiledRegex, CompiledRule, CompiledRunIf, CompiledSynthesize,
-    CompiledTranscodeSettings, CompiledValueOrField, DefaultStrategy, ErrorStrategy,
-    LoudnessNormalization, LoudnessPreset, RulesMode, RunIfTrigger, SynthLanguage, SynthPosition,
-    TrackTarget, TranscodeChannels,
+    CompiledConditional, CompiledConfig, CompiledDefault, CompiledFilter, CompiledMetadata,
+    CompiledOperation, CompiledPhase, CompiledPhaseComposition, CompiledPolicy, CompiledRegex,
+    CompiledRule, CompiledRunIf, CompiledSynthesize, CompiledTranscodeSettings,
+    CompiledValueOrField, DefaultStrategy, ErrorStrategy, LoudnessNormalization, LoudnessPreset,
+    PhaseCompositionKind, RulesMode, RunIfTrigger, SynthLanguage, SynthPosition, TrackTarget,
+    TranscodeChannels,
 };
 use voom_domain::plan::{CropSettings, SampleStrategy, TranscodeFallback};
 use voom_domain::utils::codecs;
 
 use crate::ast::{
-    ActionNode, CompareOp, ConditionNode, ConfigNode, ErrorStrategyNode, FilterNode,
+    ActionNode, CompareOp, ConditionNode, ConfigNode, ErrorStrategyNode, FilterNode, MetadataNode,
     NormalizeSetting, OperationNode, PhaseNode, PolicyAst, RunIfTriggerNode, SynthSetting, Value,
     ValueOrField, VerifyMode, WhenNode,
 };
+use crate::composition::{PhaseComposition, ResolvedPolicyAst};
 use crate::errors::DslError;
 
 /// Safely convert an f64 to u32, returning None for negative, fractional, or out-of-range values.
@@ -40,21 +42,64 @@ fn safe_u32(n: f64) -> Option<u32> {
 
 /// Compile a pre-parsed and validated AST into a [`CompiledPolicy`].
 pub(crate) fn compile_ast(ast: &PolicyAst) -> std::result::Result<CompiledPolicy, DslError> {
+    compile_ast_with_composition(ast, Vec::new(), &HashMap::new())
+}
+
+/// Compile a composition-resolved AST into a [`CompiledPolicy`].
+pub(crate) fn compile_resolved_ast(
+    resolved: &ResolvedPolicyAst,
+) -> std::result::Result<CompiledPolicy, DslError> {
+    compile_ast_with_composition(
+        &resolved.ast,
+        resolved.extends_chain.clone(),
+        &resolved.phase_sources,
+    )
+}
+
+fn compile_ast_with_composition(
+    ast: &PolicyAst,
+    extends_chain: Vec<String>,
+    phase_sources: &HashMap<String, PhaseComposition>,
+) -> std::result::Result<CompiledPolicy, DslError> {
+    let metadata = compile_metadata(ast.metadata.as_ref(), extends_chain);
     let config = compile_config(ast.config.as_ref());
     let phases: Vec<CompiledPhase> = ast
         .phases
         .iter()
-        .map(compile_phase)
+        .map(|phase| compile_phase(phase, phase_sources.get(&phase.name)))
         .collect::<std::result::Result<_, _>>()?;
     let phase_order = topological_sort(ast)?;
 
     Ok(CompiledPolicy::new(
         ast.name.clone(),
+        metadata,
         config,
         phases,
         phase_order,
         String::new(),
     ))
+}
+
+fn compile_metadata(
+    metadata: Option<&MetadataNode>,
+    extends_chain: Vec<String>,
+) -> CompiledMetadata {
+    let Some(metadata) = metadata else {
+        return CompiledMetadata {
+            extends_chain,
+            ..CompiledMetadata::default()
+        };
+    };
+
+    CompiledMetadata {
+        version: metadata.version.clone(),
+        author: metadata.author.clone(),
+        description: metadata.description.clone(),
+        requires_voom: metadata.requires_voom.clone(),
+        requires_tools: metadata.requires_tools.clone().unwrap_or_default(),
+        test_fixtures: metadata.test_fixtures.clone().unwrap_or_default(),
+        extends_chain,
+    }
 }
 
 fn compile_config(config: Option<&ConfigNode>) -> CompiledConfig {
@@ -97,7 +142,10 @@ pub(crate) fn parse_default_strategy(value: &str) -> Option<DefaultStrategy> {
     }
 }
 
-fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslError> {
+fn compile_phase(
+    phase: &PhaseNode,
+    composition: Option<&PhaseComposition>,
+) -> std::result::Result<CompiledPhase, DslError> {
     if phase.extend {
         return Err(DslError::compile(format!(
             "phase \"{}\" uses extend but policy composition was not resolved",
@@ -131,8 +179,37 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
             .on_error
             .map(compile_error_strategy)
             .unwrap_or(ErrorStrategy::Abort),
+        composition: compile_phase_composition(composition),
         operations,
     })
+}
+
+fn compile_phase_composition(composition: Option<&PhaseComposition>) -> CompiledPhaseComposition {
+    match composition {
+        None | Some(PhaseComposition::Local) => CompiledPhaseComposition {
+            kind: PhaseCompositionKind::Local,
+            source: None,
+            added_operations: 0,
+        },
+        Some(PhaseComposition::Inherited { source }) => CompiledPhaseComposition {
+            kind: PhaseCompositionKind::Inherited,
+            source: Some(source.clone()),
+            added_operations: 0,
+        },
+        Some(PhaseComposition::Extended {
+            source,
+            added_operations,
+        }) => CompiledPhaseComposition {
+            kind: PhaseCompositionKind::Extended,
+            source: Some(source.clone()),
+            added_operations: *added_operations,
+        },
+        Some(PhaseComposition::Overridden { source }) => CompiledPhaseComposition {
+            kind: PhaseCompositionKind::Overridden,
+            source: Some(source.clone()),
+            added_operations: 0,
+        },
+    }
 }
 
 fn compile_error_strategy(strategy: ErrorStrategyNode) -> ErrorStrategy {

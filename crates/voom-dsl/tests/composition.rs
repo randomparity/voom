@@ -31,6 +31,55 @@ fn bundled_extends_inherits_missing_phases() {
 }
 
 #[test]
+fn metadata_is_compiled_with_extends_chain() {
+    let policy = compile_policy_with_bundled(
+        r#"policy "child" extends "anime-base" {
+            metadata {
+                version: "2.0.0"
+                author: "user@example.com"
+            }
+            phase subtitles { keep subtitles where lang == eng }
+        }"#,
+    )
+    .unwrap();
+
+    assert_eq!(policy.metadata.version.as_deref(), Some("2.0.0"));
+    assert_eq!(policy.metadata.author.as_deref(), Some("user@example.com"));
+    assert_eq!(policy.metadata.extends_chain, ["anime-base"]);
+}
+
+#[test]
+fn phase_composition_is_serialized_for_describe() {
+    let policy = compile_policy_with_bundled(
+        r#"policy "child" extends "anime-base" {
+            phase audio { extend keep audio where lang == eng }
+            phase subtitles { keep subtitles where lang == eng }
+        }"#,
+    )
+    .unwrap();
+
+    let audio = policy
+        .phases
+        .iter()
+        .find(|phase| phase.name == "audio")
+        .unwrap();
+    let subtitles = policy
+        .phases
+        .iter()
+        .find(|phase| phase.name == "subtitles")
+        .unwrap();
+
+    assert!(matches!(
+        audio.composition.kind,
+        voom_dsl::compiled::PhaseCompositionKind::Extended
+    ));
+    assert!(matches!(
+        subtitles.composition.kind,
+        voom_dsl::compiled::PhaseCompositionKind::Overridden
+    ));
+}
+
+#[test]
 fn phase_extend_appends_operations_and_inherits_controls() {
     let policy = compile_policy_with_bundled(
         r#"policy "child" extends "anime-base" {
