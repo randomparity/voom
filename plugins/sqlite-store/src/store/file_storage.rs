@@ -574,6 +574,43 @@ impl FileStorage for SqliteStore {
         }
         Ok(marked)
     }
+
+    fn begin_scan_session(
+        &self,
+        _roots: &[std::path::PathBuf],
+    ) -> voom_domain::errors::Result<voom_domain::transition::ScanSessionId> {
+        Err(voom_domain::errors::VoomError::Other(
+            "begin_scan_session not yet implemented for SqliteStore".into(),
+        ))
+    }
+
+    fn ingest_discovered_file(
+        &self,
+        _session: voom_domain::transition::ScanSessionId,
+        _file: &voom_domain::transition::DiscoveredFile,
+    ) -> voom_domain::errors::Result<voom_domain::transition::IngestDecision> {
+        Err(voom_domain::errors::VoomError::Other(
+            "ingest_discovered_file not yet implemented for SqliteStore".into(),
+        ))
+    }
+
+    fn finish_scan_session(
+        &self,
+        _session: voom_domain::transition::ScanSessionId,
+    ) -> voom_domain::errors::Result<u32> {
+        Err(voom_domain::errors::VoomError::Other(
+            "finish_scan_session not yet implemented for SqliteStore".into(),
+        ))
+    }
+
+    fn cancel_scan_session(
+        &self,
+        _session: voom_domain::transition::ScanSessionId,
+    ) -> voom_domain::errors::Result<()> {
+        Err(voom_domain::errors::VoomError::Other(
+            "cancel_scan_session not yet implemented for SqliteStore".into(),
+        ))
+    }
 }
 
 /// Pass 1: Mark active files under scanned dirs as missing if not in discovered set.

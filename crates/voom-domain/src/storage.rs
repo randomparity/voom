@@ -157,6 +157,38 @@ pub trait FileStorage: Send + Sync {
         discovered_paths: &[PathBuf],
         scanned_dirs: &[PathBuf],
     ) -> Result<u32>;
+    /// Begin a scan session. Marks any existing `InProgress` sessions as
+    /// `Cancelled` (auto-abandon) and inserts a new row with the given
+    /// canonical scan roots. No `files` rows are modified by this call.
+    ///
+    /// See `docs/superpowers/specs/2026-05-11-scan-sessions-design.md` §6.1.
+    fn begin_scan_session(&self, roots: &[PathBuf]) -> Result<crate::transition::ScanSessionId>;
+
+    /// Ingest a single discovered file into the active scan session, making
+    /// it visible in `files` immediately. Returns the decision so the caller
+    /// can collect counters and `needs_introspection` paths.
+    ///
+    /// Idempotent: if the same path is ingested twice in one session,
+    /// the second call returns `IngestDecision::Duplicate` and performs no
+    /// further work. See spec §6.2.
+    fn ingest_discovered_file(
+        &self,
+        session: crate::transition::ScanSessionId,
+        file: &crate::transition::DiscoveredFile,
+    ) -> Result<crate::transition::IngestDecision>;
+
+    /// Finish a scan session. Performs the deferred missing-file pass:
+    /// active files under any of the session's recorded roots that were
+    /// not ingested in this session are marked `missing`. Returns the
+    /// missing count from this pass.
+    ///
+    /// Errors if the session is not currently `InProgress`. See spec §6.4.
+    fn finish_scan_session(&self, session: crate::transition::ScanSessionId) -> Result<u32>;
+
+    /// Cancel a scan session. Never marks any file missing. Used by the CLI
+    /// when scan errors out mid-way. See spec §6.5.
+    fn cancel_scan_session(&self, session: crate::transition::ScanSessionId) -> Result<()>;
+
     /// Update the expected hash for a file (set after a successful voom operation).
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()>;
     /// Update the `files.status` column for the given file id. Used by the

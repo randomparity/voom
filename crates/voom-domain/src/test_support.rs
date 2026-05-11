@@ -39,6 +39,12 @@ use crate::verification::{
     VerificationOutcome, VerificationRecord,
 };
 
+#[derive(Debug, Clone)]
+struct InMemorySessionRow {
+    roots: Vec<std::path::PathBuf>,
+    status: crate::transition::ScanSessionStatus,
+}
+
 /// Create a standard test `MediaFile` with video, two audio, and one subtitle track.
 ///
 /// Useful as a baseline for evaluator, orchestrator, and condition tests.
@@ -119,6 +125,8 @@ pub struct InMemoryStore {
     pub transitions: Mutex<Vec<FileTransition>>,
     pub verifications: Mutex<Vec<VerificationRecord>>,
     plugin_data: Mutex<HashMap<(String, String), Vec<u8>>>,
+    sessions: Mutex<HashMap<crate::transition::ScanSessionId, InMemorySessionRow>>,
+    last_seen: Mutex<HashMap<std::path::PathBuf, crate::transition::ScanSessionId>>,
 }
 
 impl InMemoryStore {
@@ -135,6 +143,8 @@ impl InMemoryStore {
             transitions: Mutex::new(Vec::new()),
             verifications: Mutex::new(Vec::new()),
             plugin_data: Mutex::new(HashMap::new()),
+            sessions: Default::default(),
+            last_seen: Default::default(),
         }
     }
 
@@ -327,6 +337,173 @@ impl FileStorage for InMemoryStore {
             }
         }
         Ok(marked)
+    }
+
+    fn begin_scan_session(&self, roots: &[PathBuf]) -> Result<crate::transition::ScanSessionId> {
+        let mut sessions = self.sessions.lock();
+        for row in sessions.values_mut() {
+            if row.status == crate::transition::ScanSessionStatus::InProgress {
+                row.status = crate::transition::ScanSessionStatus::Cancelled;
+            }
+        }
+        let id = crate::transition::ScanSessionId::new();
+        sessions.insert(
+            id,
+            InMemorySessionRow {
+                roots: roots.to_vec(),
+                status: crate::transition::ScanSessionStatus::InProgress,
+            },
+        );
+        Ok(id)
+    }
+
+    fn ingest_discovered_file(
+        &self,
+        session: crate::transition::ScanSessionId,
+        file: &crate::transition::DiscoveredFile,
+    ) -> Result<crate::transition::IngestDecision> {
+        // Verify session is in_progress
+        {
+            let sessions = self.sessions.lock();
+            let row = sessions
+                .get(&session)
+                .ok_or_else(|| crate::errors::VoomError::Other("unknown scan session".into()))?;
+            if row.status != crate::transition::ScanSessionStatus::InProgress {
+                return Err(crate::errors::VoomError::Other(
+                    "scan session is not in_progress".into(),
+                ));
+            }
+        }
+
+        let mut last_seen = self.last_seen.lock();
+        // Duplicate fast-path
+        if last_seen.get(&file.path) == Some(&session) {
+            let files = self.files.lock();
+            let id = files
+                .values()
+                .find(|f| f.path == file.path)
+                .map(|f| f.id)
+                .unwrap_or_else(Uuid::new_v4);
+            return Ok(crate::transition::IngestDecision::Duplicate { file_id: id });
+        }
+
+        let mut files = self.files.lock();
+        // Look up existing row by path
+        let existing = files.values().find(|f| f.path == file.path).cloned();
+
+        if let Some(mut existing) = existing {
+            if existing.content_hash.as_deref() == Some(file.content_hash.as_str()) {
+                // Unchanged
+                existing.status = FileStatus::Active;
+                if existing.expected_hash.is_none() {
+                    existing.expected_hash = Some(file.content_hash.clone());
+                }
+                let id = existing.id;
+                files.insert(existing.id, existing);
+                last_seen.insert(file.path.clone(), session);
+                return Ok(crate::transition::IngestDecision::Unchanged { file_id: id });
+            }
+            // ExternallyChanged
+            let old_id = existing.id;
+            existing.status = FileStatus::Missing;
+            files.insert(old_id, existing);
+
+            let new_id = Uuid::new_v4();
+            let mut new_file = MediaFile::new(file.path.clone());
+            new_file.id = new_id;
+            new_file.size = file.size;
+            new_file.content_hash = Some(file.content_hash.clone());
+            new_file.expected_hash = Some(file.content_hash.clone());
+            new_file.status = FileStatus::Active;
+            files.insert(new_id, new_file);
+            last_seen.insert(file.path.clone(), session);
+            return Ok(crate::transition::IngestDecision::ExternallyChanged {
+                file_id: new_id,
+                superseded: old_id,
+            });
+        }
+
+        // No row at this path. Check for move via missing+expected_hash match.
+        let move_match = files
+            .values()
+            .find(|f| {
+                f.status == FileStatus::Missing
+                    && f.expected_hash.as_deref() == Some(file.content_hash.as_str())
+            })
+            .cloned();
+        if let Some(mut m) = move_match {
+            let from_path = m.path.clone();
+            m.path = file.path.clone();
+            m.status = FileStatus::Active;
+            m.size = file.size;
+            m.content_hash = Some(file.content_hash.clone());
+            let id = m.id;
+            files.insert(id, m);
+            last_seen.insert(file.path.clone(), session);
+            return Ok(crate::transition::IngestDecision::Moved {
+                file_id: id,
+                from_path,
+            });
+        }
+
+        // Truly new
+        let new_id = Uuid::new_v4();
+        let mut new_file = MediaFile::new(file.path.clone());
+        new_file.id = new_id;
+        new_file.size = file.size;
+        new_file.content_hash = Some(file.content_hash.clone());
+        new_file.expected_hash = Some(file.content_hash.clone());
+        new_file.status = FileStatus::Active;
+        files.insert(new_id, new_file);
+        last_seen.insert(file.path.clone(), session);
+        Ok(crate::transition::IngestDecision::New {
+            file_id: new_id,
+            needs_introspection: true,
+        })
+    }
+
+    fn finish_scan_session(&self, session: crate::transition::ScanSessionId) -> Result<u32> {
+        let mut sessions = self.sessions.lock();
+        let row = sessions
+            .get(&session)
+            .ok_or_else(|| crate::errors::VoomError::Other("unknown scan session".into()))?
+            .clone();
+        if row.status != crate::transition::ScanSessionStatus::InProgress {
+            return Err(crate::errors::VoomError::Other(
+                "scan session is not in_progress".into(),
+            ));
+        }
+        let last_seen = self.last_seen.lock();
+        let mut files = self.files.lock();
+        let mut missing = 0u32;
+        for f in files.values_mut() {
+            if f.status != FileStatus::Active {
+                continue;
+            }
+            let under_root = row.roots.iter().any(|r| f.path.starts_with(r));
+            if !under_root {
+                continue;
+            }
+            if last_seen.get(&f.path) == Some(&session) {
+                continue;
+            }
+            f.status = FileStatus::Missing;
+            missing += 1;
+        }
+        if let Some(row) = sessions.get_mut(&session) {
+            row.status = crate::transition::ScanSessionStatus::Completed;
+        }
+        Ok(missing)
+    }
+
+    fn cancel_scan_session(&self, session: crate::transition::ScanSessionId) -> Result<()> {
+        let mut sessions = self.sessions.lock();
+        if let Some(row) = sessions.get_mut(&session) {
+            if row.status == crate::transition::ScanSessionStatus::InProgress {
+                row.status = crate::transition::ScanSessionStatus::Cancelled;
+            }
+        }
+        Ok(())
     }
 }
 
