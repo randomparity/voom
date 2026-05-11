@@ -136,16 +136,29 @@ impl Redactor {
             .get("filename")
             .and_then(serde_json::Value::as_str)
             .or_else(|| map.get("path").and_then(serde_json::Value::as_str))?;
-        let redacted = self.redact_text(source);
-        let placeholder = redacted
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(redacted.as_str())
-            .to_string();
-        if placeholder == source {
+        let placeholder = self.file_placeholder_for_source(source)?;
+        Some(FileContext { placeholder })
+    }
+
+    fn file_placeholder_for_source(&mut self, source: &str) -> Option<String> {
+        let file_name = source.rsplit(['/', '\\']).next().unwrap_or(source);
+        if !is_video_filename(file_name) {
             return None;
         }
-        Some(FileContext { placeholder })
+
+        if let Some(replacement) = self.replacements.get(file_name) {
+            return Some(replacement.clone());
+        }
+
+        let ext = extension(file_name)?;
+        let replacement = format!("video{:03}.{ext}", self.video_count);
+        self.video_count += 1;
+        self.register_replacement(
+            file_name.to_string(),
+            replacement.clone(),
+            RedactionKind::FileName,
+        );
+        Some(replacement)
     }
 
     pub fn private_mappings(&self) -> Vec<PrivateRedactionMapping> {
@@ -517,6 +530,35 @@ mod tests {
         assert_eq!(
             redacted["tracks"][0]["metadata"]["comment"],
             "comment for video000.mkv video track 1"
+        );
+    }
+
+    #[test]
+    fn file_context_registration_does_not_require_generic_text_redaction() {
+        let mut redactor = Redactor::default();
+        let value = serde_json::json!({
+            "path": "/media/private/The Movie (2026).mkv",
+            "tracks": [{
+                "index": 1,
+                "track_type": "video",
+                "comment": "Private camera note"
+            }]
+        });
+
+        let redacted = redactor.redact_json(value);
+        let mappings = redactor.private_mappings();
+
+        assert_eq!(redacted["path"], "/media/private/video000.mkv");
+        assert_eq!(
+            redacted["tracks"][0]["comment"],
+            "comment for video000.mkv video track 1"
+        );
+        assert_eq!(
+            mappings
+                .iter()
+                .filter(|mapping| mapping.replacement == "video000.mkv")
+                .count(),
+            1
         );
     }
 }
