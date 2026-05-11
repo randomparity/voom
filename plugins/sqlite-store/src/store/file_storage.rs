@@ -1071,13 +1071,15 @@ impl FileStorage for SqliteStore {
                 .unwrap_or_default();
             tx.execute(
                 "UPDATE files SET path = ?1, filename = ?2, size = ?3, \
+                 content_hash = ?4, \
                  status = 'active', missing_since = NULL, \
-                 last_seen_session_id = ?4, updated_at = ?5 \
-                 WHERE id = ?6",
+                 last_seen_session_id = ?5, updated_at = ?6 \
+                 WHERE id = ?7",
                 params![
                     &new_path,
                     new_filename,
                     new_size,
+                    &candidate.expected_hash,
                     &session_str,
                     &now,
                     &candidate.id,
@@ -3127,5 +3129,56 @@ mod tests {
             )
             .unwrap();
         assert_eq!(superseded_count, 1, "supersession chain intact");
+    }
+
+    #[test]
+    fn finish_promoted_move_updates_content_hash() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        // Pre-existing active file with content_hash != expected_hash
+        // (mimics a prior voom operation that bumped expected_hash).
+        let mut f = active_file("/movies/old.mkv");
+        f.content_hash = Some("h-stale".to_string());
+        store.upsert_file(&f).unwrap();
+        let original_id = f.id;
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET content_hash = 'h-stale', expected_hash = 'h-current' \
+                 WHERE id = ?1",
+                params![original_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        // Ingest a NEW path with content_hash matching expected_hash.
+        let df_new = DiscoveredFile::new(
+            PathBuf::from("/movies/new.mkv"),
+            100,
+            "h-current".to_string(),
+        );
+        store.ingest_discovered_file(session, &df_new).unwrap();
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(finish.promoted_moves, 1);
+
+        let conn = store.conn().unwrap();
+        let (path, content_hash, expected_hash): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT path, content_hash, expected_hash FROM files WHERE id = ?1",
+                params![original_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(path, "/movies/new.mkv");
+        assert_eq!(
+            content_hash, "h-current",
+            "promoted move must update content_hash to the discovered hash"
+        );
+        assert_eq!(expected_hash.as_deref(), Some("h-current"));
     }
 }

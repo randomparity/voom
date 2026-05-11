@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,8 +45,18 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
             eprintln!("{} {}", style("Scanning").bold(), path_list.join(", "));
         }
 
-        let (all_events, orphans, disc_errors) =
+        let (mut all_events, orphans, disc_errors) =
             run_discovery(&args, &paths, hash_files, quiet, &kernel, store.clone())?;
+
+        // Deduplicate by path: overlapping scan roots can produce the same path
+        // multiple times. Doing this here keeps the dispatch, summary,
+        // introspection, verification, and JSON output paths all
+        // single-counted. The session API's IngestDecision::Duplicate is now
+        // defense in depth for the hash path.
+        {
+            let mut seen = HashSet::new();
+            all_events.retain(|e| seen.insert(e.path.clone()));
+        }
 
         if all_events.is_empty() {
             handle_empty_scan(&*store, &paths, hash_files, orphans, quiet, args.format)?;
