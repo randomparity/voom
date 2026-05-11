@@ -634,12 +634,116 @@ impl FileStorage for SqliteStore {
 
     fn ingest_discovered_file(
         &self,
-        _session: voom_domain::transition::ScanSessionId,
-        _file: &voom_domain::transition::DiscoveredFile,
+        session: voom_domain::transition::ScanSessionId,
+        file: &voom_domain::transition::DiscoveredFile,
     ) -> voom_domain::errors::Result<voom_domain::transition::IngestDecision> {
-        Err(voom_domain::errors::VoomError::Other(
-            "ingest_discovered_file not yet implemented for SqliteStore".into(),
-        ))
+        use voom_domain::transition::IngestDecision;
+
+        let mut conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        let session_str = session.to_string();
+        let path_str = file.path.to_string_lossy().to_string();
+        let filename = filename_string(&file.path);
+
+        let tx = conn
+            .transaction()
+            .map_err(storage_err("failed to begin ingest transaction"))?;
+
+        // Session must be in_progress
+        let status: Option<String> = tx
+            .query_row(
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![&session_str],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_err("failed to look up scan session"))?;
+        match status.as_deref() {
+            Some("in_progress") => {}
+            Some(other) => {
+                return Err(voom_domain::errors::VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::Other,
+                    message: format!(
+                        "scan session {session_str} is not in_progress (status: {other})"
+                    ),
+                });
+            }
+            None => {
+                return Err(voom_domain::errors::VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::NotFound,
+                    message: format!("unknown scan session {session_str}"),
+                });
+            }
+        }
+
+        // Look up existing row by path
+        let existing: Option<(String, Option<String>, i64, Option<String>)> = tx
+            .query_row(
+                "SELECT id, expected_hash, size, last_seen_session_id \
+                 FROM files WHERE path = ?1",
+                params![&path_str],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(storage_err("failed to look up existing file"))?;
+
+        if existing.is_some() {
+            // Unchanged / ExternallyChanged / Duplicate are implemented in later tasks.
+            return Err(voom_domain::errors::VoomError::Other(
+                format!(
+                    "ingest_discovered_file existing-path branches not yet implemented \
+                     for {path_str}"
+                )
+                .into(),
+            ));
+        }
+
+        // No row at this path — treat as New (move branch lands in Task 11).
+        let new_id = Uuid::new_v4();
+        tx.execute(
+            "INSERT INTO files \
+             (id, path, filename, size, content_hash, \
+              expected_hash, status, container, duration, \
+              tags, plugin_metadata, introspected_at, \
+              created_at, updated_at, last_seen_session_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
+                     'other', 0.0, '{}', '{}', ?7, ?7, ?7, ?8)",
+            params![
+                new_id.to_string(),
+                &path_str,
+                filename,
+                file.size as i64,
+                &file.content_hash,
+                &file.content_hash,
+                &now,
+                &session_str,
+            ],
+        )
+        .map_err(storage_err("failed to insert new file in ingest"))?;
+
+        let disc_transition = FileTransition::new(
+            new_id,
+            file.path.clone(),
+            file.content_hash.clone(),
+            file.size,
+            TransitionSource::Discovery,
+        );
+        insert_transition_in_tx(&tx, &disc_transition, &now)?;
+
+        tx.commit()
+            .map_err(storage_err("failed to commit ingest transaction"))?;
+
+        Ok(IngestDecision::New {
+            file_id: new_id,
+            needs_introspection: true,
+        })
     }
 
     fn finish_scan_session(
@@ -2275,5 +2379,51 @@ mod tests {
             msg.contains("not in_progress") || msg.contains("not in progress"),
             "expected 'not in_progress' in error, got: {msg}"
         );
+    }
+
+    #[test]
+    fn ingest_new_file_inserts_and_returns_new() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), 100, "h-a".to_string());
+
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+        match decision {
+            IngestDecision::New {
+                needs_introspection,
+                ..
+            } => {
+                assert!(needs_introspection);
+            }
+            other => panic!("expected New, got {other:?}"),
+        }
+
+        // File row created with status=active, last_seen_session_id stamped
+        let conn = store.conn().unwrap();
+        let (status, last_seen): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, last_seen_session_id FROM files WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "active");
+        assert_eq!(last_seen.as_deref(), Some(session.to_string().as_str()));
+
+        // Discovery transition recorded
+        let tx_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions \
+                 WHERE source = 'discovery' AND path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tx_count, 1);
     }
 }
