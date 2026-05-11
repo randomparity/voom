@@ -587,8 +587,11 @@ impl FileStorage for SqliteStore {
         &self,
         roots: &[PathBuf],
     ) -> voom_domain::errors::Result<voom_domain::transition::ScanSessionId> {
+        const STALE_SESSION_SECS: i64 = 60;
+
         let mut conn = self.conn()?;
-        let now = format_datetime(&Utc::now());
+        let now_dt = Utc::now();
+        let now = format_datetime(&now_dt);
         let roots_json = serde_json::to_string(
             &roots
                 .iter()
@@ -601,34 +604,66 @@ impl FileStorage for SqliteStore {
         let tx = conn
             .transaction()
             .map_err(storage_err("failed to begin scan_session transaction"))?;
-        // SELECT the IDs before the UPDATE so the warn! log preserves them for
-        // forensic trace (after the UPDATE, those rows no longer match
-        // status='in_progress').
-        let abandoned_ids: Vec<String> = {
+
+        // Inspect existing in_progress sessions. Auto-cancel only those whose
+        // heartbeat is older than STALE_SESSION_SECS; live sessions cause this
+        // call to error.
+        let prior: Vec<(String, String)> = {
             let mut stmt = tx
-                .prepare("SELECT id FROM scan_sessions WHERE status = 'in_progress'")
+                .prepare(
+                    "SELECT id, last_heartbeat_at FROM scan_sessions \
+                     WHERE status = 'in_progress'",
+                )
                 .map_err(storage_err("failed to prepare prior-session lookup"))?;
-            stmt.query_map([], |row| row.get::<_, String>(0))
-                .map_err(storage_err("failed to query prior in_progress sessions"))?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(storage_err(
-                    "failed to collect prior in_progress session IDs",
-                ))?
+            stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage_err("failed to query prior in_progress sessions"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage_err(
+                "failed to collect prior in_progress session rows",
+            ))?
         };
-        if !abandoned_ids.is_empty() {
-            let abandoned = abandoned_ids.len();
+
+        let mut cancelled_ids: Vec<String> = Vec::new();
+        for (sid, heartbeat_str) in &prior {
+            let heartbeat = parse_datetime(heartbeat_str).map_err(|e| {
+                voom_domain::errors::VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::Other,
+                    message: format!("failed to parse last_heartbeat_at for session {sid}: {e}"),
+                }
+            })?;
+            let age_secs = now_dt.signed_duration_since(heartbeat).num_seconds();
+            if age_secs > STALE_SESSION_SECS {
+                cancelled_ids.push(sid.clone());
+            } else {
+                return Err(voom_domain::errors::VoomError::Storage {
+                    kind: voom_domain::errors::StorageErrorKind::Other,
+                    message: format!(
+                        "another scan is in progress (session {sid}, last heartbeat {heartbeat_str}); \
+                         wait up to {STALE_SESSION_SECS} seconds or abandon it manually if stale"
+                    ),
+                });
+            }
+        }
+
+        if !cancelled_ids.is_empty() {
             tracing::warn!(
-                abandoned,
-                cancelled_ids = ?abandoned_ids,
+                cancelled_count = cancelled_ids.len(),
+                cancelled_ids = ?cancelled_ids,
                 "auto-cancelled stale in_progress scan session(s) at begin",
             );
-            tx.execute(
-                "UPDATE scan_sessions SET status = 'cancelled', finished_at = ?1 \
-                 WHERE status = 'in_progress'",
-                params![now],
-            )
-            .map_err(storage_err("failed to auto-abandon prior scan sessions"))?;
+            for sid in &cancelled_ids {
+                tx.execute(
+                    "UPDATE scan_sessions SET status = 'cancelled', \
+                     finished_at = ?1, last_heartbeat_at = ?1 \
+                     WHERE id = ?2 AND status = 'in_progress'",
+                    params![now, sid],
+                )
+                .map_err(storage_err("failed to auto-cancel stale scan session"))?;
+            }
         }
+
         tx.execute(
             "INSERT INTO scan_sessions (id, roots_json, status, started_at, last_heartbeat_at) \
              VALUES (?1, ?2, 'in_progress', ?3, ?3)",
@@ -2239,11 +2274,19 @@ mod tests {
         let first = store
             .begin_scan_session(&[PathBuf::from("/movies")])
             .unwrap();
-        let second = store
-            .begin_scan_session(&[PathBuf::from("/movies")])
-            .unwrap();
-        assert_ne!(first.to_string(), second.to_string());
 
+        // First session is live (heartbeat = now). A second begin should
+        // error, not silently cancel the live session.
+        let err = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("another scan is in progress") || msg.contains("in_progress"),
+            "expected live-session error on second begin, got: {msg}"
+        );
+
+        // First session row is untouched.
         let conn = store.conn().unwrap();
         let first_status: String = conn
             .query_row(
@@ -2252,7 +2295,8 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(first_status, "cancelled");
+        assert_eq!(first_status, "in_progress");
+
         let first_finished_at: Option<String> = conn
             .query_row(
                 "SELECT finished_at FROM scan_sessions WHERE id = ?1",
@@ -2261,17 +2305,9 @@ mod tests {
             )
             .unwrap();
         assert!(
-            first_finished_at.is_some(),
-            "cancelled session must have finished_at set"
+            first_finished_at.is_none(),
+            "live session must not have finished_at set on rejected begin"
         );
-        let second_status: String = conn
-            .query_row(
-                "SELECT status FROM scan_sessions WHERE id = ?1",
-                params![second.to_string()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(second_status, "in_progress");
     }
 
     #[test]
@@ -3180,5 +3216,79 @@ mod tests {
             "promoted move must update content_hash to the discovered hash"
         );
         assert_eq!(expected_hash.as_deref(), Some("h-current"));
+    }
+
+    #[test]
+    fn begin_after_stale_in_progress_auto_cancels() {
+        use std::path::PathBuf;
+        let store = test_store();
+        // Seed a stale in_progress session via a direct INSERT with old heartbeat.
+        let stale_id = "11111111-1111-1111-1111-111111111111";
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at) \
+                 VALUES (?1, '[\"/m\"]', 'in_progress', ?2, ?3)",
+                params![stale_id, "2026-05-11T10:00:00Z", "2026-05-11T10:00:00Z",],
+            )
+            .unwrap();
+        }
+        let new_session = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        assert_ne!(new_session.to_string(), stale_id);
+
+        let conn = store.conn().unwrap();
+        let stale_status: String = conn
+            .query_row(
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![stale_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stale_status, "cancelled");
+        let new_status: String = conn
+            .query_row(
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![new_session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_status, "in_progress");
+    }
+
+    #[test]
+    fn begin_with_live_in_progress_errors() {
+        use std::path::PathBuf;
+        let store = test_store();
+        let live_id = "22222222-2222-2222-2222-222222222222";
+        let now = format_datetime(&chrono::Utc::now());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "INSERT INTO scan_sessions \
+                 (id, roots_json, status, started_at, last_heartbeat_at) \
+                 VALUES (?1, '[\"/m\"]', 'in_progress', ?2, ?2)",
+                params![live_id, now],
+            )
+            .unwrap();
+        }
+        let err = store
+            .begin_scan_session(&[PathBuf::from("/m")])
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("another scan is in progress") || msg.contains("in_progress"),
+            "expected live-session error, got: {msg}"
+        );
+
+        let conn = store.conn().unwrap();
+        let live_status: String = conn
+            .query_row(
+                "SELECT status FROM scan_sessions WHERE id = ?1",
+                params![live_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(live_status, "in_progress");
     }
 }
