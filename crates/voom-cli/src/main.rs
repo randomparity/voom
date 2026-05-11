@@ -135,6 +135,7 @@ fn command_output_format(command: &Commands) -> Option<OutputFormat> {
         Commands::Policy(PolicyCommands::List { format }) => Some(*format),
         Commands::Policy(PolicyCommands::Validate { format, .. }) => Some(*format),
         Commands::Policy(PolicyCommands::Show { format, .. }) => Some(*format),
+        Commands::Policy(PolicyCommands::Describe { format, .. }) => Some(*format),
         Commands::Policy(PolicyCommands::Diff { format, .. }) => Some(*format),
         Commands::Policy(PolicyCommands::Test { format, .. }) => Some(*format),
         Commands::Plugin(PluginCommands::List { format }) => Some(*format),

@@ -180,10 +180,8 @@ impl PolicyResolver {
 
         for policy_path_str in &policy_paths {
             let resolved = resolve_policy_in_context(policy_path_str, base_dir);
-            let source = std::fs::read_to_string(&resolved)
-                .with_context(|| format!("failed to read policy: {}", resolved.display()))?;
-            let compiled =
-                voom_dsl::compile_policy(&source).context("policy compilation failed")?;
+            let compiled = voom_dsl::compile_policy_file(&resolved)
+                .with_context(|| format!("failed to compile policy: {}", resolved.display()))?;
             let idx = policies.len();
             policies.push((policy_path_str.clone(), compiled));
             path_to_index.insert(policy_path_str.clone(), idx);

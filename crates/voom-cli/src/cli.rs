@@ -325,6 +325,14 @@ pub enum PolicyCommands {
         #[arg(short, long, default_value = "table")]
         format: OutputFormat,
     },
+    /// Describe resolved policy composition
+    Describe {
+        /// Policy file to describe
+        file: PathBuf,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
     /// Auto-format a policy file in place
     Format {
         /// Policy file to format
@@ -1435,6 +1443,18 @@ mod tests {
                 assert!(matches!(format, OutputFormat::Table));
             }
             _ => panic!("expected Policy Show"),
+        }
+    }
+
+    #[test]
+    fn test_policy_describe() {
+        let cli = parse(&["voom", "policy", "describe", "my.voom", "--format", "json"]);
+        match cli.command {
+            Commands::Policy(PolicyCommands::Describe { file, format }) => {
+                assert_eq!(file, PathBuf::from("my.voom"));
+                assert!(matches!(format, OutputFormat::Json));
+            }
+            _ => panic!("expected Policy Describe"),
         }
     }
 
