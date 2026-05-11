@@ -434,6 +434,99 @@ fn test_policy_validate_valid_file() {
 }
 
 #[test]
+fn policy_validate_accepts_file_extends() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("base.voom"),
+        r#"policy "base" { phase base { container mkv } }"#,
+    )
+    .unwrap();
+    let child = dir.path().join("child.voom");
+    std::fs::write(
+        &child,
+        r#"policy "child" extends "file://./base.voom" {
+            phase child { depends_on: [base] keep audio }
+        }"#,
+    )
+    .unwrap();
+
+    voom()
+        .args(["policy", "validate", child.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Policy \"child\" is valid"));
+}
+
+#[test]
+fn policy_describe_reports_extended_phase() {
+    let dir = tempfile::tempdir().unwrap();
+    let child = dir.path().join("child.voom");
+    std::fs::write(
+        &child,
+        r#"policy "child" extends "anime-base" {
+            phase audio { extend keep audio where lang == eng }
+        }"#,
+    )
+    .unwrap();
+
+    voom()
+        .args(["policy", "describe", child.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Extends: anime-base"))
+        .stdout(predicate::str::contains("audio"))
+        .stdout(predicate::str::contains("extended"));
+}
+
+#[test]
+fn policy_describe_json_reports_file_parent_composition() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("base.voom");
+    std::fs::write(
+        &base,
+        r#"policy "base" {
+            phase containerize { container mkv }
+            phase audio { keep audio where lang == eng }
+            phase subtitles { keep subtitles where lang == und }
+        }"#,
+    )
+    .unwrap();
+    let child = dir.path().join("child.voom");
+    std::fs::write(
+        &child,
+        r#"policy "child" extends "file://./base.voom" {
+            phase audio { extend keep audio where lang == und }
+            phase subtitles { keep subtitles where lang == eng }
+        }"#,
+    )
+    .unwrap();
+
+    let output = voom()
+        .args([
+            "policy",
+            "describe",
+            child.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|error| panic!("stdout was not valid JSON: {error}\nstdout:\n{stdout}"));
+    let parent = std::fs::canonicalize(&base).unwrap().display().to_string();
+    let child_source = std::fs::canonicalize(&child).unwrap().display().to_string();
+
+    assert_eq!(json["policy"], "child");
+    assert_eq!(json["extends_chain"], serde_json::json!([parent]));
+    assert_describe_phase_composition(&json, "containerize", "Inherited", Some(&parent), 0);
+    assert_describe_phase_composition(&json, "audio", "Extended", Some(&parent), 1);
+    assert_describe_phase_composition(&json, "subtitles", "Overridden", Some(&child_source), 0);
+}
+
+#[test]
 fn test_policy_validate_invalid_file() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(tmp.path(), "this is not valid voom syntax").unwrap();
@@ -451,6 +544,25 @@ fn test_policy_validate_missing_file() {
         .args(["policy", "validate", "/nonexistent/policy.voom"])
         .assert()
         .failure();
+}
+
+fn assert_describe_phase_composition(
+    value: &Value,
+    name: &str,
+    kind: &str,
+    source: Option<&str>,
+    added_operations: usize,
+) {
+    let phase = value["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|phase| phase["name"] == name)
+        .unwrap_or_else(|| panic!("missing describe phase {name:?}: {value}"));
+
+    assert_eq!(phase["composition"]["kind"], kind);
+    assert_eq!(phase["composition"]["source"], serde_json::json!(source));
+    assert_eq!(phase["composition"]["added_operations"], added_operations);
 }
 
 #[test]
