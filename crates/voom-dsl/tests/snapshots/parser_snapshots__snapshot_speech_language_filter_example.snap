@@ -22,7 +22,7 @@ phases:
   - name: keep-english
     extend: false
     skip_when: ~
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:

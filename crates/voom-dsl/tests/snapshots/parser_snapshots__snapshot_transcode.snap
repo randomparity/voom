@@ -17,7 +17,7 @@ phases:
         - List:
             - Ident: hevc
             - Ident: h265
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:

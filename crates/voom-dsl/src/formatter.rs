@@ -167,9 +167,9 @@ fn format_phase(phase: &PhaseNode, out: &mut String, level: usize) {
         out.push_str("extend\n");
     }
 
-    if !phase.depends_on.is_empty() {
+    if let Some(depends_on) = &phase.depends_on {
         indent(out, level + 1);
-        let _ = writeln!(out, "depends_on: [{}]", phase.depends_on.join(", "));
+        let _ = writeln!(out, "depends_on: [{}]", depends_on.join(", "));
     }
 
     if let Some(skip_when) = &phase.skip_when {
@@ -1137,7 +1137,7 @@ mod tests {
             name: name.into(),
             extend: false,
             skip_when: None,
-            depends_on: vec![],
+            depends_on: None,
             run_if: None,
             on_error: None,
             operations: vec![],
@@ -1153,7 +1153,7 @@ mod tests {
     #[test]
     fn format_phase_depends_on_indents_one_deeper() {
         let mut phase = empty_phase("build");
-        phase.depends_on = vec!["init".into()];
+        phase.depends_on = Some(vec!["init".into()]);
         let mut out = String::new();
         format_phase(&phase, &mut out, 1);
         assert!(

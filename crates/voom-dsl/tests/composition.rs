@@ -1,7 +1,7 @@
 use std::fs;
 
 use tempfile::tempdir;
-use voom_dsl::{compile_policy_file, compile_policy_with_bundled};
+use voom_dsl::{compile_policy, compile_policy_file, compile_policy_with_bundled};
 
 #[test]
 fn bundled_extends_inherits_missing_phases() {
@@ -52,6 +52,27 @@ fn phase_extend_appends_operations_and_inherits_controls() {
         .unwrap();
     assert_eq!(audio.depends_on, ["containerize"]);
     assert!(audio.operations.len() > 1);
+}
+
+#[test]
+fn phase_extend_can_clear_inherited_dependencies() {
+    let policy = compile_policy_with_bundled(
+        r#"policy "child" extends "anime-base" {
+            phase audio {
+                extend
+                depends_on: []
+                keep audio where lang == jpn
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let audio = policy
+        .phases
+        .iter()
+        .find(|phase| phase.name == "audio")
+        .unwrap();
+    assert!(audio.depends_on.is_empty());
 }
 
 #[test]
@@ -114,4 +135,81 @@ fn extending_unknown_phase_is_rejected() {
     .to_string();
 
     assert!(err.contains("phase \"missing\" uses extend but no parent phase exists"));
+}
+
+#[test]
+fn compile_policy_rejects_unresolved_bundled_extends() {
+    let err = compile_policy(
+        r#"policy "child" extends "anime-base" {
+            phase subtitles {
+                keep subtitles
+            }
+        }"#,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(err.contains("policy extends requires composition resolution"));
+    assert!(err.contains("compile_policy_with_bundled(source)"));
+}
+
+#[test]
+fn unsupported_extends_scheme_is_rejected() {
+    let err = compile_policy_with_bundled(
+        r#"policy "child" extends "registry://x" {
+            phase subtitles {
+                keep subtitles
+            }
+        }"#,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(err.contains("unsupported policy extends URI \"registry://x\""));
+}
+
+#[test]
+fn empty_file_extends_uri_is_rejected() {
+    let err = compile_policy_with_bundled(
+        r#"policy "child" extends "file://" {
+            phase subtitles {
+                keep subtitles
+            }
+        }"#,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(err.contains("file:// policy extends URI must include a path"));
+}
+
+#[test]
+fn composed_source_hash_reflects_resolved_parent_behavior() {
+    let dir = tempdir().unwrap();
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    fs::create_dir(&first).unwrap();
+    fs::create_dir(&second).unwrap();
+    fs::write(
+        first.join("base.voom"),
+        r#"policy "base" { phase base { container mkv } }"#,
+    )
+    .unwrap();
+    fs::write(
+        second.join("base.voom"),
+        r#"policy "base" { phase base { container mp4 } }"#,
+    )
+    .unwrap();
+    let child_source = r#"policy "child" extends "file://./base.voom" {
+        phase child { keep audio }
+    }"#;
+    let first_child = first.join("child.voom");
+    let second_child = second.join("child.voom");
+    fs::write(&first_child, child_source).unwrap();
+    fs::write(&second_child, child_source).unwrap();
+
+    let first_policy = compile_policy_file(&first_child).unwrap();
+    let second_policy = compile_policy_file(&second_child).unwrap();
+
+    assert_ne!(first_policy.source_hash, second_policy.source_hash);
 }

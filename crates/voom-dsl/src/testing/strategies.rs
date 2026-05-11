@@ -614,8 +614,8 @@ fn phase_strategy() -> impl Strategy<Value = PhaseNode> {
     (
         ident_strategy(),
         proptest::option::of(condition_strategy()),
-        // depends_on: list of phase idents.
-        vec(ident_strategy(), 0..=2),
+        // depends_on: omitted or explicitly present list of phase idents.
+        proptest::option::of(vec(ident_strategy(), 0..=2)),
         proptest::option::of(
             (ident_strategy(), run_if_trigger)
                 .prop_map(|(phase, trigger)| RunIfNode { phase, trigger }),

@@ -221,7 +221,7 @@ fn extend_phase(mut parent: PhaseNode, child: PhaseNode) -> PhaseNode {
     if child.skip_when.is_some() {
         parent.skip_when = child.skip_when;
     }
-    if !child.depends_on.is_empty() {
+    if child.depends_on.is_some() {
         parent.depends_on = child.depends_on;
     }
     if child.run_if.is_some() {

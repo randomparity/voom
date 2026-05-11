@@ -304,7 +304,7 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
     let name = inner.next().unwrap().as_str().to_string();
 
     let mut skip_when = None;
-    let mut depends_on = Vec::new();
+    let mut depends_on = None;
     let mut run_if = None;
     let mut on_error = None;
     let mut operations = Vec::new();
@@ -326,7 +326,7 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
             }
             Rule::depends_on => {
                 let list = child.into_inner().next().unwrap();
-                depends_on = build_list(list);
+                depends_on = Some(build_list(list));
             }
             Rule::run_if => {
                 // Grammar: "run_if" ~ ident ~ "." ~ run_if_trigger

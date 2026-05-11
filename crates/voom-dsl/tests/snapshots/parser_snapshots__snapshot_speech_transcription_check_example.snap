@@ -23,7 +23,7 @@ phases:
   - name: classify-speech
     extend: false
     skip_when: ~
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:

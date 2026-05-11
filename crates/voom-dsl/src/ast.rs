@@ -80,7 +80,7 @@ pub struct PhaseNode {
     pub name: String,
     pub extend: bool,
     pub skip_when: Option<ConditionNode>,
-    pub depends_on: Vec<String>,
+    pub depends_on: Option<Vec<String>>,
     pub run_if: Option<RunIfNode>,
     pub on_error: Option<ErrorStrategyNode>,
     pub operations: Vec<SpannedOperation>,

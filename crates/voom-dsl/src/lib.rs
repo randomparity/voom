@@ -72,9 +72,9 @@ pub use validator::{validate, validate_with_warnings};
 /// ```
 pub fn compile_policy(source: &str) -> Result<CompiledPolicy, DslPipelineError> {
     let ast = parse_policy(source).map_err(DslPipelineError::Parse)?;
-    if let Some(ast::ExtendsSource::File(_)) = &ast.extends {
+    if ast.extends.is_some() {
         return Err(DslPipelineError::Compile(DslError::compile(
-            "file:// policy extends requires compile_policy_file(path)",
+            "policy extends requires composition resolution; use compile_policy_with_bundled(source) or compile_policy_file(path)",
         )));
     }
     validate(&ast).map_err(DslPipelineError::Validation)?;
@@ -96,7 +96,11 @@ pub fn compile_policy_with_bundled(source: &str) -> Result<CompiledPolicy, DslPi
     let resolved = composition::resolve_policy_with_bundled(source)?;
     validate(&resolved.ast).map_err(DslPipelineError::Validation)?;
     let mut policy = compiler::compile_ast(&resolved.ast).map_err(DslPipelineError::Compile)?;
-    policy.source_hash = format!("{:016x}", xxhash_rust::xxh3::xxh3_64(source.as_bytes()));
+    let resolved_source = format_policy(&resolved.ast);
+    policy.source_hash = format!(
+        "{:016x}",
+        xxhash_rust::xxh3::xxh3_64(resolved_source.as_bytes())
+    );
     Ok(policy)
 }
 
@@ -108,15 +112,13 @@ pub fn compile_policy_with_bundled(source: &str) -> Result<CompiledPolicy, DslPi
 /// [`DslPipelineError::Validation`] if the merged AST fails semantic validation,
 /// or [`DslPipelineError::Compile`] if inheritance cannot be resolved or compiled.
 pub fn compile_policy_file(path: &std::path::Path) -> Result<CompiledPolicy, DslPipelineError> {
-    let source = std::fs::read(path).map_err(|err| {
-        DslPipelineError::Compile(DslError::compile(format!(
-            "failed to read policy file {}: {err}",
-            path.display()
-        )))
-    })?;
     let resolved = composition::resolve_policy_file(path)?;
     validate(&resolved.ast).map_err(DslPipelineError::Validation)?;
     let mut policy = compiler::compile_ast(&resolved.ast).map_err(DslPipelineError::Compile)?;
-    policy.source_hash = format!("{:016x}", xxhash_rust::xxh3::xxh3_64(&source));
+    let resolved_source = format_policy(&resolved.ast);
+    policy.source_hash = format!(
+        "{:016x}",
+        xxhash_rust::xxh3::xxh3_64(resolved_source.as_bytes())
+    );
     Ok(policy)
 }

@@ -124,7 +124,7 @@ fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslErr
 
     Ok(CompiledPhase {
         name: phase.name.clone(),
-        depends_on: phase.depends_on.clone(),
+        depends_on: phase.depends_on.clone().unwrap_or_default(),
         skip_when,
         run_if,
         on_error: phase
@@ -799,7 +799,7 @@ fn topological_sort(ast: &PolicyAst) -> std::result::Result<Vec<String>, DslErro
     for phase in &ast.phases {
         adj.entry(phase.name.as_str()).or_default();
         in_degree.entry(phase.name.as_str()).or_insert(0);
-        for dep in &phase.depends_on {
+        for dep in phase.depends_on.as_deref().unwrap_or(&[]) {
             adj.entry(dep.as_str())
                 .or_default()
                 .push(phase.name.as_str());
@@ -838,6 +838,8 @@ fn topological_sort(ast: &PolicyAst) -> std::result::Result<Vec<String>, DslErro
         let has_unknown_dep = stuck.iter().any(|&name| {
             ast.phases.iter().find(|p| p.name == name).is_some_and(|p| {
                 p.depends_on
+                    .as_deref()
+                    .unwrap_or(&[])
                     .iter()
                     .any(|d| !phase_names.contains(d.as_str()))
             })

@@ -27,7 +27,7 @@ phases:
   - name: containerize
     extend: false
     skip_when: ~
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:
@@ -156,7 +156,7 @@ phases:
         - List:
             - Ident: hevc
             - Ident: h265
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:
@@ -318,7 +318,7 @@ phases:
   - name: metadata
     extend: false
     skip_when: ~
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:
