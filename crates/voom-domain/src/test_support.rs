@@ -375,8 +375,9 @@ impl FileStorage for InMemoryStore {
         session: crate::transition::ScanSessionId,
         file: &crate::transition::DiscoveredFile,
     ) -> Result<crate::transition::IngestDecision> {
-        // Verify session is in_progress
-        {
+        // Verify session is in_progress and capture roots for move-candidate scoping.
+        // Sessions lock is released before acquiring last_seen/files (lock order: 1→2→3).
+        let session_roots: Vec<std::path::PathBuf> = {
             let sessions = self.sessions.lock();
             let row = sessions.get(&session).ok_or_else(|| {
                 crate::errors::VoomError::Other(format!("unknown scan session {session}").into())
@@ -390,7 +391,8 @@ impl FileStorage for InMemoryStore {
                     .into(),
                 ));
             }
-        }
+            row.roots.clone()
+        };
 
         let mut last_seen = self.last_seen.lock();
         // Duplicate fast-path
@@ -449,11 +451,13 @@ impl FileStorage for InMemoryStore {
         }
 
         // No row at this path. Check for move via missing+expected_hash match.
+        // Constrain to session roots to avoid cross-root hash-collision false positives.
         let move_match = files
             .values()
             .find(|f| {
                 f.status == FileStatus::Missing
                     && f.expected_hash.as_deref() == Some(file.content_hash.as_str())
+                    && session_roots.iter().any(|r| f.path.starts_with(r))
             })
             .cloned();
         if let Some(mut m) = move_match {

@@ -808,16 +808,46 @@ impl FileStorage for SqliteStore {
         // expected_hash. The status='missing' filter is what prevents
         // double-consumption within a session — once we reactivate a row,
         // it's no longer 'missing' and won't match again.
-        let move_match: Option<(String, String)> = tx
-            .query_row(
-                "SELECT id, path FROM files \
-                 WHERE expected_hash = ?1 AND status = 'missing' AND path IS NOT NULL \
-                 LIMIT 1",
-                params![&file.content_hash],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-            .map_err(storage_err("failed to look up move candidate"))?;
+        //
+        // Constrain move detection to the current session's scanned roots —
+        // same scoping as build_missing_hash_index on main. Without this, a
+        // hash collision between roots would falsely promote a cross-root missing
+        // file to Moved.
+        let session_roots: Vec<PathBuf> = {
+            let roots_json: String = tx
+                .query_row(
+                    "SELECT roots_json FROM scan_sessions WHERE id = ?1",
+                    params![&session_str],
+                    |row| row.get(0),
+                )
+                .map_err(storage_err("failed to load session roots for move lookup"))?;
+            let roots: Vec<String> = serde_json::from_str(&roots_json).map_err(|e| {
+                voom_domain::errors::VoomError::Other(
+                    format!("failed to parse roots_json: {e}").into(),
+                )
+            })?;
+            roots.into_iter().map(PathBuf::from).collect()
+        };
+
+        let move_match: Option<(String, String)> = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id, path FROM files \
+                     WHERE expected_hash = ?1 AND status = 'missing' AND path IS NOT NULL",
+                )
+                .map_err(storage_err("failed to prepare move-candidate select"))?;
+            let candidates: Vec<(String, String)> = stmt
+                .query_map(params![&file.content_hash], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(storage_err("failed to query move candidates"))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(storage_err("failed to collect move candidates"))?;
+            candidates.into_iter().find(|(_, path)| {
+                let p = Path::new(path);
+                session_roots.iter().any(|r| p.starts_with(r))
+            })
+        };
 
         if let Some((missing_id, prior_path)) = move_match {
             tx.execute(
@@ -988,6 +1018,9 @@ impl FileStorage for SqliteStore {
             // Find a New-this-session row with content_hash matching this candidate's
             // expected_hash. "New this session" == last_seen_session_id == this session
             // AND created_at >= session started_at.
+            // Exclude rows that are part of a supersession chain — these are
+            // ExternallyChanged replacement rows (their id appears as superseded_by
+            // on the old row) and must not be hijacked as move targets.
             let new_match: Option<(String, String, i64)> = tx
                 .query_row(
                     "SELECT id, path, size FROM files \
@@ -996,6 +1029,8 @@ impl FileStorage for SqliteStore {
                        AND created_at >= ?3 \
                        AND path IS NOT NULL \
                        AND id != ?4 \
+                       AND id NOT IN (SELECT superseded_by FROM files \
+                                      WHERE superseded_by IS NOT NULL) \
                      LIMIT 1",
                     params![
                         &session_str,
@@ -2932,5 +2967,165 @@ mod tests {
             count, 1,
             "only the promoted candidate row, no separate New row"
         );
+    }
+
+    #[test]
+    fn ingest_moved_does_not_steal_from_other_root() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        // Pre-existing TV file marked missing with a known hash — NOT under
+        // the scan root we're about to use.
+        let mut tv = active_file("/tv/old-show.mkv");
+        tv.content_hash = Some("h-shared".to_string());
+        store.upsert_file(&tv).unwrap();
+        let tv_id = tv.id;
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET status = 'missing', \
+                 content_hash = 'h-shared', expected_hash = 'h-shared' \
+                 WHERE id = ?1",
+                params![tv_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        // Scan /movies only.
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        // Ingest a file in /movies with the same hash — NOT a move, just a coincidence.
+        let df = DiscoveredFile::new(
+            PathBuf::from("/movies/foo.mkv"),
+            100,
+            "h-shared".to_string(),
+        );
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+        assert!(
+            matches!(decision, IngestDecision::New { .. }),
+            "cross-root hash collision must NOT be treated as a move; got {decision:?}",
+        );
+
+        // Confirm the TV row is still in its original state.
+        let conn = store.conn().unwrap();
+        let (tv_path, tv_status): (String, String) = conn
+            .query_row(
+                "SELECT path, status FROM files WHERE id = ?1",
+                params![tv_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            tv_path, "/tv/old-show.mkv",
+            "TV row must not be moved by /movies scan"
+        );
+        assert_eq!(tv_status, "missing");
+
+        // Finish — TV file is not under scan root, so it should stay missing
+        // (the missing pass only updates files under session roots).
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(finish.missing, 0);
+        assert_eq!(finish.promoted_moves, 0);
+
+        let (tv_path_after, tv_status_after): (String, String) = conn
+            .query_row(
+                "SELECT path, status FROM files WHERE id = ?1",
+                params![tv_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tv_path_after, "/tv/old-show.mkv");
+        assert_eq!(tv_status_after, "missing");
+    }
+
+    #[test]
+    fn finish_promotion_does_not_steal_externally_changed_replacement() {
+        use std::path::PathBuf;
+        use voom_domain::transition::DiscoveredFile;
+
+        let store = test_store();
+        // Pre-existing /a.mkv with hash X (will be externally changed to hash Y)
+        let mut a = active_file("/a.mkv");
+        a.content_hash = Some("h-x".to_string());
+        store.upsert_file(&a).unwrap();
+        let a_id = a.id;
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET content_hash = 'h-x', expected_hash = 'h-x' WHERE id = ?1",
+                params![a_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        // Pre-existing /b.mkv with hash Y and expected_hash Y (will NOT be re-ingested)
+        let mut b = active_file("/b.mkv");
+        b.content_hash = Some("h-y".to_string());
+        store.upsert_file(&b).unwrap();
+        let b_id = b.id;
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET content_hash = 'h-y', expected_hash = 'h-y' WHERE id = ?1",
+                params![b_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        // Scan root '/' covers both files.
+        let session = store.begin_scan_session(&[PathBuf::from("/")]).unwrap();
+
+        // Ingest /a.mkv with NEW hash Y → ExternallyChanged
+        let df_a = DiscoveredFile::new(PathBuf::from("/a.mkv"), 100, "h-y".to_string());
+        let _decision_a = store.ingest_discovered_file(session, &df_a).unwrap();
+
+        // /b.mkv is NOT ingested — it will become a missing candidate.
+
+        let finish = store.finish_scan_session(session).unwrap();
+
+        // /b.mkv must be marked missing, NOT promoted to a move of the
+        // ExternallyChanged replacement row.
+        assert_eq!(
+            finish.promoted_moves, 0,
+            "ExternallyChanged replacement must not be hijacked by move promotion",
+        );
+        assert_eq!(finish.missing, 1, "/b.mkv must be marked missing");
+
+        let conn = store.conn().unwrap();
+        // /b.mkv row is still at /b.mkv, marked missing.
+        let (b_path, b_status): (String, String) = conn
+            .query_row(
+                "SELECT path, status FROM files WHERE id = ?1",
+                params![b_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(b_path, "/b.mkv");
+        assert_eq!(b_status, "missing");
+
+        // /a.mkv supersession is intact: one row at /a.mkv (the replacement), one
+        // superseded row (old a) with status=missing and path=NULL.
+        let active_a_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE path = '/a.mkv' AND status = 'active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            active_a_count, 1,
+            "active /a.mkv replacement must still exist"
+        );
+
+        let superseded_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE superseded_by IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(superseded_count, 1, "supersession chain intact");
     }
 }
