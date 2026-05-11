@@ -789,7 +789,61 @@ impl FileStorage for SqliteStore {
             });
         }
 
-        // No row at this path — treat as New (move branch lands in Task 11).
+        // No row at this path. Check for move: a missing file with matching
+        // expected_hash. The status='missing' filter is what prevents
+        // double-consumption within a session — once we reactivate a row,
+        // it's no longer 'missing' and won't match again.
+        let move_match: Option<(String, String)> = tx
+            .query_row(
+                "SELECT id, path FROM files \
+                 WHERE expected_hash = ?1 AND status = 'missing' AND path IS NOT NULL \
+                 LIMIT 1",
+                params![&file.content_hash],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(storage_err("failed to look up move candidate"))?;
+
+        if let Some((missing_id, prior_path)) = move_match {
+            tx.execute(
+                "UPDATE files SET path = ?1, filename = ?2, \
+                 size = ?3, content_hash = ?4, \
+                 status = 'active', missing_since = NULL, \
+                 last_seen_session_id = ?5, \
+                 updated_at = ?6 WHERE id = ?7",
+                params![
+                    &path_str,
+                    filename,
+                    file.size as i64,
+                    &file.content_hash,
+                    &session_str,
+                    &now,
+                    &missing_id,
+                ],
+            )
+            .map_err(storage_err("failed to reactivate moved file"))?;
+
+            let file_uuid = super::parse_uuid(&missing_id)?;
+            let move_transition = voom_domain::transition::FileTransition::new(
+                file_uuid,
+                file.path.clone(),
+                file.content_hash.clone(),
+                file.size,
+                voom_domain::transition::TransitionSource::Discovery,
+            )
+            .with_from_path(PathBuf::from(prior_path.clone()))
+            .with_detail("detected_move");
+            insert_transition_in_tx(&tx, &move_transition, &now)?;
+
+            tx.commit()
+                .map_err(storage_err("failed to commit moved ingest"))?;
+            return Ok(IngestDecision::Moved {
+                file_id: file_uuid,
+                from_path: PathBuf::from(prior_path),
+            });
+        }
+
+        // Truly new file
         let new_id = Uuid::new_v4();
         tx.execute(
             "INSERT INTO files \
@@ -2643,5 +2697,112 @@ mod tests {
             .unwrap();
         assert_eq!(old_status, "missing");
         assert_eq!(superseded_by.as_deref(), Some(new_id.to_string().as_str()));
+    }
+
+    #[test]
+    fn ingest_moved_file_reuses_id_and_records_move_transition() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        // Seed a file marked missing with a known expected_hash
+        let mut f = active_file("/movies/old.mkv");
+        f.status = FileStatus::Missing;
+        f.content_hash = Some("h-content".to_string());
+        f.expected_hash = Some("h-content".to_string());
+        store.upsert_file(&f).unwrap();
+        let original_id = f.id;
+
+        // upsert_file doesn't write expected_hash or status='missing', so set them
+        // directly via SQL the way the ExternallyChanged test does.
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET expected_hash = ?1, status = 'missing' WHERE id = ?2",
+                params!["h-content", original_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let df = DiscoveredFile::new(
+            PathBuf::from("/movies/new.mkv"),
+            100,
+            "h-content".to_string(),
+        );
+
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+        let (file_id, from_path) = match decision {
+            IngestDecision::Moved { file_id, from_path } => (file_id, from_path),
+            other => panic!("expected Moved, got {other:?}"),
+        };
+        assert_eq!(file_id, original_id);
+        assert_eq!(from_path, PathBuf::from("/movies/old.mkv"));
+
+        let conn = store.conn().unwrap();
+        let (path, status): (String, String) = conn
+            .query_row(
+                "SELECT path, status FROM files WHERE id = ?1",
+                params![original_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(path, "/movies/new.mkv");
+        assert_eq!(status, "active");
+
+        // Discovery transition with from_path recorded
+        let from_path_db: String = conn
+            .query_row(
+                "SELECT from_path FROM file_transitions WHERE file_id = ?1 AND path = ?2",
+                params![original_id.to_string(), "/movies/new.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(from_path_db, "/movies/old.mkv");
+    }
+
+    #[test]
+    fn ingest_does_not_claim_same_missing_row_twice() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let f = active_file("/movies/old.mkv");
+        let original_id = f.id;
+        store.upsert_file(&f).unwrap();
+
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET expected_hash = ?1, content_hash = ?2, status = 'missing' WHERE id = ?3",
+                params!["h-content", "h-content", original_id.to_string()],
+            )
+            .unwrap();
+        }
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+
+        let df1 = DiscoveredFile::new(
+            PathBuf::from("/movies/new_a.mkv"),
+            100,
+            "h-content".to_string(),
+        );
+        let df2 = DiscoveredFile::new(
+            PathBuf::from("/movies/new_b.mkv"),
+            100,
+            "h-content".to_string(),
+        );
+
+        let d1 = store.ingest_discovered_file(session, &df1).unwrap();
+        let d2 = store.ingest_discovered_file(session, &df2).unwrap();
+
+        assert!(matches!(d1, IngestDecision::Moved { .. }));
+        // The first one consumed the missing row by flipping it to active; the second
+        // sees no missing match and must be a fresh New row.
+        assert!(matches!(d2, IngestDecision::New { .. }), "got {d2:?}");
     }
 }
