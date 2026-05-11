@@ -43,6 +43,7 @@ use crate::verification::{
 struct InMemorySessionRow {
     roots: Vec<std::path::PathBuf>,
     status: crate::transition::ScanSessionStatus,
+    last_heartbeat_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Create a standard test `MediaFile` with video, two audio, and one subtitle track.
@@ -115,9 +116,10 @@ fn matches_filter(file: &MediaFile, filters: &FileFilters) -> bool {
 /// Plan/stats methods are stubs.
 ///
 // Lock acquisition order (to prevent deadlock):
-//   1. self.sessions  (scan session lifecycle)
-//   2. self.last_seen (per-path session stamps)
-//   3. self.files     (file rows)
+//   1. self.sessions             (scan session lifecycle)
+//   2. self.last_seen            (per-path session stamps)
+//   3. self.files                (file rows)
+//   4. self.file_session_affinity (file → session that last touched it)
 // Always acquire in this order when holding multiple simultaneously.
 // `new_in_session` and `transitions` are always acquired in isolation
 // (never while holding sessions/last_seen/files).
@@ -139,6 +141,9 @@ pub struct InMemoryStore {
     /// during each open scan session, so finish_scan_session can promote them.
     new_in_session:
         Mutex<HashMap<crate::transition::ScanSessionId, std::collections::HashSet<Uuid>>>,
+    /// Maps file_id → ScanSessionId of the session that last touched it.
+    /// Equivalent to SqliteStore's `files.last_seen_session_id` column.
+    file_session_affinity: Mutex<HashMap<Uuid, crate::transition::ScanSessionId>>,
 }
 
 impl InMemoryStore {
@@ -158,6 +163,7 @@ impl InMemoryStore {
             sessions: Default::default(),
             last_seen: Default::default(),
             new_in_session: Default::default(),
+            file_session_affinity: Default::default(),
         }
     }
 
@@ -353,18 +359,44 @@ impl FileStorage for InMemoryStore {
     }
 
     fn begin_scan_session(&self, roots: &[PathBuf]) -> Result<crate::transition::ScanSessionId> {
+        const STALE_SESSION_SECS: i64 = 60;
+        let now = chrono::Utc::now();
+
         let mut sessions = self.sessions.lock();
+
+        // Find any LIVE in_progress session — fail fast with that ID.
+        for (sid, row) in sessions.iter() {
+            if row.status == crate::transition::ScanSessionStatus::InProgress {
+                let age_secs = now
+                    .signed_duration_since(row.last_heartbeat_at)
+                    .num_seconds();
+                if age_secs <= STALE_SESSION_SECS {
+                    return Err(crate::errors::VoomError::Other(
+                        format!(
+                            "another scan is in progress (session {sid}, heartbeat \
+                             {age_secs} seconds ago); wait up to {STALE_SESSION_SECS} seconds \
+                             or abandon it manually if stale"
+                        )
+                        .into(),
+                    ));
+                }
+            }
+        }
+
+        // Auto-cancel stale in_progress sessions.
         for row in sessions.values_mut() {
             if row.status == crate::transition::ScanSessionStatus::InProgress {
                 row.status = crate::transition::ScanSessionStatus::Cancelled;
             }
         }
+
         let id = crate::transition::ScanSessionId::new();
         sessions.insert(
             id,
             InMemorySessionRow {
                 roots: roots.to_vec(),
                 status: crate::transition::ScanSessionStatus::InProgress,
+                last_heartbeat_at: now,
             },
         );
         Ok(id)
@@ -375,11 +407,11 @@ impl FileStorage for InMemoryStore {
         session: crate::transition::ScanSessionId,
         file: &crate::transition::DiscoveredFile,
     ) -> Result<crate::transition::IngestDecision> {
-        // Verify session is in_progress and capture roots for move-candidate scoping.
-        // Sessions lock is released before acquiring last_seen/files (lock order: 1→2→3).
-        let session_roots: Vec<std::path::PathBuf> = {
-            let sessions = self.sessions.lock();
-            let row = sessions.get(&session).ok_or_else(|| {
+        // Step 1: Acquire sessions: validate, bump heartbeat, snapshot roots + statuses.
+        // Lock is released before acquiring last_seen/files (lock order: 1→2→3→4).
+        let (session_roots, session_status_snapshot) = {
+            let mut sessions = self.sessions.lock();
+            let row = sessions.get_mut(&session).ok_or_else(|| {
                 crate::errors::VoomError::Other(format!("unknown scan session {session}").into())
             })?;
             if row.status != crate::transition::ScanSessionStatus::InProgress {
@@ -391,11 +423,19 @@ impl FileStorage for InMemoryStore {
                     .into(),
                 ));
             }
-            row.roots.clone()
+            row.last_heartbeat_at = chrono::Utc::now();
+            let roots = row.roots.clone();
+            // Snapshot all session statuses so we can do stub-recovery lookups
+            // without re-acquiring the sessions lock later.
+            let statuses: HashMap<
+                crate::transition::ScanSessionId,
+                crate::transition::ScanSessionStatus,
+            > = sessions.iter().map(|(k, v)| (*k, v.status)).collect();
+            (roots, statuses)
         };
 
+        // Step 2: Acquire last_seen, do duplicate fast-path.
         let mut last_seen = self.last_seen.lock();
-        // Duplicate fast-path
         if last_seen.get(&file.path) == Some(&session) {
             let files = self.files.lock();
             let id = files
@@ -414,17 +454,33 @@ impl FileStorage for InMemoryStore {
             return Ok(crate::transition::IngestDecision::Duplicate { file_id: id });
         }
 
+        // Step 3: Acquire files, do existing-row branches.
         let mut files = self.files.lock();
-        // Look up existing row by path
         let existing = files.values().find(|f| f.path == file.path).cloned();
 
         if let Some(mut existing) = existing {
+            // Look up affinity (lock order: sessions→last_seen→files→file_session_affinity).
+            // We already hold last_seen and files, so we acquire affinity now.
+            let affinity_lookup: Option<crate::transition::ScanSessionId> = {
+                let affinity = self.file_session_affinity.lock();
+                affinity.get(&existing.id).copied()
+            };
+            // Stub recovery: check whether this row was last touched by a
+            // non-completed session. If so, it's a stub from an interrupted scan.
+            let needs_recovery = match affinity_lookup {
+                Some(prior_session) => !matches!(
+                    session_status_snapshot.get(&prior_session),
+                    Some(crate::transition::ScanSessionStatus::Completed)
+                ),
+                None => false,
+            };
+
             let hash_matches = existing
                 .expected_hash
                 .as_ref()
                 .is_none_or(|eh| eh == &file.content_hash);
 
-            if hash_matches {
+            if hash_matches && !needs_recovery {
                 // Unchanged
                 existing.status = FileStatus::Active;
                 if existing.expected_hash.is_none() {
@@ -433,29 +489,51 @@ impl FileStorage for InMemoryStore {
                 let id = existing.id;
                 files.insert(existing.id, existing);
                 last_seen.insert(file.path.clone(), session);
+                drop(files);
+                drop(last_seen);
+                self.file_session_affinity.lock().insert(id, session);
                 return Ok(crate::transition::IngestDecision::Unchanged { file_id: id });
             }
-            // ExternallyChanged
-            let old_id = existing.id;
-            existing.status = FileStatus::Missing;
-            files.insert(old_id, existing);
 
-            let new_id = Uuid::new_v4();
-            let mut new_file = MediaFile::new(file.path.clone());
-            new_file.id = new_id;
-            new_file.size = file.size;
-            new_file.content_hash = Some(file.content_hash.clone());
-            new_file.expected_hash = Some(file.content_hash.clone());
-            new_file.status = FileStatus::Active;
-            files.insert(new_id, new_file);
-            last_seen.insert(file.path.clone(), session);
-            return Ok(crate::transition::IngestDecision::ExternallyChanged {
-                file_id: new_id,
-                superseded: old_id,
-            });
+            if hash_matches && needs_recovery {
+                // Stub recovery: delete the stub row and its affinity entry,
+                // then fall through to the no-row path below.
+                let stub_id = existing.id;
+                files.remove(&stub_id);
+                drop(files);
+                drop(last_seen);
+                self.file_session_affinity.lock().remove(&stub_id);
+                // Re-acquire locks in documented order so the no-row path proceeds normally.
+                last_seen = self.last_seen.lock();
+                files = self.files.lock();
+                // Fall through to no-row path (existing is dropped; files has no entry now).
+            } else {
+                // !hash_matches: ExternallyChanged
+                let old_id = existing.id;
+                existing.status = FileStatus::Missing;
+                files.insert(old_id, existing);
+
+                let new_id = Uuid::new_v4();
+                let mut new_file = MediaFile::new(file.path.clone());
+                new_file.id = new_id;
+                new_file.size = file.size;
+                new_file.content_hash = Some(file.content_hash.clone());
+                new_file.expected_hash = Some(file.content_hash.clone());
+                new_file.status = FileStatus::Active;
+                files.insert(new_id, new_file);
+                last_seen.insert(file.path.clone(), session);
+                drop(files);
+                drop(last_seen);
+                self.file_session_affinity.lock().insert(new_id, session);
+                return Ok(crate::transition::IngestDecision::ExternallyChanged {
+                    file_id: new_id,
+                    superseded: old_id,
+                });
+            }
         }
 
-        // No row at this path. Check for move via missing+expected_hash match.
+        // No row at this path (either never existed, or stub was just deleted above).
+        // Check for move via missing+expected_hash match.
         // Constrain to session roots to avoid cross-root hash-collision false positives.
         let move_match = files
             .values()
@@ -474,6 +552,9 @@ impl FileStorage for InMemoryStore {
             let id = m.id;
             files.insert(id, m);
             last_seen.insert(file.path.clone(), session);
+            drop(files);
+            drop(last_seen);
+            self.file_session_affinity.lock().insert(id, session);
             return Ok(crate::transition::IngestDecision::Moved {
                 file_id: id,
                 from_path,
@@ -490,7 +571,8 @@ impl FileStorage for InMemoryStore {
         new_file.status = FileStatus::Active;
         files.insert(new_id, new_file);
         last_seen.insert(file.path.clone(), session);
-        // Release other locks before acquiring new_in_session (preserve lock order).
+        // Release other locks before acquiring new_in_session and affinity
+        // (preserve lock order — these are both isolation-only locks).
         drop(files);
         drop(last_seen);
         // Track this file ID as new in the session for move-promotion at finish time.
@@ -499,6 +581,7 @@ impl FileStorage for InMemoryStore {
             .entry(session)
             .or_default()
             .insert(new_id);
+        self.file_session_affinity.lock().insert(new_id, session);
         Ok(crate::transition::IngestDecision::New {
             file_id: new_id,
             needs_introspection: true,
@@ -527,6 +610,7 @@ impl FileStorage for InMemoryStore {
                     .into(),
                 ));
             }
+            row.last_heartbeat_at = chrono::Utc::now();
             row.roots.clone()
         };
 
@@ -641,6 +725,7 @@ impl FileStorage for InMemoryStore {
         // Step 6: flip session status to Completed.
         if let Some(row) = self.sessions.lock().get_mut(&session) {
             row.status = crate::transition::ScanSessionStatus::Completed;
+            row.last_heartbeat_at = chrono::Utc::now();
         }
 
         Ok(ScanFinishOutcome::new(missing, promoted_moves))
@@ -651,6 +736,7 @@ impl FileStorage for InMemoryStore {
         if let Some(row) = sessions.get_mut(&session) {
             if row.status == crate::transition::ScanSessionStatus::InProgress {
                 row.status = crate::transition::ScanSessionStatus::Cancelled;
+                row.last_heartbeat_at = chrono::Utc::now();
             }
         }
         Ok(())
@@ -1301,6 +1387,75 @@ fn matches_verification_filter(record: &VerificationRecord, filters: &Verificati
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod scan_session_tests {
+    use super::*;
+    use crate::storage::FileStorage;
+    use crate::transition::{DiscoveredFile, IngestDecision};
+
+    #[test]
+    fn in_memory_store_stub_recovery() {
+        let store = InMemoryStore::new();
+        let session1 = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-a".to_string());
+        let d1 = store.ingest_discovered_file(session1, &df).unwrap();
+        let new_id = match d1 {
+            IngestDecision::New { file_id, .. } => file_id,
+            other => panic!("expected New, got {other:?}"),
+        };
+
+        // Cancel the session (simulating a crash).
+        store.cancel_scan_session(session1).unwrap();
+
+        // Cancelled session is no longer in_progress, so begin proceeds without issue.
+        let session2 = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+
+        // Re-ingest the same path — should detect the stub (from session1,
+        // which is now cancelled) and re-process as New.
+        let d2 = store.ingest_discovered_file(session2, &df).unwrap();
+        match d2 {
+            IngestDecision::New {
+                file_id,
+                needs_introspection,
+            } => {
+                assert!(needs_introspection);
+                // Stub recovery must produce a fresh file id.
+                assert_ne!(
+                    file_id, new_id,
+                    "stub recovery must produce a fresh file id"
+                );
+            }
+            other => panic!("expected New on stub recovery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn in_memory_store_unchanged_after_completed_session() {
+        let store = InMemoryStore::new();
+        let session1 = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/m/b.mkv"), 200, "h-b".to_string());
+        let d1 = store.ingest_discovered_file(session1, &df).unwrap();
+        let orig_id = match d1 {
+            IngestDecision::New { file_id, .. } => file_id,
+            other => panic!("expected New, got {other:?}"),
+        };
+        store.finish_scan_session(session1).unwrap();
+
+        // After a completed session, re-ingesting the same file should be Unchanged.
+        let session2 = store.begin_scan_session(&[PathBuf::from("/m")]).unwrap();
+        let d2 = store.ingest_discovered_file(session2, &df).unwrap();
+        match d2 {
+            IngestDecision::Unchanged { file_id } => {
+                assert_eq!(
+                    file_id, orig_id,
+                    "Unchanged must preserve the original file id"
+                );
+            }
+            other => panic!("expected Unchanged, got {other:?}"),
+        }
+    }
 }
 
 #[cfg(test)]
