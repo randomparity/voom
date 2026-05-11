@@ -431,6 +431,19 @@ fn composed_source_hash_reflects_resolved_parent_behavior() {
 }
 
 #[test]
+fn standalone_file_policy_hash_matches_raw_source_hash() {
+    let dir = tempdir().unwrap();
+    let source = include_str!("../../../docs/examples/minimal.voom");
+    let path = dir.path().join("minimal.voom");
+    fs::write(&path, source).unwrap();
+
+    let inline_policy = compile_policy(source).unwrap();
+    let file_policy = compile_policy_file(&path).unwrap();
+
+    assert_eq!(file_policy.source_hash, inline_policy.source_hash);
+}
+
+#[test]
 fn bundled_and_file_composition_use_same_resolved_hash_pipeline() {
     let dir = tempdir().unwrap();
     let child = dir.path().join("child.voom");

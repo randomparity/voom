@@ -95,20 +95,25 @@ pub fn compile_policy(source: &str) -> Result<CompiledPolicy, DslPipelineError> 
 /// or [`DslPipelineError::Compile`] if inheritance cannot be resolved or compiled.
 pub fn compile_policy_with_bundled(source: &str) -> Result<CompiledPolicy, DslPipelineError> {
     let resolved = composition::resolve_policy_with_bundled(source)?;
-    compile_resolved_policy(resolved)
+    compile_resolved_policy(resolved, Some(source))
 }
 
 fn compile_resolved_policy(
     resolved: composition::ResolvedPolicyAst,
+    standalone_source: Option<&str>,
 ) -> Result<CompiledPolicy, DslPipelineError> {
     validate(&resolved.ast).map_err(DslPipelineError::Validation)?;
     let mut policy =
         compiler::compile_resolved_ast(&resolved).map_err(DslPipelineError::Compile)?;
-    let resolved_source = format_policy(&resolved.ast);
-    policy.source_hash = format!(
-        "{:016x}",
-        xxhash_rust::xxh3::xxh3_64(resolved_source.as_bytes())
-    );
+    let source = if let Some(source) = standalone_source
+        && resolved.extends_chain.is_empty()
+        && resolved.phase_sources.is_empty()
+    {
+        std::borrow::Cow::Borrowed(source)
+    } else {
+        std::borrow::Cow::Owned(format_policy(&resolved.ast))
+    };
+    policy.source_hash = format!("{:016x}", xxhash_rust::xxh3::xxh3_64(source.as_bytes()));
     Ok(policy)
 }
 
@@ -121,5 +126,15 @@ fn compile_resolved_policy(
 /// or [`DslPipelineError::Compile`] if inheritance cannot be resolved or compiled.
 pub fn compile_policy_file(path: &std::path::Path) -> Result<CompiledPolicy, DslPipelineError> {
     let resolved = composition::resolve_policy_file(path)?;
-    compile_resolved_policy(resolved)
+    let source = if resolved.extends_chain.is_empty() && resolved.phase_sources.is_empty() {
+        Some(std::fs::read_to_string(path).map_err(|err| {
+            DslPipelineError::Compile(DslError::compile(format!(
+                "failed to read policy file {}: {err}",
+                path.display()
+            )))
+        })?)
+    } else {
+        None
+    };
+    compile_resolved_policy(resolved, source.as_deref())
 }
