@@ -694,7 +694,16 @@ impl FileStorage for SqliteStore {
             .optional()
             .map_err(storage_err("failed to look up existing file"))?;
 
-        if let Some((existing_id, expected_hash, existing_size, _last_seen)) = existing {
+        if let Some((existing_id, expected_hash, existing_size, last_seen)) = existing {
+            // Idempotency: if this path was already touched by this session,
+            // return Duplicate immediately. See spec §6.2 step 3.
+            if last_seen.as_deref() == Some(session_str.as_str()) {
+                let file_uuid = super::parse_uuid(&existing_id)?;
+                tx.commit()
+                    .map_err(storage_err("failed to commit duplicate ingest"))?;
+                return Ok(IngestDecision::Duplicate { file_id: file_uuid });
+            }
+
             // Check for content match (Unchanged) vs hash mismatch (ExternallyChanged).
             let hash_matches = expected_hash
                 .as_ref()
@@ -2804,5 +2813,41 @@ mod tests {
         // The first one consumed the missing row by flipping it to active; the second
         // sees no missing match and must be a fresh New row.
         assert!(matches!(d2, IngestDecision::New { .. }), "got {d2:?}");
+    }
+
+    #[test]
+    fn ingest_duplicate_path_in_same_session_returns_duplicate() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), 100, "h-a".to_string());
+
+        let d1 = store.ingest_discovered_file(session, &df).unwrap();
+        let d2 = store.ingest_discovered_file(session, &df).unwrap();
+
+        let id1 = match d1 {
+            IngestDecision::New { file_id, .. } => file_id,
+            other => panic!("expected New first, got {other:?}"),
+        };
+        let id2 = match d2 {
+            IngestDecision::Duplicate { file_id } => file_id,
+            other => panic!("expected Duplicate second, got {other:?}"),
+        };
+        assert_eq!(id1, id2);
+
+        // Only one transition recorded (the first New); no duplicate
+        let conn = store.conn().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions WHERE path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }
