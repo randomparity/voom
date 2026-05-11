@@ -1098,6 +1098,23 @@ mod tests {
         assert!(cli.yes);
     }
 
+    #[test]
+    fn test_global_yes_available_to_destructive_commands() {
+        let cases = [
+            vec!["voom", "-y", "db", "reset"],
+            vec!["voom", "-y", "db", "clean-bad"],
+            vec!["voom", "-y", "jobs", "clear"],
+            vec!["voom", "-y", "files", "delete", "550e8400-e29b-41d4-a716-446655440000"],
+            vec!["voom", "-y", "backup", "restore", "/tmp/movie.vbak"],
+            vec!["voom", "-y", "backup", "cleanup", "/tmp"],
+        ];
+
+        for args in &cases {
+            let cli = parse(args);
+            assert!(cli.yes, "expected global yes for {args:?}");
+        }
+    }
+
     // ── Scan ─────────────────────────────────────────────────
 
     #[test]
