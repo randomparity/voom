@@ -5,9 +5,7 @@ use anyhow::{Context, Result, bail};
 use console::style;
 use serde::Serialize;
 use serde_json::Value;
-use voom_dsl::compiled::{
-    CompiledMetadata, CompiledPhase, CompiledPhaseComposition, PhaseCompositionKind,
-};
+use voom_dsl::compiled::{CompiledPhase, CompiledPhaseComposition, PhaseCompositionKind};
 use voom_policy_testing::{
     CapabilityFixture, Fixture, SnapshotOutcome, TestSuite, assert_snapshot_file,
 };
@@ -577,7 +575,7 @@ fn print_human_test_output(output: &TestOutput) {
 struct DescribeOutput {
     policy: String,
     extends_chain: Vec<String>,
-    metadata: CompiledMetadata,
+    metadata: DescribeMetadata,
     phase_order: Vec<String>,
     phases: Vec<DescribePhase>,
 }
@@ -587,9 +585,32 @@ impl DescribeOutput {
         Self {
             policy: policy.name.clone(),
             extends_chain: policy.metadata.extends_chain.clone(),
-            metadata: policy.metadata.clone(),
+            metadata: DescribeMetadata::from_metadata(&policy.metadata),
             phase_order: policy.phase_order.clone(),
             phases: ordered_describe_phases(policy),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DescribeMetadata {
+    version: Option<String>,
+    author: Option<String>,
+    description: Option<String>,
+    requires_voom: Option<String>,
+    requires_tools: Vec<String>,
+    test_fixtures: Vec<String>,
+}
+
+impl DescribeMetadata {
+    fn from_metadata(metadata: &voom_dsl::compiled::CompiledMetadata) -> Self {
+        Self {
+            version: metadata.version.clone(),
+            author: metadata.author.clone(),
+            description: metadata.description.clone(),
+            requires_voom: metadata.requires_voom.clone(),
+            requires_tools: metadata.requires_tools.clone(),
+            test_fixtures: metadata.test_fixtures.clone(),
         }
     }
 }
