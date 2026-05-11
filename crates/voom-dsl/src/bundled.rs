@@ -1,24 +1,27 @@
+const BUNDLED_POLICIES: [(&str, &str); 5] = [
+    ("archival", include_str!("bundled/archival.voom")),
+    ("space-saver", include_str!("bundled/space-saver.voom")),
+    (
+        "mobile-friendly",
+        include_str!("bundled/mobile-friendly.voom"),
+    ),
+    ("anime-base", include_str!("bundled/anime-base.voom")),
+    (
+        "passthrough-audit",
+        include_str!("bundled/passthrough-audit.voom"),
+    ),
+];
+
 /// Return the stable names of policies bundled into the DSL crate.
 pub fn bundled_policy_names() -> [&'static str; 5] {
-    [
-        "archival",
-        "space-saver",
-        "mobile-friendly",
-        "anime-base",
-        "passthrough-audit",
-    ]
+    BUNDLED_POLICIES.map(|(name, _source)| name)
 }
 
 /// Return the source text for a bundled policy by name.
 pub fn bundled_policy(name: &str) -> Option<&'static str> {
-    match name {
-        "archival" => Some(include_str!("bundled/archival.voom")),
-        "space-saver" => Some(include_str!("bundled/space-saver.voom")),
-        "mobile-friendly" => Some(include_str!("bundled/mobile-friendly.voom")),
-        "anime-base" => Some(include_str!("bundled/anime-base.voom")),
-        "passthrough-audit" => Some(include_str!("bundled/passthrough-audit.voom")),
-        _ => None,
-    }
+    BUNDLED_POLICIES
+        .iter()
+        .find_map(|(policy_name, source)| (*policy_name == name).then_some(*source))
 }
 
 #[cfg(test)]
