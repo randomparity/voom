@@ -13,44 +13,6 @@ use voom_domain::utils::format;
 
 use crate::cli::OutputFormat;
 
-// Introduced before command adoption so later phases can share one JSON contract.
-#[allow(dead_code)]
-#[derive(Debug, Serialize)]
-pub struct MachineResponse<T>
-where
-    T: Serialize,
-{
-    pub command: &'static str,
-    pub status: &'static str,
-    pub data: T,
-    pub warnings: Vec<String>,
-    pub errors: Vec<String>,
-}
-
-// Introduced before command adoption so later phases can share one JSON contract.
-#[allow(dead_code)]
-impl<T> MachineResponse<T>
-where
-    T: Serialize,
-{
-    pub fn ok(command: &'static str, data: T) -> Self {
-        Self {
-            command,
-            status: "ok",
-            data,
-            warnings: Vec::new(),
-            errors: Vec::new(),
-        }
-    }
-
-    pub fn with_warning(mut self, warning: impl Into<String>) -> Self {
-        self.warnings.push(warning.into());
-        self
-    }
-}
-
-// Introduced before command adoption so later phases can replace ad hoc JSON printing.
-#[allow(dead_code)]
 pub fn print_json(value: &impl Serialize) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
@@ -514,36 +476,6 @@ pub fn new_table() -> Table {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn machine_response_serializes_success_envelope() {
-        let response = MachineResponse::ok("jobs.list", json!({"jobs": []}));
-        let value = serde_json::to_value(response).unwrap();
-
-        assert_eq!(value["command"], "jobs.list");
-        assert_eq!(value["status"], "ok");
-        assert_eq!(value["data"], json!({"jobs": []}));
-        assert_eq!(value["warnings"], json!([]));
-        assert_eq!(value["errors"], json!([]));
-    }
-
-    #[test]
-    fn machine_response_serializes_empty_list_data() {
-        let response = MachineResponse::ok("plugin.list", Vec::<String>::new());
-        let value = serde_json::to_value(response).unwrap();
-
-        assert_eq!(value["data"], json!([]));
-    }
-
-    #[test]
-    fn machine_response_serializes_warnings() {
-        let response =
-            MachineResponse::ok("env.check", json!({"passed": false})).with_warning("vmaf missing");
-        let value = serde_json::to_value(response).unwrap();
-
-        assert_eq!(value["warnings"], json!(["vmaf missing"]));
-    }
 
     #[test]
     fn test_sanitize_passes_normal_strings() {
