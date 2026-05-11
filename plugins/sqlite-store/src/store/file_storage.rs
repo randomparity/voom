@@ -694,9 +694,8 @@ impl FileStorage for SqliteStore {
             .optional()
             .map_err(storage_err("failed to look up existing file"))?;
 
-        if let Some((existing_id, expected_hash, _existing_size, _last_seen)) = existing {
+        if let Some((existing_id, expected_hash, existing_size, _last_seen)) = existing {
             // Check for content match (Unchanged) vs hash mismatch (ExternallyChanged).
-            // ExternallyChanged is implemented in the next task.
             let hash_matches = expected_hash
                 .as_ref()
                 .is_none_or(|eh| eh == &file.content_hash);
@@ -731,13 +730,63 @@ impl FileStorage for SqliteStore {
                 return Ok(IngestDecision::Unchanged { file_id: file_uuid });
             }
 
-            // ExternallyChanged — next task
-            return Err(voom_domain::errors::VoomError::Other(
-                format!(
-                    "ingest_discovered_file ExternallyChanged not yet implemented for {path_str}"
-                )
-                .into(),
-            ));
+            // Hash mismatch: external change. Mark old missing+superseded;
+            // insert a new row; emit External + Discovery transitions.
+            let old_uuid = super::parse_uuid(&existing_id)?;
+            let new_id = Uuid::new_v4();
+
+            let ext_transition = FileTransition::new(
+                old_uuid,
+                file.path.clone(),
+                file.content_hash.clone(),
+                file.size,
+                TransitionSource::External,
+            )
+            .with_from(expected_hash.clone(), Some(existing_size as u64));
+            insert_transition_in_tx(&tx, &ext_transition, &now)?;
+
+            tx.execute(
+                "UPDATE files SET path = NULL, status = 'missing', \
+                 missing_since = ?1, superseded_by = ?2 WHERE id = ?3",
+                params![&now, new_id.to_string(), &existing_id],
+            )
+            .map_err(storage_err("failed to clear old file for external change"))?;
+            tx.execute(
+                "INSERT INTO files \
+                 (id, path, filename, size, content_hash, \
+                  expected_hash, status, container, duration, \
+                  tags, plugin_metadata, introspected_at, \
+                  created_at, updated_at, last_seen_session_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', \
+                         'other', 0.0, '{}', '{}', ?7, ?7, ?7, ?8)",
+                params![
+                    new_id.to_string(),
+                    &path_str,
+                    filename,
+                    file.size as i64,
+                    &file.content_hash,
+                    &file.content_hash,
+                    &now,
+                    &session_str,
+                ],
+            )
+            .map_err(storage_err("failed to insert new file for external change"))?;
+
+            let disc_transition = FileTransition::new(
+                new_id,
+                file.path.clone(),
+                file.content_hash.clone(),
+                file.size,
+                TransitionSource::Discovery,
+            );
+            insert_transition_in_tx(&tx, &disc_transition, &now)?;
+
+            tx.commit()
+                .map_err(storage_err("failed to commit external-change ingest"))?;
+            return Ok(IngestDecision::ExternallyChanged {
+                file_id: new_id,
+                superseded: old_uuid,
+            });
         }
 
         // No row at this path — treat as New (move branch lands in Task 11).
@@ -2511,5 +2560,88 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tx_count, 0, "unchanged should not create transitions");
+    }
+
+    #[test]
+    fn ingest_externally_changed_creates_supersession_and_external_transition() {
+        use std::path::PathBuf;
+        use voom_domain::transition::{DiscoveredFile, IngestDecision};
+
+        let store = test_store();
+        let mut f = active_file("/movies/a.mkv");
+        f.content_hash = Some("h-old".to_string());
+        f.expected_hash = Some("h-old".to_string());
+        store.upsert_file(&f).unwrap();
+        // upsert_file does not write expected_hash; stamp it directly.
+        {
+            let conn = store.conn().unwrap();
+            conn.execute(
+                "UPDATE files SET expected_hash = 'h-old' WHERE path = '/movies/a.mkv'",
+                [],
+            )
+            .unwrap();
+        }
+        let old_id = f.id;
+
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/movies")])
+            .unwrap();
+        let df = DiscoveredFile::new(PathBuf::from("/movies/a.mkv"), 150, "h-new".to_string());
+
+        let decision = store.ingest_discovered_file(session, &df).unwrap();
+        let (new_id, superseded) = match decision {
+            IngestDecision::ExternallyChanged {
+                file_id,
+                superseded,
+            } => (file_id, superseded),
+            other => panic!("expected ExternallyChanged, got {other:?}"),
+        };
+        assert_eq!(superseded, old_id);
+        assert_ne!(new_id, old_id);
+
+        let conn = store.conn().unwrap();
+
+        // External transition recorded
+        let ext_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions \
+                 WHERE source = 'external' AND path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ext_count, 1);
+
+        // Discovery transition for the new row recorded
+        let disc_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM file_transitions \
+                 WHERE source = 'discovery' AND path = ?1",
+                params!["/movies/a.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(disc_count, 1);
+
+        // last_seen_session_id stamped on the new row only
+        let new_last_seen: Option<String> = conn
+            .query_row(
+                "SELECT last_seen_session_id FROM files WHERE id = ?1",
+                params![new_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_last_seen.as_deref(), Some(session.to_string().as_str()));
+
+        // Old row is superseded
+        let (old_status, superseded_by): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, superseded_by FROM files WHERE id = ?1",
+                params![old_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(old_status, "missing");
+        assert_eq!(superseded_by.as_deref(), Some(new_id.to_string().as_str()));
     }
 }
