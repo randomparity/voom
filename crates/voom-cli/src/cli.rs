@@ -1104,7 +1104,13 @@ mod tests {
             vec!["voom", "-y", "db", "reset"],
             vec!["voom", "-y", "db", "clean-bad"],
             vec!["voom", "-y", "jobs", "clear"],
-            vec!["voom", "-y", "files", "delete", "550e8400-e29b-41d4-a716-446655440000"],
+            vec![
+                "voom",
+                "-y",
+                "files",
+                "delete",
+                "550e8400-e29b-41d4-a716-446655440000",
+            ],
             vec!["voom", "-y", "backup", "restore", "/tmp/movie.vbak"],
             vec!["voom", "-y", "backup", "cleanup", "/tmp"],
         ];

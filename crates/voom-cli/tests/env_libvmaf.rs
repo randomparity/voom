@@ -29,9 +29,9 @@ fn env_check_json_reports_libvmaf_when_ffmpeg_is_present() {
     let out = Command::cargo_bin("voom")
         .unwrap()
         .env("XDG_CONFIG_HOME", cfg_dir.path())
-        .args(["env", "check", "--json"])
+        .args(["env", "check", "--format", "json"])
         .output()
-        .expect("run voom env check --json");
+        .expect("run voom env check --format json");
 
     assert!(out.status.success());
     let value: serde_json::Value =
