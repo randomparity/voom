@@ -17,6 +17,41 @@ fn voom() -> Command {
     cmd
 }
 
+fn assert_stdout_is_json(args: &[&str]) -> Value {
+    let output = voom().args(args).assert().success().get_output().clone();
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "stdout was not valid JSON for {args:?}: {error}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
+fn assert_no_human_status_on_json_stdout(args: &[&str], banned: &[&str]) {
+    let output = voom().args(args).assert().success().get_output().clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<Value>(&stdout).unwrap_or_else(|error| {
+        panic!("stdout was not valid JSON for {args:?}: {error}\nstdout:\n{stdout}")
+    });
+
+    for needle in banned {
+        assert!(
+            !stdout.contains(needle),
+            "stdout for {args:?} contained human status {needle:?}:\n{stdout}"
+        );
+    }
+}
+
+fn assert_human_notes_on_stderr(args: &[&str], needle: &str) {
+    let output = voom().args(args).assert().success().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(needle),
+        "stderr for {args:?} did not contain {needle:?}:\n{stderr}"
+    );
+}
+
 fn write_policy_test_suite(dir: &std::path::Path, expected_phase: &str) -> std::path::PathBuf {
     let policy_path = dir.join("minimal.voom");
     let fixture_path = dir.join("movie.json");
@@ -264,6 +299,53 @@ fn test_completions_fish() {
         .assert()
         .success()
         .stdout(predicate::str::contains("voom"));
+}
+
+// === Agent-facing output contracts ===
+
+#[test]
+fn test_existing_json_outputs_are_parseable() {
+    let dir = tempfile::tempdir().unwrap();
+    let empty_scan = assert_stdout_is_json(&[
+        "scan",
+        dir.path().to_str().unwrap(),
+        "--format",
+        "json",
+        "--no-hash",
+    ]);
+    assert_eq!(empty_scan, Value::Array(vec![]));
+
+    let tools = assert_stdout_is_json(&["tools", "list", "--format", "json"]);
+    assert!(tools.is_array());
+
+    let env = assert_stdout_is_json(&["env", "check", "--json"]);
+    assert!(env.get("passed").is_some());
+    assert!(env.get("issue_count").is_some());
+}
+
+#[test]
+fn test_json_stdout_excludes_human_status_text() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_no_human_status_on_json_stdout(
+        &[
+            "scan",
+            dir.path().to_str().unwrap(),
+            "--format",
+            "json",
+            "--no-hash",
+        ],
+        &["No media files found", "Scanning", "Pruned"],
+    );
+    assert_no_human_status_on_json_stdout(
+        &["tools", "list", "--format", "json"],
+        &["tool(s) detected", "No external tools detected"],
+    );
+}
+
+#[test]
+fn test_human_notes_use_stderr_for_human_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_human_notes_on_stderr(&["scan", dir.path().to_str().unwrap()], "No media files found");
 }
 
 // === Policy validation ===
