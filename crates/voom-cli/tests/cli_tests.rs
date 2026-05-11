@@ -116,11 +116,14 @@ fn test_help() {
 
 #[test]
 fn test_version() {
+    let package_version = env!("CARGO_PKG_VERSION").replace('.', r"\.");
+    let pattern = format!(r"^voom {package_version}(-dev\+(g[0-9a-f]{{7,12}}|unknown))?\n$");
+
     voom()
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("voom"));
+        .stdout(predicate::str::is_match(pattern).unwrap());
 }
 
 #[test]
