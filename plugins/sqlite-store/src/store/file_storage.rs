@@ -9,7 +9,7 @@ use voom_domain::errors::Result;
 use voom_domain::media::{MediaFile, StoredFingerprint};
 use voom_domain::storage::{FileFilters, FileStorage};
 use voom_domain::transition::{
-    DiscoveredFile, FileStatus, FileTransition, ReconcileResult, TransitionSource,
+    DiscoveredFile, FileStatus, FileTransition, IngestDecision, ReconcileResult, TransitionSource,
 };
 
 use super::{
@@ -404,8 +404,6 @@ impl FileStorage for SqliteStore {
         discovered: &[DiscoveredFile],
         scanned_dirs: &[PathBuf],
     ) -> Result<ReconcileResult> {
-        use voom_domain::transition::IngestDecision;
-
         let session = self.begin_scan_session(scanned_dirs)?;
         let mut result = ReconcileResult::default();
 
@@ -641,8 +639,6 @@ impl FileStorage for SqliteStore {
         session: voom_domain::transition::ScanSessionId,
         file: &voom_domain::transition::DiscoveredFile,
     ) -> voom_domain::errors::Result<voom_domain::transition::IngestDecision> {
-        use voom_domain::transition::IngestDecision;
-
         let mut conn = self.conn()?;
         let now = format_datetime(&Utc::now());
         let session_str = session.to_string();
@@ -941,8 +937,10 @@ impl FileStorage for SqliteStore {
             .map_err(other_storage_err("failed to parse roots_json"))?;
         let roots: Vec<PathBuf> = roots.into_iter().map(PathBuf::from).collect();
 
-        // Collect active files not seen by this session; path-prefix filtering done in Rust,
-        // matching the pattern used by mark_missing_files at line ~680.
+        // Path-prefix filtering in Rust mirrors the historical batch-reconcile
+        // missing pass (status='active' AND path under any scanned root AND
+        // not seen by this session). The `AND status='active'` clause on the
+        // UPDATE below guards against a race between the SELECT and UPDATE.
         let candidates: Vec<(String, String)> = {
             let mut stmt = tx
                 .prepare(
@@ -2656,14 +2654,17 @@ mod tests {
 
         // Seed:
         //   - active a (will be Unchanged)
-        //   - missing b with expected_hash (will be Moved to new path)
+        //   - missing b with expected_hash (will be Moved to /m/new.mkv)
         //   - active c (will become missing)
+        //   - active d with expected_hash='h-d-old' (will be ExternallyChanged)
         let a = active_file("/m/a.mkv");
         let b = active_file("/m/old.mkv");
         let c = active_file("/m/c.mkv");
+        let d = active_file("/m/d.mkv");
         store.upsert_file(&a).unwrap();
         store.upsert_file(&b).unwrap();
         store.upsert_file(&c).unwrap();
+        store.upsert_file(&d).unwrap();
 
         let a_hash: String = {
             let conn = store.conn().unwrap();
@@ -2675,7 +2676,8 @@ mod tests {
             .unwrap()
         };
 
-        // Stamp b as missing with expected_hash='h-moved' so the move path is exercised
+        // Stamp b as missing with expected_hash='h-moved'
+        // Stamp d's content_hash/expected_hash='h-d-old' so a discovery with h-d-new triggers external change
         {
             let conn = store.conn().unwrap();
             conn.execute(
@@ -2685,16 +2687,25 @@ mod tests {
                 params!["/m/old.mkv"],
             )
             .unwrap();
+            conn.execute(
+                "UPDATE files SET content_hash = 'h-d-old', expected_hash = 'h-d-old' \
+                 WHERE path = ?1",
+                params!["/m/d.mkv"],
+            )
+            .unwrap();
         }
 
+        let brand_new = DiscoveredFile::new(
+            PathBuf::from("/m/brand-new.mkv"),
+            100,
+            "h-fresh".to_string(),
+        );
         let discovered = vec![
             DiscoveredFile::new(PathBuf::from("/m/a.mkv"), a.size, a_hash),
             DiscoveredFile::new(PathBuf::from("/m/new.mkv"), 100, "h-moved".to_string()),
-            DiscoveredFile::new(
-                PathBuf::from("/m/brand-new.mkv"),
-                100,
-                "h-fresh".to_string(),
-            ),
+            brand_new.clone(),
+            brand_new, // duplicate path in input — should be silently dropped
+            DiscoveredFile::new(PathBuf::from("/m/d.mkv"), d.size, "h-d-new".to_string()),
         ];
         let result = store
             .reconcile_discovered_files(&discovered, &[PathBuf::from("/m")])
@@ -2703,9 +2714,9 @@ mod tests {
         assert_eq!(result.new_files, 1, "brand-new.mkv");
         assert_eq!(result.unchanged, 1, "a.mkv");
         assert_eq!(result.moved, 1, "old.mkv -> new.mkv");
-        assert_eq!(result.external_changes, 0);
+        assert_eq!(result.external_changes, 1, "d.mkv");
         assert_eq!(result.missing, 1, "c.mkv");
-        // needs_introspection: new + moved + external_changes — same as today.
-        assert_eq!(result.needs_introspection.len(), 2);
+        // needs_introspection: new + moved + external_changes
+        assert_eq!(result.needs_introspection.len(), 3);
     }
 }
