@@ -324,6 +324,31 @@ fn test_existing_json_outputs_are_parseable() {
 }
 
 #[test]
+fn test_new_query_json_outputs_are_parseable() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/voom-dsl/tests/fixtures/production-normalize.voom");
+
+    let policy = assert_stdout_is_json(&[
+        "policy",
+        "validate",
+        fixture.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(policy["valid"], true);
+
+    let plugins = assert_stdout_is_json(&["plugin", "list", "--format", "json"]);
+    assert!(plugins["plugins"].is_array());
+    assert!(plugins["disabled_plugins"].is_array());
+
+    let config = assert_stdout_is_json(&["config", "show", "--format", "json"]);
+    assert!(config["data_dir"].is_string());
+
+    let jobs = assert_stdout_is_json(&["jobs", "list", "--format", "json"]);
+    assert!(jobs["jobs"].is_array());
+}
+
+#[test]
 fn test_json_stdout_excludes_human_status_text() {
     let dir = tempfile::tempdir().unwrap();
     assert_no_human_status_on_json_stdout(
@@ -345,7 +370,10 @@ fn test_json_stdout_excludes_human_status_text() {
 #[test]
 fn test_human_notes_use_stderr_for_human_commands() {
     let dir = tempfile::tempdir().unwrap();
-    assert_human_notes_on_stderr(&["scan", dir.path().to_str().unwrap()], "No media files found");
+    assert_human_notes_on_stderr(
+        &["scan", dir.path().to_str().unwrap()],
+        "No media files found",
+    );
 }
 
 // === Policy validation ===
@@ -438,7 +466,13 @@ fn test_policy_test_json_reports_failures_and_exits_one() {
     let suite = write_policy_test_suite(tmp.path(), "missing");
 
     let output = voom()
-        .args(["policy", "test", "--format", "json", suite.to_str().unwrap()])
+        .args([
+            "policy",
+            "test",
+            "--format",
+            "json",
+            suite.to_str().unwrap(),
+        ])
         .assert()
         .failure()
         .get_output()

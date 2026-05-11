@@ -399,6 +399,7 @@ fn track_details(track: &Track) -> String {
 }
 
 /// Entry for the plugin list table.
+#[derive(Serialize)]
 pub struct PluginListEntry {
     pub name: String,
     pub version: String,

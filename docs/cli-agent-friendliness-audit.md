@@ -21,20 +21,20 @@ agent-friendly output work. It should be updated as phases land.
 | `inspect` | no | yes | yes | n/a | no | may introspect missing DB entries |
 | `process` | yes | no | `--plan-only` only | `[]` for no plans | optional approval | long-running progress/status |
 | `estimate` | yes, calibration data | no | no | n/a | no | summary is human-only |
-| `policy list` | no | no | no | n/a | no | human-only |
-| `policy validate` | no | no | no | n/a | no | result split between stdout/stderr |
-| `policy show` | no | no | no | n/a | no | prints human summary plus JSON block |
+| `policy list` | no | yes | yes | `[]` | no | query command |
+| `policy validate` | no | yes | yes | validation object | no | query command |
+| `policy show` | no | yes | yes | compiled policy object | no | query command |
 | `policy format` | yes | no | no | n/a | no | file-editing command |
-| `policy diff` | no | no | no | n/a | no | human diff only |
+| `policy diff` | no | yes | yes | diff summary object | no | query command |
 | `policy fixture extract` | no | no | yes | n/a | no | always JSON today |
 | `policy test` | no | yes | yes | summary object | no | uses `--format json` |
-| `plugin list` | no | no | no | n/a | no | human-only |
-| `plugin info` | no | no | no | n/a | no | human-only |
+| `plugin list` | no | yes | yes | plugin list object | no | query command |
+| `plugin info` | no | yes | yes | plugin descriptor object | no | query command |
 | `plugin enable` | config | no | no | n/a | no | status text |
 | `plugin disable` | config | no | no | n/a | no | status text |
 | `plugin install` | config/files | no | no | n/a | no | status text |
-| `jobs list` | no | no | no | n/a | no | human table |
-| `jobs status` | no | no | no | n/a | no | human details |
+| `jobs list` | no | yes | yes | jobs/counts object | no | query command |
+| `jobs status` | no | yes | yes | job object | no | query command |
 | `jobs cancel` | yes | no | no | n/a | no | status text |
 | `jobs retry` | yes | no | no | n/a | no | status text |
 | `jobs clear` | yes | no | no | n/a | yes | command/global yes paths need coverage |
@@ -55,9 +55,9 @@ agent-friendly output work. It should be updated as phases land.
 | `db list-bad` | no | yes | yes | `[]` | no | query command |
 | `db purge-bad` | yes | no | no | n/a | no | status text |
 | `db clean-bad` | yes | no | no | n/a | yes | command/global yes paths need coverage |
-| `config show` | no | no | no | n/a | no | redacted human TOML |
+| `config show` | no | yes | yes | redacted config object | no | query command |
 | `config edit` | yes | no | no | n/a | external editor | interactive by design |
-| `config get` | no | no | no | n/a | no | value text |
+| `config get` | no | yes | yes | key/value object | no | query command |
 | `config set` | yes | no | no | n/a | no | status text |
 | `tools list` | no | yes | yes | `[]` | no | query command |
 | `tools info` | no | yes | yes | n/a | no | query command |

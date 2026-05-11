@@ -121,8 +121,8 @@ fn effective_quiet(cli: &Cli) -> bool {
 
 fn command_output_format(command: &Commands) -> Option<OutputFormat> {
     use cli::{
-        BackupCommands, DbCommands, EnvCommands, FilesCommands, PolicyCommands, ToolsCommands,
-        VerifyCommands,
+        BackupCommands, ConfigCommands, DbCommands, EnvCommands, FilesCommands, JobsCommands,
+        PluginCommands, PolicyCommands, ToolsCommands, VerifyCommands,
     };
 
     match command {
@@ -132,7 +132,17 @@ fn command_output_format(command: &Commands) -> Option<OutputFormat> {
         Commands::Events(args) => Some(args.format),
         Commands::History(args) => Some(args.format),
         Commands::Plans(cli::PlansCommands::Show { format, .. }) => Some(*format),
+        Commands::Policy(PolicyCommands::List { format }) => Some(*format),
+        Commands::Policy(PolicyCommands::Validate { format, .. }) => Some(*format),
+        Commands::Policy(PolicyCommands::Show { format, .. }) => Some(*format),
+        Commands::Policy(PolicyCommands::Diff { format, .. }) => Some(*format),
         Commands::Policy(PolicyCommands::Test { format, .. }) => Some(*format),
+        Commands::Plugin(PluginCommands::List { format }) => Some(*format),
+        Commands::Plugin(PluginCommands::Info { format, .. }) => Some(*format),
+        Commands::Jobs(JobsCommands::List { format, .. }) => Some(*format),
+        Commands::Jobs(JobsCommands::Status { format, .. }) => Some(*format),
+        Commands::Config(ConfigCommands::Show { format }) => Some(*format),
+        Commands::Config(ConfigCommands::Get { format, .. }) => Some(*format),
         Commands::Db(DbCommands::ListBad { format, .. }) => Some(*format),
         Commands::Env(EnvCommands::Check { format }) => Some(*format),
         Commands::Env(EnvCommands::History { format, .. }) => Some(*format),

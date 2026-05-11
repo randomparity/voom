@@ -4,7 +4,7 @@ use console::style;
 use voom_domain::job::JobStatus;
 use voom_domain::storage::JobFilters;
 
-use crate::cli::JobsCommands;
+use crate::cli::{JobsCommands, OutputFormat};
 use crate::output;
 
 pub fn run(cmd: JobsCommands, global_yes: bool) -> Result<()> {
@@ -13,15 +13,16 @@ pub fn run(cmd: JobsCommands, global_yes: bool) -> Result<()> {
             status,
             limit,
             offset,
-        } => list(status.as_deref(), limit, offset),
-        JobsCommands::Status { id } => status(&id),
+            format,
+        } => list(status.as_deref(), limit, offset, format),
+        JobsCommands::Status { id, format } => status(&id, format),
         JobsCommands::Cancel { id } => cancel(&id),
         JobsCommands::Retry { id } => retry(&id),
         JobsCommands::Clear { status, yes } => clear(status.as_deref(), yes || global_yes),
     }
 }
 
-fn list(status_filter: Option<&str>, limit: u32, offset: u32) -> Result<()> {
+fn list(status_filter: Option<&str>, limit: u32, offset: u32, format: OutputFormat) -> Result<()> {
     let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
@@ -45,6 +46,19 @@ fn list(status_filter: Option<&str>, limit: u32, offset: u32) -> Result<()> {
         filters.offset = Some(offset);
     }
     let jobs = store.list_jobs(&filters).context("failed to list jobs")?;
+    let counts = store
+        .count_jobs_by_status()
+        .context("failed to count jobs by status")?;
+
+    if matches!(format, OutputFormat::Json) {
+        output::print_json(&serde_json::json!({
+            "jobs": jobs,
+            "counts": counts,
+            "limit": limit,
+            "offset": offset,
+        }))?;
+        return Ok(());
+    }
 
     if jobs.is_empty() {
         println!("{} No jobs found.", style("INFO").dim());
@@ -92,9 +106,6 @@ fn list(status_filter: Option<&str>, limit: u32, offset: u32) -> Result<()> {
     println!("{table}");
 
     // Show summary counts
-    let counts = store
-        .count_jobs_by_status()
-        .context("failed to count jobs by status")?;
     if !counts.is_empty() {
         let total: u64 = counts.iter().map(|(_, c)| c).sum();
         let summary: Vec<String> = counts
@@ -115,7 +126,7 @@ fn list(status_filter: Option<&str>, limit: u32, offset: u32) -> Result<()> {
     Ok(())
 }
 
-fn status(id: &str) -> Result<()> {
+fn status(id: &str, format: OutputFormat) -> Result<()> {
     let config = crate::config::load_config()?;
     let store = crate::app::open_store(&config)?;
 
@@ -123,6 +134,10 @@ fn status(id: &str) -> Result<()> {
 
     match store.job(&uuid)? {
         Some(job) => {
+            if matches!(format, OutputFormat::Json) {
+                output::print_json(&job)?;
+                return Ok(());
+            }
             println!("{} {}", style("Job:").bold(), style(&job.id).cyan());
             println!("{} {}", style("Type:").bold(), job.job_type);
             if let Some(ref payload) = job.payload {

@@ -1,14 +1,15 @@
 use anyhow::{Result, bail};
 use console::style;
 
-use crate::cli::ConfigCommands;
+use crate::cli::{ConfigCommands, OutputFormat};
 use crate::config;
+use crate::output;
 
 pub fn run(cmd: ConfigCommands) -> Result<()> {
     match cmd {
-        ConfigCommands::Show => show(),
+        ConfigCommands::Show { format } => show(format),
         ConfigCommands::Edit => edit(),
-        ConfigCommands::Get { key } => get(&key),
+        ConfigCommands::Get { key, format } => get(&key, format),
         ConfigCommands::Set { key, value } => set(&key, &value),
     }
 }
@@ -20,8 +21,14 @@ fn is_secret_key(key: &str) -> bool {
     matches!(leaf, "auth_token")
 }
 
-fn show() -> Result<()> {
+fn show(format: OutputFormat) -> Result<()> {
     let path = config::config_path();
+    if matches!(format, OutputFormat::Json) {
+        let mut value = serde_json::to_value(config::load_config()?)?;
+        redact_config_json(&mut value);
+        output::print_json(&value)?;
+        return Ok(());
+    }
 
     if path.exists() {
         let contents = std::fs::read_to_string(&path)?;
@@ -102,16 +109,43 @@ fn edit() -> Result<()> {
     Ok(())
 }
 
-fn get(key: &str) -> Result<()> {
+fn get(key: &str, format: OutputFormat) -> Result<()> {
     let path = config::config_path();
     let raw = load_raw_toml(&path)?;
     let value = resolve_toml_key(&raw, key)?;
+    if matches!(format, OutputFormat::Json) {
+        output::print_json(&serde_json::json!({
+            "key": key,
+            "value": display_config_value(key, &value),
+        }))?;
+        return Ok(());
+    }
     if is_secret_key(key) && value.is_str() {
         println!("[REDACTED]");
     } else {
         println!("{}", format_value(&value));
     }
     Ok(())
+}
+
+fn display_config_value(key: &str, value: &toml::Value) -> serde_json::Value {
+    if is_secret_key(key) && value.is_str() {
+        serde_json::Value::String("[REDACTED]".to_string())
+    } else {
+        serde_json::to_value(value)
+            .unwrap_or_else(|_| serde_json::Value::String(format_value(value)))
+    }
+}
+
+fn redact_config_json(value: &mut serde_json::Value) {
+    if let serde_json::Value::Object(map) = value {
+        if map.get("auth_token").is_some_and(|v| !v.is_null()) {
+            map.insert(
+                "auth_token".to_string(),
+                serde_json::Value::String("[REDACTED]".to_string()),
+            );
+        }
+    }
 }
 
 fn set(key: &str, value: &str) -> Result<()> {
