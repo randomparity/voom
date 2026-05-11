@@ -36,21 +36,34 @@ pub(crate) enum PhaseComposition {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AllowFiles {
+    Yes,
+    No,
+}
+
 pub(crate) fn resolve_policy_file(path: &Path) -> Result<ResolvedPolicyAst, DslPipelineError> {
     let canonical = canonicalize_existing_path(path)?;
     let mut stack = Vec::new();
-    resolve_file_path(&canonical, &mut stack)
+    resolve_file_path(&canonical, AllowFiles::Yes, &mut stack)
 }
 
 pub(crate) fn resolve_policy_with_bundled(
     source: &str,
 ) -> Result<ResolvedPolicyAst, DslPipelineError> {
     let ast = parse_policy(source).map_err(DslPipelineError::Parse)?;
-    resolve_ast(ast, PolicySourceId::Inline, None, &mut Vec::new())
+    resolve_ast(
+        ast,
+        PolicySourceId::Inline,
+        None,
+        AllowFiles::No,
+        &mut Vec::new(),
+    )
 }
 
 fn resolve_file_path(
     path: &Path,
+    allow_files: AllowFiles,
     stack: &mut Vec<PolicySourceId>,
 ) -> Result<ResolvedPolicyAst, DslPipelineError> {
     let source_id = PolicySourceId::File(path.to_path_buf());
@@ -63,13 +76,14 @@ fn resolve_file_path(
     })?;
     let ast = parse_policy(&source).map_err(DslPipelineError::Parse)?;
     let base_dir = path.parent().map(Path::to_path_buf);
-    let resolved = resolve_ast(ast, source_id, base_dir.as_deref(), stack);
+    let resolved = resolve_ast(ast, source_id, base_dir.as_deref(), allow_files, stack);
     stack.pop();
     resolved
 }
 
 fn resolve_bundled_policy(
     name: &str,
+    allow_files: AllowFiles,
     stack: &mut Vec<PolicySourceId>,
 ) -> Result<ResolvedPolicyAst, DslPipelineError> {
     let source_id = PolicySourceId::Bundled(name.to_owned());
@@ -80,7 +94,7 @@ fn resolve_bundled_policy(
         )))
     })?;
     let ast = parse_policy(source).map_err(DslPipelineError::Parse)?;
-    let resolved = resolve_ast(ast, source_id, None, stack);
+    let resolved = resolve_ast(ast, source_id, None, allow_files, stack);
     stack.pop();
     resolved
 }
@@ -89,6 +103,7 @@ fn resolve_ast(
     mut ast: PolicyAst,
     source_id: PolicySourceId,
     base_dir: Option<&Path>,
+    allow_files: AllowFiles,
     stack: &mut Vec<PolicySourceId>,
 ) -> Result<ResolvedPolicyAst, DslPipelineError> {
     let Some(extends) = ast.extends.take() else {
@@ -108,16 +123,16 @@ fn resolve_ast(
                     "unsupported policy extends URI \"{name}\"; only file:// URIs and bundled policy names are supported"
                 ))));
             }
-            resolve_bundled_policy(&name, stack)?
+            resolve_bundled_policy(&name, allow_files, stack)?
         }
         ExtendsSource::File(uri) => {
-            if source_id == PolicySourceId::Inline {
+            if allow_files == AllowFiles::No {
                 return Err(DslPipelineError::Compile(DslError::compile(
                     "file:// policy extends requires compile_policy_file(path)",
                 )));
             }
             let path = resolve_file_uri(&uri, base_dir)?;
-            resolve_file_path(&path, stack)?
+            resolve_file_path(&path, allow_files, stack)?
         }
     };
 
@@ -343,7 +358,10 @@ fn source_label(source_id: &PolicySourceId) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::composition::resolve_policy_with_bundled;
+    use crate::composition::{
+        AllowFiles, PolicySourceId, resolve_ast, resolve_policy_with_bundled,
+    };
+    use crate::parse_policy;
 
     #[test]
     fn explicit_empty_metadata_list_clears_parent_value() {
@@ -388,5 +406,29 @@ mod tests {
                 "mkvextract".to_owned()
             ])
         );
+    }
+
+    #[test]
+    fn file_extends_are_rejected_when_source_is_not_inline_but_files_are_disabled() {
+        let ast = parse_policy(
+            r#"policy "bundled-child" extends "file:///tmp/base.voom" {
+                phase subtitles {
+                    keep subtitles
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let err = resolve_ast(
+            ast,
+            PolicySourceId::Bundled("bundled-child".to_owned()),
+            None,
+            AllowFiles::No,
+            &mut Vec::new(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("file:// policy extends requires compile_policy_file(path)"));
     }
 }
