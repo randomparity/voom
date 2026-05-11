@@ -23,6 +23,7 @@ pub mod ast;
 pub mod bundled;
 pub mod compiled;
 pub mod compiler;
+pub mod composition;
 pub mod errors;
 pub mod formatter;
 pub mod parser;
@@ -39,6 +40,7 @@ pub use ast::{
 };
 pub use bundled::{bundled_policy, bundled_policy_names};
 pub use compiled::CompiledPolicy;
+pub use composition::{PhaseComposition, PolicySourceId, ResolvedPolicyAst};
 pub use errors::{DslError, DslPipelineError, DslWarning, ValidationErrors};
 pub use formatter::format_policy;
 pub use parser::parse_policy;
@@ -70,8 +72,51 @@ pub use validator::{validate, validate_with_warnings};
 /// ```
 pub fn compile_policy(source: &str) -> Result<CompiledPolicy, DslPipelineError> {
     let ast = parse_policy(source).map_err(DslPipelineError::Parse)?;
+    if let Some(ast::ExtendsSource::File(_)) = &ast.extends {
+        return Err(DslPipelineError::Compile(DslError::compile(
+            "file:// policy extends requires compile_policy_file(path)",
+        )));
+    }
     validate(&ast).map_err(DslPipelineError::Validation)?;
     let mut policy = compiler::compile_ast(&ast).map_err(DslPipelineError::Compile)?;
     policy.source_hash = format!("{:016x}", xxhash_rust::xxh3::xxh3_64(source.as_bytes()));
+    Ok(policy)
+}
+
+/// Resolve bundled policy inheritance before validation and compilation.
+///
+/// Use this for in-memory policy sources that may extend bundled policies.
+///
+/// # Errors
+///
+/// Returns [`DslPipelineError::Parse`] if any policy source cannot be parsed,
+/// [`DslPipelineError::Validation`] if the merged AST fails semantic validation,
+/// or [`DslPipelineError::Compile`] if inheritance cannot be resolved or compiled.
+pub fn compile_policy_with_bundled(source: &str) -> Result<CompiledPolicy, DslPipelineError> {
+    let resolved = composition::resolve_policy_with_bundled(source)?;
+    validate(&resolved.ast).map_err(DslPipelineError::Validation)?;
+    let mut policy = compiler::compile_ast(&resolved.ast).map_err(DslPipelineError::Compile)?;
+    policy.source_hash = format!("{:016x}", xxhash_rust::xxh3::xxh3_64(source.as_bytes()));
+    Ok(policy)
+}
+
+/// Resolve file-relative policy inheritance before validation and compilation.
+///
+/// # Errors
+///
+/// Returns [`DslPipelineError::Parse`] if any policy source cannot be parsed,
+/// [`DslPipelineError::Validation`] if the merged AST fails semantic validation,
+/// or [`DslPipelineError::Compile`] if inheritance cannot be resolved or compiled.
+pub fn compile_policy_file(path: &std::path::Path) -> Result<CompiledPolicy, DslPipelineError> {
+    let source = std::fs::read(path).map_err(|err| {
+        DslPipelineError::Compile(DslError::compile(format!(
+            "failed to read policy file {}: {err}",
+            path.display()
+        )))
+    })?;
+    let resolved = composition::resolve_policy_file(path)?;
+    validate(&resolved.ast).map_err(DslPipelineError::Validation)?;
+    let mut policy = compiler::compile_ast(&resolved.ast).map_err(DslPipelineError::Compile)?;
+    policy.source_hash = format!("{:016x}", xxhash_rust::xxh3::xxh3_64(&source));
     Ok(policy)
 }

@@ -98,6 +98,13 @@ pub(crate) fn parse_default_strategy(value: &str) -> Option<DefaultStrategy> {
 }
 
 fn compile_phase(phase: &PhaseNode) -> std::result::Result<CompiledPhase, DslError> {
+    if phase.extend {
+        return Err(DslError::compile(format!(
+            "phase \"{}\" uses extend but policy composition was not resolved",
+            phase.name
+        )));
+    }
+
     let skip_when = phase
         .skip_when
         .as_ref()

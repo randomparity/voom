@@ -291,6 +291,17 @@ fn validate_phase(
     errors: &mut Vec<DslError>,
     warnings: &mut Vec<DslWarning>,
 ) {
+    if phase.extend {
+        errors.push(DslError::validation(
+            phase.span.line,
+            phase.span.col,
+            format!(
+                "phase \"{}\" uses extend but policy composition was not resolved",
+                phase.name
+            ),
+        ));
+    }
+
     if let Some(skip_when) = &phase.skip_when {
         validate_condition(
             skip_when,
