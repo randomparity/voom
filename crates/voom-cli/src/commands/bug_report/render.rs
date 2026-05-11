@@ -158,7 +158,7 @@ fn write_json_file(path: &Path, value: &impl serde::Serialize) -> Result<()> {
 mod tests {
     use super::*;
     use crate::commands::bug_report::collect::{
-        BugReportSummary, EnvironmentCapture, PolicyCapture, StorageCapture,
+        BugReportSummary, EnvironmentCapture, PolicyCapture, StorageCapture, StorageSection,
     };
     use crate::commands::bug_report::redactor::Redactor;
     use std::collections::BTreeMap;
@@ -195,10 +195,12 @@ mod tests {
         }));
         let mut bundle = test_bundle(dir.path());
         bundle.storage = StorageCapture::Available {
-            table_row_counts: Vec::new(),
-            jobs: Vec::new(),
-            events: vec![storage],
-            health_checks: Vec::new(),
+            table_row_counts: StorageSection::Available { data: Vec::new() },
+            jobs: StorageSection::Available { data: Vec::new() },
+            events: StorageSection::Available {
+                data: vec![storage],
+            },
+            health_checks: StorageSection::Available { data: Vec::new() },
         };
         bundle.redactions = redactor.report();
         bundle.private_redactions = redactor.private_mappings();

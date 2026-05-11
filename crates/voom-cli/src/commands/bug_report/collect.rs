@@ -46,14 +46,21 @@ pub struct PolicyCapture {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum StorageCapture {
     Available {
-        table_row_counts: Vec<(String, u64)>,
-        jobs: Vec<serde_json::Value>,
-        events: Vec<serde_json::Value>,
-        health_checks: Vec<serde_json::Value>,
+        table_row_counts: StorageSection<Vec<(String, u64)>>,
+        jobs: StorageSection<Vec<serde_json::Value>>,
+        events: StorageSection<Vec<serde_json::Value>>,
+        health_checks: StorageSection<Vec<serde_json::Value>>,
     },
     Unavailable {
         error: String,
     },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum StorageSection<T> {
+    Available { data: T },
+    Unavailable { error: String },
 }
 
 pub fn collect(args: BugReportGenerateArgs) -> Result<BugReportBundle> {
@@ -128,42 +135,72 @@ fn collect_storage(
         }
     };
 
-    let table_row_counts = store.table_row_counts().unwrap_or_default();
+    let table_row_counts = storage_section(store.table_row_counts(), redactor);
 
     let mut job_filters = JobFilters::default();
     job_filters.limit = Some(args.job_limit);
-    let jobs = store
-        .list_jobs(&job_filters)
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|job| serde_json::to_value(job).ok())
-        .map(|value| redactor.redact_json(value))
-        .collect();
+    let jobs = json_storage_section(store.list_jobs(&job_filters), redactor);
 
     let mut event_filters = EventLogFilters::default();
     event_filters.limit = Some(args.event_limit);
-    let events = store
-        .list_event_log(&event_filters)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|event| event_matches_session(event, args.session.as_deref()))
-        .filter_map(|event| serde_json::to_value(event).ok())
-        .map(|value| redactor.redact_json(value))
-        .collect();
+    let events = match store.list_event_log(&event_filters) {
+        Ok(events) => StorageSection::Available {
+            data: events
+                .into_iter()
+                .filter(|event| event_matches_session(event, args.session.as_deref()))
+                .filter_map(|event| serde_json::to_value(event).ok())
+                .map(|value| redactor.redact_json(value))
+                .collect(),
+        },
+        Err(error) => StorageSection::Unavailable {
+            error: redactor.redact_text(&error.to_string()),
+        },
+    };
 
-    let health_checks = store
-        .latest_health_checks()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|check| serde_json::to_value(check).ok())
-        .map(|value| redactor.redact_json(value))
-        .collect();
+    let health_checks = json_storage_section(store.latest_health_checks(), redactor);
 
     StorageCapture::Available {
         table_row_counts,
         jobs,
         events,
         health_checks,
+    }
+}
+
+fn storage_section<T, E>(
+    result: std::result::Result<T, E>,
+    redactor: &mut Redactor,
+) -> StorageSection<T>
+where
+    E: std::fmt::Display,
+{
+    match result {
+        Ok(data) => StorageSection::Available { data },
+        Err(error) => StorageSection::Unavailable {
+            error: redactor.redact_text(&error.to_string()),
+        },
+    }
+}
+
+fn json_storage_section<T, E>(
+    result: std::result::Result<Vec<T>, E>,
+    redactor: &mut Redactor,
+) -> StorageSection<Vec<serde_json::Value>>
+where
+    T: serde::Serialize,
+    E: std::fmt::Display,
+{
+    match result {
+        Ok(values) => StorageSection::Available {
+            data: values
+                .into_iter()
+                .filter_map(|value| serde_json::to_value(value).ok())
+                .map(|value| redactor.redact_json(value))
+                .collect(),
+        },
+        Err(error) => StorageSection::Unavailable {
+            error: redactor.redact_text(&error.to_string()),
+        },
     }
 }
 
