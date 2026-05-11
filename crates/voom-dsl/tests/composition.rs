@@ -429,3 +429,27 @@ fn composed_source_hash_reflects_resolved_parent_behavior() {
 
     assert_ne!(first_policy.source_hash, second_policy.source_hash);
 }
+
+#[test]
+fn bundled_and_file_composition_use_same_resolved_hash_pipeline() {
+    let dir = tempdir().unwrap();
+    let child = dir.path().join("child.voom");
+    fs::write(
+        &child,
+        r#"policy "child" extends "anime-base" {
+            phase audio { extend keep audio where lang == eng }
+        }"#,
+    )
+    .unwrap();
+
+    let inline = compile_policy_with_bundled(
+        r#"policy "child" extends "anime-base" {
+            phase audio { extend keep audio where lang == eng }
+        }"#,
+    )
+    .unwrap();
+    let file = compile_policy_file(&child).unwrap();
+
+    assert_eq!(inline.source_hash, file.source_hash);
+    assert_eq!(inline.phase_order, file.phase_order);
+}

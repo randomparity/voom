@@ -95,6 +95,12 @@ pub fn compile_policy(source: &str) -> Result<CompiledPolicy, DslPipelineError> 
 /// or [`DslPipelineError::Compile`] if inheritance cannot be resolved or compiled.
 pub fn compile_policy_with_bundled(source: &str) -> Result<CompiledPolicy, DslPipelineError> {
     let resolved = composition::resolve_policy_with_bundled(source)?;
+    compile_resolved_policy(resolved)
+}
+
+fn compile_resolved_policy(
+    resolved: composition::ResolvedPolicyAst,
+) -> Result<CompiledPolicy, DslPipelineError> {
     validate(&resolved.ast).map_err(DslPipelineError::Validation)?;
     let mut policy =
         compiler::compile_resolved_ast(&resolved).map_err(DslPipelineError::Compile)?;
@@ -115,13 +121,5 @@ pub fn compile_policy_with_bundled(source: &str) -> Result<CompiledPolicy, DslPi
 /// or [`DslPipelineError::Compile`] if inheritance cannot be resolved or compiled.
 pub fn compile_policy_file(path: &std::path::Path) -> Result<CompiledPolicy, DslPipelineError> {
     let resolved = composition::resolve_policy_file(path)?;
-    validate(&resolved.ast).map_err(DslPipelineError::Validation)?;
-    let mut policy =
-        compiler::compile_resolved_ast(&resolved).map_err(DslPipelineError::Compile)?;
-    let resolved_source = format_policy(&resolved.ast);
-    policy.source_hash = format!(
-        "{:016x}",
-        xxhash_rust::xxh3::xxh3_64(resolved_source.as_bytes())
-    );
-    Ok(policy)
+    compile_resolved_policy(resolved)
 }
