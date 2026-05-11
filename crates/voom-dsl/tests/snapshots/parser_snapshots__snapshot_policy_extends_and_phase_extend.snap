@@ -1,0 +1,63 @@
+---
+source: crates/voom-dsl/tests/parser_snapshots.rs
+expression: ast
+---
+name: my-anime
+extends:
+  Bundled: anime-base
+metadata:
+  version: 1.2.0
+  author: user@example.com
+  description: Archive-quality anime preservation
+  requires_voom: ">=0.5.0"
+  requires_tools:
+    - ffmpeg
+    - mkvmerge
+    - mkvextract
+  test_fixtures:
+    - fixtures/anime/
+  span:
+    start: 49
+    end: 342
+    line: 2
+    col: 9
+config: ~
+phases:
+  - name: audio
+    extend: true
+    skip_when: ~
+    depends_on: ~
+    run_if: ~
+    on_error: ~
+    operations:
+      - node:
+          Synthesize:
+            name: AC3 5.1
+            settings:
+              - Codec: ac3
+              - Channels:
+                  Number:
+                    - 5.1
+                    - "5.1"
+              - Source:
+                  And:
+                    - Channels:
+                        - Ge
+                        - 5.1
+                    - LangIn:
+                        - jpn
+        span:
+          start: 397
+          end: 554
+          line: 13
+          col: 13
+    span:
+      start: 352
+      end: 564
+      line: 11
+      col: 9
+span:
+  start: 0
+  end: 570
+  line: 1
+  col: 1

@@ -1,0 +1,31 @@
+policy "space-saver" {
+  metadata {
+    version: "1.0.0"
+    description: "Compact policy that keeps primary tracks and removes non-font attachments"
+    requires_tools: [ffmpeg, mkvmerge]
+  }
+
+  config {
+    languages audio: [eng, und]
+    languages subtitle: [eng, und]
+  }
+
+  phase containerize {
+    container mkv
+  }
+
+  phase prune-tracks {
+    depends_on: [containerize]
+    keep audio where lang in [eng, und] and not commentary
+    keep subtitles where lang in [eng, und] and not commentary
+    remove attachments where not font
+  }
+
+  phase defaults {
+    depends_on: [prune-tracks]
+    defaults {
+      audio: first
+      subtitle: none
+    }
+  }
+}

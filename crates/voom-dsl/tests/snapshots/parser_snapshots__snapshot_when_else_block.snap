@@ -1,14 +1,16 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 214
 expression: ast
 ---
 name: when-else
+extends: ~
+metadata: ~
 config: ~
 phases:
   - name: validate
+    extend: false
     skip_when: ~
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:

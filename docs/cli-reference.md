@@ -191,6 +191,27 @@ Show the compiled form of a policy.
 voom policy show <FILE> [--format table|json]
 ```
 
+#### `voom policy describe`
+
+Describe resolved policy composition and provenance.
+
+```
+voom policy describe <FILE> [--format table|json]
+```
+
+The default human output shows the policy name, resolved `extends` chain,
+metadata version when present, effective phase order, and one row per phase with
+its composition source. Inherited phases are shown as inherited from the parent,
+extended phases include the parent source and number of appended operations, and
+overridden phases show the child source that replaced the parent phase. For
+file-loaded policies this is the child policy path; for in-memory compilation it
+may be `inline`.
+
+JSON output is intended for tooling. It includes stable top-level fields:
+`policy`, `extends_chain`, `metadata`, `phase_order`, and `phases`. Each phase
+entry includes `name` and `composition`, where `composition` contains `kind`,
+`source`, and `added_operations`.
+
 #### `voom policy format`
 
 Auto-format a policy file in place.
@@ -222,6 +243,8 @@ voom policy validate my-policy.voom
 voom policy validate my-policy.voom --format json
 voom policy format my-policy.voom
 voom policy show my-policy.voom --format json
+voom policy describe my-policy.voom
+voom policy describe my-policy.voom --format json
 voom policy diff old-policy.voom new-policy.voom
 voom policy test docs/examples/tests --format json
 ```

@@ -3,6 +3,8 @@ source: crates/voom-dsl/tests/parser_snapshots.rs
 expression: ast
 ---
 name: speech-language-filter
+extends: ~
+metadata: ~
 config:
   audio_languages:
     - eng
@@ -18,8 +20,9 @@ config:
     col: 3
 phases:
   - name: keep-english
+    extend: false
     skip_when: ~
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:
@@ -42,6 +45,7 @@ phases:
       line: 16
       col: 3
   - name: validate
+    extend: false
     skip_when: ~
     depends_on:
       - keep-english

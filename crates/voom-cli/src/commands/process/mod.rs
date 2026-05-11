@@ -563,9 +563,8 @@ fn build_policy_resolver(
 ) -> Result<PolicyResolver> {
     if let Some(ref policy_path) = args.policy {
         let resolved = crate::config::resolve_policy_path(policy_path);
-        let source = std::fs::read_to_string(&resolved)
-            .with_context(|| format!("Failed to read policy: {}", resolved.display()))?;
-        let compiled = voom_dsl::compile_policy(&source).context("policy compilation failed")?;
+        let compiled = voom_dsl::compile_policy_file(&resolved)
+            .with_context(|| format!("failed to compile policy: {}", resolved.display()))?;
         Ok(PolicyResolver::from_single(compiled, root))
     } else if let Some(ref map_path) = args.policy_map {
         PolicyResolver::from_map_file(map_path, root)

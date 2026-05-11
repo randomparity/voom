@@ -3,11 +3,14 @@ source: crates/voom-dsl/tests/parser_snapshots.rs
 expression: ast
 ---
 name: deps
+extends: ~
+metadata: ~
 config: ~
 phases:
   - name: first
+    extend: false
     skip_when: ~
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:
@@ -24,6 +27,7 @@ phases:
       line: 2
       col: 9
   - name: second
+    extend: false
     skip_when: ~
     depends_on:
       - first

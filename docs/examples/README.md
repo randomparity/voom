@@ -17,6 +17,13 @@ Multi-language anime library with Japanese/English handling. Forced subtitle det
 
 **Plugins used:** all native + sonarr-metadata (WASM)
 
+### [composed-anime.voom](composed-anime.voom)
+Composition example that extends bundled `anime-base`, appends AAC stereo
+synthesis to the inherited `audio` phase, and replaces the inherited
+`subtitles` phase with English/undefined subtitle handling.
+
+**Plugins used:** ffmpeg-executor, mkvtoolnix-executor
+
 ### [transcode-hevc.voom](transcode-hevc.voom)
 HEVC transcoding pipeline with hardware acceleration. `skip when` with field access, video/audio transcode settings, auto-crop tuning, `synthesize` with all options (codec, channels, source, bitrate, skip_if_exists, create_if, title, language, position), `run_if` conditional phases.
 
@@ -134,6 +141,9 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 | Feature | Examples |
 |---------|----------|
 | `config` block | movie-library, anime, transcode, metadata, strict, full, speech-language-filter, speech-transcription-check |
+| `extends` policy composition | composed-anime |
+| phase `extend` | composed-anime |
+| phase replacement through composition | composed-anime |
 | `depends_on` | all except minimal |
 | `skip when` | transcode, full |
 | `run_if` (modified/completed) | anime, transcode, strict, full |
@@ -146,7 +156,7 @@ Comprehensive reference exercising **every DSL construct**. Not intended for pro
 | `transcode` (video/audio) | transcode, containerize-then-transcode, hw-nvenc-hevc, transcode-video-drop-attachments, metadata-stable-transcode, preflight-archive, preflight-size-gate, hdr-archival, hdr-sdr-mobile, full |
 | `preserve_hdr` / `tonemap` | hdr-archival, hdr10plus-preserve, dolby-vision-rpu, hdr-sdr-mobile |
 | `crop: auto` | transcode |
-| `synthesize` | transcode, full |
+| `synthesize` | transcode, composed-anime, full |
 | `when` / `else` | anime, metadata, full |
 | `rules first` | metadata, full |
 | `rules all` | anime, full, speech-transcription-check |

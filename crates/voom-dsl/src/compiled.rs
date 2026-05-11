@@ -75,6 +75,8 @@ impl<'de> Deserialize<'de> for CompiledRegex {
 #[non_exhaustive]
 pub struct CompiledPolicy {
     pub name: String,
+    #[serde(default)]
+    pub metadata: CompiledMetadata,
     pub config: CompiledConfig,
     pub phases: Vec<CompiledPhase>,
     /// Topologically sorted phase execution order.
@@ -88,6 +90,7 @@ impl CompiledPolicy {
     #[must_use]
     pub fn new(
         name: String,
+        metadata: CompiledMetadata,
         config: CompiledConfig,
         phases: Vec<CompiledPhase>,
         phase_order: Vec<String>,
@@ -95,12 +98,26 @@ impl CompiledPolicy {
     ) -> Self {
         Self {
             name,
+            metadata,
             config,
             phases,
             phase_order,
             source_hash,
         }
     }
+}
+
+/// Compiled policy metadata and policy composition summary.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CompiledMetadata {
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub description: Option<String>,
+    pub requires_voom: Option<String>,
+    pub requires_tools: Vec<String>,
+    pub test_fixtures: Vec<String>,
+    pub extends_chain: Vec<String>,
 }
 
 /// Compiled configuration block.
@@ -152,7 +169,44 @@ pub struct CompiledPhase {
     pub skip_when: Option<CompiledCondition>,
     pub run_if: Option<CompiledRunIf>,
     pub on_error: ErrorStrategy,
+    #[serde(default)]
+    pub composition: CompiledPhaseComposition,
     pub operations: Vec<CompiledOperation>,
+}
+
+/// Compiled phase provenance for policy composition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct CompiledPhaseComposition {
+    pub kind: PhaseCompositionKind,
+    /// The policy source associated with this composed phase.
+    ///
+    /// `Inherited` and `Extended` point at the parent policy source. `Overridden`
+    /// points at the source that replaced the parent phase. `Local` has no source.
+    pub source: Option<String>,
+    /// Number of child operations appended to an inherited phase during `extend`.
+    ///
+    /// This is non-zero only for `Extended` phases.
+    pub added_operations: usize,
+}
+
+impl Default for CompiledPhaseComposition {
+    fn default() -> Self {
+        Self {
+            kind: PhaseCompositionKind::Local,
+            source: None,
+            added_operations: 0,
+        }
+    }
+}
+
+/// How a compiled phase was produced during policy composition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PhaseCompositionKind {
+    Local,
+    Inherited,
+    Extended,
+    Overridden,
 }
 
 /// Compiled `run_if` trigger.

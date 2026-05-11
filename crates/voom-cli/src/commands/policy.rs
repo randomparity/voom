@@ -5,6 +5,7 @@ use anyhow::{Context, Result, bail};
 use console::style;
 use serde::Serialize;
 use serde_json::Value;
+use voom_dsl::compiled::{CompiledPhase, CompiledPhaseComposition, PhaseCompositionKind};
 use voom_policy_testing::{
     CapabilityFixture, Fixture, SnapshotOutcome, TestSuite, assert_snapshot_file,
 };
@@ -17,6 +18,7 @@ pub async fn run(cmd: PolicyCommands) -> Result<()> {
         PolicyCommands::List { format } => list(format),
         PolicyCommands::Validate { file, format } => validate(&file, format),
         PolicyCommands::Show { file, format } => show(&file, format),
+        PolicyCommands::Describe { file, format } => describe(&file, format),
         PolicyCommands::Format { file } => format(&file),
         PolicyCommands::Diff {
             a,
@@ -102,7 +104,7 @@ fn list(format: OutputFormat) -> Result<()> {
                 .file_stem()
                 .expect("file has .voom extension so stem exists")
                 .to_string_lossy();
-            match voom_dsl::compile_policy(&std::fs::read_to_string(&path)?) {
+            match voom_dsl::compile_policy_file(&path) {
                 Ok(policy) => {
                     let policy_name = policy.name.clone();
                     let phase_count = policy.phases.len();
@@ -159,10 +161,8 @@ fn validate(file: &std::path::Path, format: OutputFormat) -> Result<()> {
     }
 
     let file = crate::config::resolve_policy_path(file);
-    let source = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read: {}", file.display()))?;
 
-    match voom_dsl::compile_policy(&source) {
+    match voom_dsl::compile_policy_file(&file) {
         Ok(policy) => {
             if matches!(format, OutputFormat::Json) {
                 output::print_json(&serde_json::json!({
@@ -242,10 +242,8 @@ fn validate_policy_map(file: &std::path::Path, format: OutputFormat) -> Result<(
 
 fn show(file: &std::path::Path, format: OutputFormat) -> Result<()> {
     let file = crate::config::resolve_policy_path(file);
-    let source = std::fs::read_to_string(&file)
-        .with_context(|| format!("Failed to read: {}", file.display()))?;
 
-    let compiled = voom_dsl::compile_policy(&source).context("policy compilation failed")?;
+    let compiled = compile_policy_file(&file, "policy")?;
     if matches!(format, OutputFormat::Json) {
         output::print_json(&compiled)?;
         return Ok(());
@@ -302,6 +300,20 @@ fn show(file: &std::path::Path, format: OutputFormat) -> Result<()> {
         serde_json::to_string_pretty(&compiled).unwrap_or_else(|_| "Failed to serialize".into())
     );
 
+    Ok(())
+}
+
+fn describe(file: &std::path::Path, format: OutputFormat) -> Result<()> {
+    let file = crate::config::resolve_policy_path(file);
+    let compiled = compile_policy_file(&file, "policy")?;
+    let output = DescribeOutput::from_policy(&compiled);
+
+    if matches!(format, OutputFormat::Json) {
+        output::print_json(&output)?;
+        return Ok(());
+    }
+
+    print_human_describe(&output, &compiled.metadata.version);
     Ok(())
 }
 
@@ -463,9 +475,7 @@ fn run_test_suite(
     let policy_path = policy_override
         .map(Path::to_path_buf)
         .unwrap_or_else(|| resolve_relative(suite_dir, &suite.policy));
-    let source = std::fs::read_to_string(&policy_path)
-        .with_context(|| format!("failed to read policy {}", policy_path.display()))?;
-    let policy = voom_dsl::compile_policy(&source)
+    let policy = voom_dsl::compile_policy_file(&policy_path)
         .with_context(|| format!("failed to compile policy {}", policy_path.display()))?;
 
     let mut snapshots_updated = 0;
@@ -562,6 +572,158 @@ fn print_human_test_output(output: &TestOutput) {
 }
 
 #[derive(Debug, Serialize)]
+struct DescribeOutput {
+    policy: String,
+    extends_chain: Vec<String>,
+    metadata: DescribeMetadata,
+    phase_order: Vec<String>,
+    phases: Vec<DescribePhase>,
+}
+
+impl DescribeOutput {
+    fn from_policy(policy: &voom_dsl::CompiledPolicy) -> Self {
+        Self {
+            policy: policy.name.clone(),
+            extends_chain: policy.metadata.extends_chain.clone(),
+            metadata: DescribeMetadata::from_metadata(&policy.metadata),
+            phase_order: policy.phase_order.clone(),
+            phases: ordered_describe_phases(policy),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DescribeMetadata {
+    version: Option<String>,
+    author: Option<String>,
+    description: Option<String>,
+    requires_voom: Option<String>,
+    requires_tools: Vec<String>,
+    test_fixtures: Vec<String>,
+}
+
+impl DescribeMetadata {
+    fn from_metadata(metadata: &voom_dsl::compiled::CompiledMetadata) -> Self {
+        Self {
+            version: metadata.version.clone(),
+            author: metadata.author.clone(),
+            description: metadata.description.clone(),
+            requires_voom: metadata.requires_voom.clone(),
+            requires_tools: metadata.requires_tools.clone(),
+            test_fixtures: metadata.test_fixtures.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct DescribePhase {
+    name: String,
+    composition: CompiledPhaseComposition,
+}
+
+impl DescribePhase {
+    fn from_phase(phase: &CompiledPhase) -> Self {
+        Self {
+            name: phase.name.clone(),
+            composition: phase.composition.clone(),
+        }
+    }
+}
+
+fn ordered_describe_phases(policy: &voom_dsl::CompiledPolicy) -> Vec<DescribePhase> {
+    let mut phases = Vec::with_capacity(policy.phases.len());
+    let mut used = vec![false; policy.phases.len()];
+
+    for phase_name in &policy.phase_order {
+        if let Some((index, phase)) = policy
+            .phases
+            .iter()
+            .enumerate()
+            .find(|(index, phase)| !used[*index] && phase.name == *phase_name)
+        {
+            phases.push(DescribePhase::from_phase(phase));
+            used[index] = true;
+        }
+    }
+
+    for (index, phase) in policy.phases.iter().enumerate() {
+        if !used[index] {
+            phases.push(DescribePhase::from_phase(phase));
+        }
+    }
+
+    phases
+}
+
+fn print_human_describe(output: &DescribeOutput, version: &Option<String>) {
+    print!("{}", render_human_describe(output, version));
+}
+
+fn render_human_describe(output: &DescribeOutput, version: &Option<String>) -> String {
+    let mut rendered = String::new();
+    rendered.push_str(&format!("Policy: {}\n", output.policy));
+    rendered.push_str(&format!(
+        "Extends: {}\n",
+        format_extends_chain(&output.extends_chain)
+    ));
+    if let Some(version) = version {
+        rendered.push_str(&format!("Version: {version}\n"));
+    }
+    rendered.push_str(&format!(
+        "Effective phases: {}\n",
+        output.phase_order.join(", ")
+    ));
+
+    let width = output
+        .phases
+        .iter()
+        .map(|phase| phase.name.len())
+        .max()
+        .unwrap_or(0);
+    for phase in &output.phases {
+        rendered.push_str(&format!(
+            "  {:width$}  {}\n",
+            phase.name,
+            format_composition(&phase.composition),
+            width = width,
+        ));
+    }
+    rendered
+}
+
+fn format_extends_chain(extends_chain: &[String]) -> String {
+    if extends_chain.is_empty() {
+        "none".to_string()
+    } else {
+        extends_chain.join(" -> ")
+    }
+}
+
+fn format_composition(composition: &CompiledPhaseComposition) -> String {
+    match composition.kind {
+        PhaseCompositionKind::Local => "local".to_string(),
+        PhaseCompositionKind::Inherited => {
+            let source = composition.source.as_deref().unwrap_or("unknown");
+            format!("inherited from {source}")
+        }
+        PhaseCompositionKind::Extended => {
+            let source = composition.source.as_deref().unwrap_or("unknown");
+            let count = composition.added_operations;
+            let operation = if count == 1 {
+                "operation"
+            } else {
+                "operations"
+            };
+            format!("extended from {source} ({count} {operation} added)")
+        }
+        PhaseCompositionKind::Overridden => {
+            let source = composition.source.as_deref().unwrap_or("unknown");
+            format!("overridden by {source}")
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
 struct TestOutput {
     cases: Vec<TestCaseOutput>,
     summary: TestSummary,
@@ -612,9 +774,8 @@ enum TestStatus {
 }
 
 fn compile_policy_file(path: &std::path::Path, label: &str) -> Result<voom_dsl::CompiledPolicy> {
-    let source = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read: {}", path.display()))?;
-    voom_dsl::compile_policy(&source).with_context(|| format!("failed to compile {label} policy"))
+    voom_dsl::compile_policy_file(path)
+        .with_context(|| format!("failed to compile {label} policy {}", path.display()))
 }
 
 fn fixture_plan_json(
@@ -981,6 +1142,92 @@ policy "test-policy" {
 
         let result = show(&file, OutputFormat::Table);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn describe_json_includes_stable_fields_and_composition() {
+        let policy = voom_dsl::compile_policy_with_bundled(
+            r#"policy "child" extends "anime-base" {
+                phase audio { extend keep audio where lang == eng }
+                phase subtitles { keep subtitles where lang == eng }
+            }"#,
+        )
+        .unwrap();
+
+        let output = DescribeOutput::from_policy(&policy);
+        let value = serde_json::to_value(output).unwrap();
+
+        assert_eq!(value["policy"], "child");
+        assert_eq!(value["extends_chain"], serde_json::json!(["anime-base"]));
+        assert_eq!(value["phase_order"], serde_json::json!(policy.phase_order));
+        let phase_names: Vec<&str> = value["phases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|phase| phase["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(phase_names, policy.phase_order);
+        assert!(value["metadata"].get("version").is_some());
+        assert!(value["metadata"].get("author").is_some());
+        assert!(value["metadata"].get("description").is_some());
+        assert!(value["metadata"].get("requires_voom").is_some());
+        assert!(value["metadata"].get("requires_tools").is_some());
+        assert!(value["metadata"].get("test_fixtures").is_some());
+        assert_describe_phase(&value, "containerize", "Inherited", Some("anime-base"), 0);
+        assert_describe_phase(&value, "audio", "Extended", Some("anime-base"), 1);
+        assert_describe_phase(&value, "subtitles", "Overridden", Some("inline"), 0);
+
+        let local_policy =
+            voom_dsl::compile_policy(r#"policy "standalone" { phase local { keep audio } }"#)
+                .unwrap();
+        let local_output = serde_json::to_value(DescribeOutput::from_policy(&local_policy))
+            .expect("describe output serializes");
+        assert_describe_phase(&local_output, "local", "Local", None, 0);
+    }
+
+    #[test]
+    fn describe_human_uses_sources_and_phase_order() {
+        let mut policy = voom_dsl::compile_policy_with_bundled(
+            r#"policy "child" extends "anime-base" {
+                metadata { version: "2.0.0" }
+                phase audio { extend keep audio where lang == eng }
+                phase subtitles { keep subtitles where lang == eng }
+            }"#,
+        )
+        .unwrap();
+        policy.phases.reverse();
+
+        let output = DescribeOutput::from_policy(&policy);
+        let rendered = render_human_describe(&output, &policy.metadata.version);
+
+        let row_order: Vec<&str> = rendered
+            .lines()
+            .filter_map(|line| line.strip_prefix("  "))
+            .map(|line| line.split_whitespace().next().unwrap())
+            .collect();
+        assert_eq!(row_order, policy.phase_order);
+        assert!(rendered.contains("containerize  inherited from anime-base"));
+        assert!(rendered.contains("audio         extended from anime-base (1 operation added)"));
+        assert!(rendered.contains("subtitles     overridden by inline"));
+    }
+
+    fn assert_describe_phase(
+        value: &Value,
+        name: &str,
+        kind: &str,
+        source: Option<&str>,
+        added_operations: usize,
+    ) {
+        let phase = value["phases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|phase| phase["name"] == name)
+            .unwrap();
+        assert_eq!(phase["name"], name);
+        assert_eq!(phase["composition"]["kind"], kind);
+        assert_eq!(phase["composition"]["source"], serde_json::json!(source));
+        assert_eq!(phase["composition"]["added_operations"], added_operations);
     }
 
     // ── Diff tests ──────────────────────────────────────────

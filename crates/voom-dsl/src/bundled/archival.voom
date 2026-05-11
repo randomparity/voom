@@ -1,0 +1,30 @@
+policy "archival" {
+  metadata {
+    version: "1.0.0"
+    description: "Conservative archival policy that preserves common languages and fonts"
+    requires_tools: [ffmpeg, mkvmerge, mkvextract]
+  }
+
+  config {
+    languages audio: [eng, jpn, fre, ger, spa, und]
+    languages subtitle: [eng, jpn, fre, ger, spa, und]
+    on_error: abort
+    keep_backups: true
+  }
+
+  phase containerize {
+    container mkv
+  }
+
+  phase preserve-tracks {
+    depends_on: [containerize]
+    keep audio where lang in [eng, jpn, fre, ger, spa, und]
+    keep subtitles where lang in [eng, jpn, fre, ger, spa, und]
+    remove attachments where not font
+  }
+
+  phase validate {
+    depends_on: [preserve-tracks]
+    verify quick
+  }
+}

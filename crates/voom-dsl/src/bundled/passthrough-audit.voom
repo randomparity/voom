@@ -1,0 +1,21 @@
+policy "passthrough-audit" {
+  metadata {
+    version: "1.0.0"
+    description: "Audit-only policy that verifies media without changing tracks"
+    requires_tools: [ffmpeg, mkvmerge]
+  }
+
+  phase identify {
+    verify quick
+  }
+
+  phase inspect-tracks {
+    depends_on: [identify]
+    when count(video) == 0 {
+      warn "No video track found"
+    }
+    when count(audio) == 0 {
+      warn "No audio track found"
+    }
+  }
+}

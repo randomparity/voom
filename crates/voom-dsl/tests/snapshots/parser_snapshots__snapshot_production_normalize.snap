@@ -1,9 +1,10 @@
 ---
 source: crates/voom-dsl/tests/parser_snapshots.rs
-assertion_line: 179
 expression: ast
 ---
 name: production-normalize
+extends: ~
+metadata: ~
 config:
   audio_languages:
     - eng
@@ -24,8 +25,9 @@ config:
     col: 3
 phases:
   - name: containerize
+    extend: false
     skip_when: ~
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:
@@ -42,6 +44,7 @@ phases:
       line: 10
       col: 3
   - name: normalize
+    extend: false
     skip_when: ~
     depends_on:
       - containerize
@@ -144,6 +147,7 @@ phases:
       line: 15
       col: 3
   - name: transcode
+    extend: false
     skip_when:
       FieldCompare:
         - - video
@@ -152,7 +156,7 @@ phases:
         - List:
             - Ident: hevc
             - Ident: h265
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:
@@ -201,6 +205,7 @@ phases:
       line: 46
       col: 3
   - name: audio_compat
+    extend: false
     skip_when: ~
     depends_on:
       - normalize
@@ -247,6 +252,7 @@ phases:
       line: 63
       col: 3
   - name: validate
+    extend: false
     skip_when: ~
     depends_on:
       - transcode
@@ -310,8 +316,9 @@ phases:
       line: 79
       col: 3
   - name: metadata
+    extend: false
     skip_when: ~
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:

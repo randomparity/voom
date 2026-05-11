@@ -13,10 +13,10 @@ use pest::iterators::Pair;
 use pest_derive::Parser;
 
 use crate::ast::{
-    ActionNode, CompareOp, ConditionNode, ConfigNode, ErrorStrategyNode, FilterNode,
-    NormalizeSetting, OperationNode, PhaseNode, PolicyAst, RuleNode, RunIfNode, RunIfTriggerNode,
-    Span, SpannedOperation, SynthSetting, TrackQueryNode, TrackRefNode, Value, ValueOrField,
-    VerifyMode, WhenNode,
+    ActionNode, CompareOp, ConditionNode, ConfigNode, ErrorStrategyNode, ExtendsSource, FilterNode,
+    MetadataNode, NormalizeSetting, OperationNode, PhaseNode, PolicyAst, RuleNode, RunIfNode,
+    RunIfTriggerNode, Span, SpannedOperation, SynthSetting, TrackQueryNode, TrackRefNode, Value,
+    ValueOrField, VerifyMode, WhenNode,
 };
 use crate::errors::{DslError, Result};
 
@@ -96,11 +96,15 @@ fn build_policy(pair: Pair<'_, Rule>) -> Result<PolicyAst> {
     let name_pair = inner.next().unwrap();
     let name = parse_string_value(&name_pair);
 
+    let mut extends = None;
+    let mut metadata = None;
     let mut config = None;
     let mut phases = Vec::new();
 
     for item in inner {
         match item.as_rule() {
+            Rule::extends_clause => extends = Some(build_extends(item)),
+            Rule::metadata => metadata = Some(build_metadata(item)?),
             Rule::config => config = Some(build_config(item)?),
             Rule::phase => phases.push(build_phase(item)?),
             Rule::EOI => {}
@@ -117,8 +121,80 @@ fn build_policy(pair: Pair<'_, Rule>) -> Result<PolicyAst> {
 
     Ok(PolicyAst {
         name,
+        extends,
+        metadata,
         config,
         phases,
+        span,
+    })
+}
+
+fn build_extends(pair: Pair<'_, Rule>) -> ExtendsSource {
+    let source_pair = pair.into_inner().next().unwrap();
+    let source = parse_string_value(&source_pair);
+    if source.starts_with("file://") {
+        ExtendsSource::File(source)
+    } else {
+        ExtendsSource::Bundled(source)
+    }
+}
+
+fn metadata_string_value(item: Pair<'_, Rule>) -> String {
+    let string_pair = item
+        .into_inner()
+        .find(|pair| pair.as_rule() == Rule::string)
+        .unwrap();
+    parse_string_value(&string_pair)
+}
+
+fn metadata_list_value(item: Pair<'_, Rule>) -> Vec<String> {
+    let list_pair = item
+        .into_inner()
+        .find(|pair| pair.as_rule() == Rule::list)
+        .unwrap();
+    build_list(list_pair)
+}
+
+fn build_metadata(pair: Pair<'_, Rule>) -> Result<MetadataNode> {
+    let span = span_from_pair(&pair);
+    let mut version = None;
+    let mut author = None;
+    let mut description = None;
+    let mut requires_voom = None;
+    let mut requires_tools = None;
+    let mut test_fixtures = None;
+
+    for item in pair.into_inner() {
+        if item.as_rule() != Rule::metadata_item {
+            continue;
+        }
+        let text = item.as_str().trim();
+        let keyword = leading_keyword(text);
+        match keyword {
+            "version" => version = Some(metadata_string_value(item)),
+            "author" => author = Some(metadata_string_value(item)),
+            "description" => description = Some(metadata_string_value(item)),
+            "requires_voom" => requires_voom = Some(metadata_string_value(item)),
+            "requires_tools" => requires_tools = Some(metadata_list_value(item)),
+            "test_fixtures" => test_fixtures = Some(metadata_list_value(item)),
+            other => {
+                let (line, col) = item.as_span().start_pos().line_col();
+                return Err(DslError::build(
+                    line,
+                    col,
+                    format!("unexpected metadata keyword: {other}"),
+                ));
+            }
+        }
+    }
+
+    Ok(MetadataNode {
+        version,
+        author,
+        description,
+        requires_voom,
+        requires_tools,
+        test_fixtures,
         span,
     })
 }
@@ -208,12 +284,17 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
     let name = inner.next().unwrap().as_str().to_string();
 
     let mut skip_when = None;
-    let mut depends_on = Vec::new();
+    let mut depends_on = None;
     let mut run_if = None;
     let mut on_error = None;
     let mut operations = Vec::new();
+    let mut extend = false;
 
     for item in inner {
+        if item.as_rule() == Rule::phase_extend {
+            extend = true;
+            continue;
+        }
         if item.as_rule() != Rule::phase_item {
             continue;
         }
@@ -225,7 +306,7 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
             }
             Rule::depends_on => {
                 let list = child.into_inner().next().unwrap();
-                depends_on = build_list(list);
+                depends_on = Some(build_list(list));
             }
             Rule::run_if => {
                 // Grammar: "run_if" ~ ident ~ "." ~ run_if_trigger
@@ -357,6 +438,7 @@ fn build_phase(pair: Pair<'_, Rule>) -> Result<PhaseNode> {
 
     Ok(PhaseNode {
         name,
+        extend,
         skip_when,
         depends_on,
         run_if,

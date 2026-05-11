@@ -6,8 +6,9 @@
 use std::fmt::Write;
 
 use crate::ast::{
-    ActionNode, CompareOp, ConditionNode, ConfigNode, FilterNode, OperationNode, PhaseNode,
-    PolicyAst, RuleNode, SynthSetting, TrackQueryNode, Value, ValueOrField, WhenNode,
+    ActionNode, CompareOp, ConditionNode, ConfigNode, ExtendsSource, FilterNode, MetadataNode,
+    OperationNode, PhaseNode, PolicyAst, RuleNode, SynthSetting, TrackQueryNode, Value,
+    ValueOrField, WhenNode,
 };
 
 /// Format a [`PolicyAst`] into a pretty-printed source string.
@@ -30,14 +31,29 @@ use crate::ast::{
 #[must_use]
 pub fn format_policy(ast: &PolicyAst) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "policy \"{}\" {{", escape_string(&ast.name));
+    let _ = write!(out, "policy \"{}\"", escape_string(&ast.name));
+    if let Some(extends) = &ast.extends {
+        let _ = write!(
+            out,
+            " extends \"{}\"",
+            escape_string(extends_source(extends))
+        );
+    }
+    out.push_str(" {\n");
+
+    if let Some(metadata) = &ast.metadata {
+        format_metadata(metadata, &mut out, 1);
+    }
 
     if let Some(config) = &ast.config {
+        if ast.metadata.is_some() {
+            out.push('\n');
+        }
         format_config(config, &mut out, 1);
     }
 
     for (i, phase) in ast.phases.iter().enumerate() {
-        if i > 0 || ast.config.is_some() {
+        if i > 0 || ast.config.is_some() || ast.metadata.is_some() {
             out.push('\n');
         }
         format_phase(phase, &mut out, 1);
@@ -47,10 +63,57 @@ pub fn format_policy(ast: &PolicyAst) -> String {
     out
 }
 
+fn extends_source(source: &ExtendsSource) -> &str {
+    match source {
+        ExtendsSource::Bundled(value) | ExtendsSource::File(value) => value,
+    }
+}
+
 fn indent(out: &mut String, level: usize) {
     for _ in 0..level {
         out.push_str("  ");
     }
+}
+
+fn format_metadata(metadata: &MetadataNode, out: &mut String, level: usize) {
+    indent(out, level);
+    out.push_str("metadata {\n");
+
+    if let Some(version) = &metadata.version {
+        indent(out, level + 1);
+        let _ = writeln!(out, "version: \"{}\"", escape_string(version));
+    }
+    if let Some(author) = &metadata.author {
+        indent(out, level + 1);
+        let _ = writeln!(out, "author: \"{}\"", escape_string(author));
+    }
+    if let Some(description) = &metadata.description {
+        indent(out, level + 1);
+        let _ = writeln!(out, "description: \"{}\"", escape_string(description));
+    }
+    if let Some(requires_voom) = &metadata.requires_voom {
+        indent(out, level + 1);
+        let _ = writeln!(out, "requires_voom: \"{}\"", escape_string(requires_voom));
+    }
+    if let Some(requires_tools) = &metadata.requires_tools {
+        indent(out, level + 1);
+        let tools: Vec<String> = requires_tools
+            .iter()
+            .map(|tool| format!("\"{}\"", escape_string(tool)))
+            .collect();
+        let _ = writeln!(out, "requires_tools: [{}]", tools.join(", "));
+    }
+    if let Some(test_fixtures) = &metadata.test_fixtures {
+        indent(out, level + 1);
+        let fixtures: Vec<String> = test_fixtures
+            .iter()
+            .map(|fixture| format!("\"{}\"", escape_string(fixture)))
+            .collect();
+        let _ = writeln!(out, "test_fixtures: [{}]", fixtures.join(", "));
+    }
+
+    indent(out, level);
+    out.push_str("}\n");
 }
 
 fn format_config(config: &ConfigNode, out: &mut String, level: usize) {
@@ -99,9 +162,14 @@ fn format_phase(phase: &PhaseNode, out: &mut String, level: usize) {
     indent(out, level);
     let _ = writeln!(out, "phase {} {{", phase.name);
 
-    if !phase.depends_on.is_empty() {
+    if phase.extend {
         indent(out, level + 1);
-        let _ = writeln!(out, "depends_on: [{}]", phase.depends_on.join(", "));
+        out.push_str("extend\n");
+    }
+
+    if let Some(depends_on) = &phase.depends_on {
+        indent(out, level + 1);
+        let _ = writeln!(out, "depends_on: [{}]", depends_on.join(", "));
     }
 
     if let Some(skip_when) = &phase.skip_when {
@@ -1067,8 +1135,9 @@ mod tests {
     fn empty_phase(name: &str) -> PhaseNode {
         PhaseNode {
             name: name.into(),
+            extend: false,
             skip_when: None,
-            depends_on: vec![],
+            depends_on: None,
             run_if: None,
             on_error: None,
             operations: vec![],
@@ -1084,7 +1153,7 @@ mod tests {
     #[test]
     fn format_phase_depends_on_indents_one_deeper() {
         let mut phase = empty_phase("build");
-        phase.depends_on = vec!["init".into()];
+        phase.depends_on = Some(vec!["init".into()]);
         let mut out = String::new();
         format_phase(&phase, &mut out, 1);
         assert!(

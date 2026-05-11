@@ -123,7 +123,7 @@ fn validate_phase_references(ast: &PolicyAst, errors: &mut Vec<DslError>) {
     let phase_names: HashSet<&str> = ast.phases.iter().map(|p| p.name.as_str()).collect();
 
     for phase in &ast.phases {
-        for dep in &phase.depends_on {
+        for dep in phase.depends_on.as_deref().unwrap_or(&[]) {
             if !phase_names.contains(dep.as_str()) {
                 errors.push(DslError::validation(
                     phase.span.line,
@@ -164,6 +164,8 @@ fn validate_cycle_detection(ast: &PolicyAst, errors: &mut Vec<DslError>) {
     for phase in &ast.phases {
         let deps: Vec<&str> = phase
             .depends_on
+            .as_deref()
+            .unwrap_or(&[])
             .iter()
             .map(std::string::String::as_str)
             .collect();
@@ -250,7 +252,7 @@ fn validate_reachability(ast: &PolicyAst, errors: &mut Vec<DslError>) {
 
     // Roots: phases with no depends_on
     for phase in &ast.phases {
-        if phase.depends_on.is_empty() {
+        if phase.depends_on.as_deref().unwrap_or(&[]).is_empty() {
             reachable.insert(phase.name.as_str());
         }
     }
@@ -265,6 +267,8 @@ fn validate_reachability(ast: &PolicyAst, errors: &mut Vec<DslError>) {
             }
             let all_deps_reachable = phase
                 .depends_on
+                .as_deref()
+                .unwrap_or(&[])
                 .iter()
                 .all(|d| !phase_names.contains(d.as_str()) || reachable.contains(d.as_str()));
             if all_deps_reachable {
@@ -291,6 +295,17 @@ fn validate_phase(
     errors: &mut Vec<DslError>,
     warnings: &mut Vec<DslWarning>,
 ) {
+    if phase.extend {
+        errors.push(DslError::validation(
+            phase.span.line,
+            phase.span.col,
+            format!(
+                "phase \"{}\" uses extend but policy composition was not resolved",
+                phase.name
+            ),
+        ));
+    }
+
     if let Some(skip_when) = &phase.skip_when {
         validate_condition(
             skip_when,
@@ -3329,8 +3344,9 @@ mod tests {
             .collect();
         PhaseNode {
             name: name.into(),
+            extend: false,
             skip_when: None,
-            depends_on: vec![],
+            depends_on: None,
             run_if: None,
             on_error: None,
             operations,

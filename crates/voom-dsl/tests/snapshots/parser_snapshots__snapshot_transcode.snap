@@ -3,9 +3,12 @@ source: crates/voom-dsl/tests/parser_snapshots.rs
 expression: ast
 ---
 name: transcode
+extends: ~
+metadata: ~
 config: ~
 phases:
   - name: tc
+    extend: false
     skip_when:
       FieldCompare:
         - - video
@@ -14,7 +17,7 @@ phases:
         - List:
             - Ident: hevc
             - Ident: h265
-    depends_on: []
+    depends_on: ~
     run_if: ~
     on_error: ~
     operations:

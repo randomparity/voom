@@ -1,5 +1,5 @@
 use insta::assert_yaml_snapshot;
-use voom_dsl::parse_policy;
+use voom_dsl::{PhaseCompositionKind, compile_policy_with_bundled, parse_policy};
 
 #[test]
 fn snapshot_minimal_policy() {
@@ -27,6 +27,61 @@ fn snapshot_config_block() {
     }"#;
     let ast = parse_policy(input).unwrap();
     assert_yaml_snapshot!(ast);
+}
+
+#[test]
+fn snapshot_policy_extends_and_phase_extend() {
+    let input = r#"policy "my-anime" extends "anime-base" {
+        metadata {
+            version: "1.2.0"
+            author: "user@example.com"
+            description: "Archive-quality anime preservation"
+            requires_voom: ">=0.5.0"
+            requires_tools: [ffmpeg, mkvmerge, mkvextract]
+            test_fixtures: ["fixtures/anime/"]
+        }
+
+        phase audio {
+            extend
+            synthesize "AC3 5.1" {
+                codec: ac3
+                channels: 5.1
+                source: prefer(channels >= 5.1 and lang == jpn)
+            }
+        }
+    }"#;
+    let ast = parse_policy(input).unwrap();
+    assert_yaml_snapshot!(ast);
+}
+
+#[test]
+fn format_preserves_policy_composition_syntax() {
+    let input = r#"policy "child" extends "file://./base.voom" {
+        metadata { version: "1.0.0" }
+        phase audio { extend keep audio where lang == eng }
+    }"#;
+    let ast = parse_policy(input).unwrap();
+    let formatted = voom_dsl::format_policy(&ast);
+
+    assert!(formatted.contains("policy \"child\" extends \"file://./base.voom\""));
+    assert!(formatted.contains("metadata {"));
+    assert!(formatted.contains("extend"));
+    let reparsed = parse_policy(&formatted).unwrap();
+    assert_eq!(voom_dsl::format_policy(&reparsed), formatted);
+}
+
+#[test]
+fn format_quotes_path_like_metadata_requires_tools() {
+    let input = r#"policy "child" {
+        metadata { requires_tools: ["tools/ffmpeg"] }
+        phase audio { keep audio }
+    }"#;
+    let ast = parse_policy(input).unwrap();
+    let formatted = voom_dsl::format_policy(&ast);
+
+    assert!(formatted.contains(r#"requires_tools: ["tools/ffmpeg"]"#));
+    let reparsed = parse_policy(&formatted).unwrap();
+    assert_eq!(voom_dsl::format_policy(&reparsed), formatted);
 }
 
 #[test]
@@ -281,6 +336,35 @@ fn example_anime_collection_parses() {
     let ast = parse_policy(input).unwrap();
     assert_eq!(ast.name, "anime-collection");
     assert_eq!(ast.phases.len(), 5);
+}
+
+#[test]
+fn example_composed_anime_parses_and_validates() {
+    let input = include_str!("../../../docs/examples/composed-anime.voom");
+    let policy = compile_policy_with_bundled(input).unwrap();
+    assert_eq!(policy.name, "composed-anime");
+    assert_eq!(policy.metadata.extends_chain, ["anime-base"]);
+    assert_eq!(policy.phase_order, ["containerize", "audio", "subtitles"]);
+    let phase = |name: &str| {
+        policy
+            .phases
+            .iter()
+            .find(|phase| phase.name == name)
+            .unwrap_or_else(|| panic!("missing compiled phase {name:?}"))
+    };
+    assert_eq!(
+        phase("containerize").composition.kind,
+        PhaseCompositionKind::Inherited
+    );
+    assert_eq!(
+        phase("audio").composition.kind,
+        PhaseCompositionKind::Extended
+    );
+    assert_eq!(phase("audio").composition.added_operations, 1);
+    assert_eq!(
+        phase("subtitles").composition.kind,
+        PhaseCompositionKind::Overridden
+    );
 }
 
 #[test]

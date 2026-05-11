@@ -21,6 +21,17 @@ policy "<name>" {
 }
 ```
 
+Policies can also compose from a parent policy:
+
+```
+policy "<name>" extends "<parent>" {
+  phase <name> {
+    extend
+    ...
+  }
+}
+```
+
 ### Example
 
 ```
@@ -41,6 +52,112 @@ policy "my-normalize" {
   }
 }
 ```
+
+## Policy Metadata
+
+The optional `metadata` block records human-readable and tooling metadata. These
+fields are surfaced by compiled policies and by `voom policy describe`.
+
+```
+metadata {
+  version: "1.0.0"
+  author: "user@example.com"
+  description: "Human-readable policy purpose"
+  requires_voom: ">=0.5.0"
+  requires_tools: [ffmpeg, mkvmerge]
+  test_fixtures: ["fixtures/anime/"]
+}
+```
+
+| Setting | Type | Description |
+|---------|------|-------------|
+| `version` | string | Policy version |
+| `author` | string | Policy author or owner |
+| `description` | string | Human-readable purpose or description |
+| `requires_voom` | string | Required VOOM version constraint |
+| `requires_tools` | list | External tool identifiers required by the policy |
+| `test_fixtures` | list of strings | Test fixture paths associated with the policy |
+
+## Policy Composition
+
+`extends` composes a child policy from a parent before validation and
+compilation. The child can inherit parent phases, append operations to a parent
+phase, or replace a parent phase with a local definition.
+
+### Parent Sources
+
+Bundled parent names can be used directly:
+
+```
+policy "my-anime" extends "anime-base" {
+  phase subtitles {
+    keep subtitles where lang == eng
+  }
+}
+```
+
+Current bundled policy names are:
+
+| Name |
+|------|
+| `archival` |
+| `space-saver` |
+| `mobile-friendly` |
+| `anime-base` |
+| `passthrough-audit` |
+
+Local parent files use `file://` URIs:
+
+```
+policy "child" extends "file://./base.voom" {
+  phase child {
+    keep audio
+  }
+}
+```
+
+When compiling or loading from a file, relative `file://` paths resolve relative
+to the child policy file. Absolute `file://` paths are only available through
+file-based loading. In-memory bundled compilation does not load local files.
+
+Remote sources are out of scope right now. Registry, GitHub, HTTP(S), and other
+remote parent references are unsupported.
+
+### Phase Inheritance
+
+Parent phases missing from the child are inherited unchanged. If a child defines
+a phase with the same name and does not use `extend`, the child phase replaces
+the inherited phase.
+
+Use `extend` as the first statement in a child phase to append local operations
+to the inherited phase:
+
+```
+phase audio {
+  extend
+  synthesize "AAC Stereo" {
+    codec: aac
+    channels: stereo
+    source: prefer(lang == eng)
+  }
+}
+```
+
+An extended phase inherits the parent phase controls and operations, then appends
+the child operations. Child phase controls such as `depends_on`, `skip when`,
+`run_if`, and `on_error` can be restated to replace the inherited controls. For
+example, `depends_on: []` clears inherited dependencies.
+
+### Composition Metadata
+
+Compiled policies include provenance fields for composition-aware tooling:
+
+| Field | Description |
+|-------|-------------|
+| `metadata.extends_chain` | Ordered parent chain used to compose the policy |
+| `phase.composition.kind` | `Local`, `Inherited`, `Extended`, or `Overridden` |
+| `phase.composition.source` | Parent name/path for inherited and extended phases, the child source for overridden phases, or omitted for local phases |
+| `phase.composition.added_operations` | Number of child operations appended by an extended phase |
 
 ## Config Block
 
@@ -664,7 +781,10 @@ Source (.voom)
 ### Programmatic API
 
 ```rust
-use voom_dsl::{parse_policy, validate, compile, compile_ast, format_policy};
+use voom_dsl::{
+    compile_policy, compile_policy_file, compile_policy_with_bundled,
+    format_policy, parse_policy, validate,
+};
 
 // Parse source to AST
 let ast = parse_policy(source)?;
@@ -672,10 +792,14 @@ let ast = parse_policy(source)?;
 // Validate semantics (returns Result<(), ValidationErrors>)
 validate(&ast)?;
 
-// Compile to domain types (parse + validate + compile in one step)
-let compiled = compile(source)?;
-// or compile from an existing AST
-let compiled = compile_ast(&ast)?;
+// Compile a standalone policy to domain types (parse + validate + compile)
+let compiled = compile_policy(source)?;
+
+// Resolve bundled extends such as `extends "anime-base"`
+let compiled = compile_policy_with_bundled(source)?;
+
+// Resolve file:// extends relative to the policy file
+let compiled = compile_policy_file(std::path::Path::new("policies/child.voom"))?;
 
 // Format/pretty-print (takes &PolicyAst, returns String)
 let formatted = format_policy(&ast);

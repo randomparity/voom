@@ -1,0 +1,31 @@
+policy "mobile-friendly" {
+  metadata {
+    version: "1.0.0"
+    description: "Mobile playback policy with MP4 container and normalized audio"
+    requires_tools: [ffmpeg]
+  }
+
+  config {
+    languages audio: [eng, und]
+    languages subtitle: [eng]
+  }
+
+  phase containerize {
+    container mp4
+  }
+
+  phase audio {
+    depends_on: [containerize]
+    keep audio where lang in [eng, und] and not commentary {
+      normalize: mobile
+    }
+    defaults {
+      audio: first
+    }
+  }
+
+  phase subtitles {
+    depends_on: [audio]
+    keep subtitles where lang == eng and not commentary
+  }
+}
