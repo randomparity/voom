@@ -1,0 +1,42 @@
+// Composed anime policy.
+//
+// Extends the bundled anime-base policy, appends an AAC stereo compatibility
+// audio track, and replaces the inherited subtitle handling with an
+// English/undefined-language subtitle policy.
+
+policy "composed-anime" extends "anime-base" {
+  metadata {
+    version: "1.0.0"
+    description: "Anime policy composed from anime-base with AAC stereo and English subtitles"
+    requires_tools: [ffmpeg, mkvmerge, mkvextract]
+  }
+
+  phase audio {
+    extend
+
+    synthesize "AAC Stereo" {
+      codec: aac
+      channels: stereo
+      source: prefer(lang in [jpn, eng, und] and not commentary)
+      bitrate: "192k"
+      skip_if_exists {
+        codec == aac and channels == 2 and lang in [jpn, eng, und] and not commentary
+      }
+      title: "Stereo (AAC)"
+      language: inherit
+      position: after_source
+    }
+  }
+
+  phase subtitles {
+    depends_on: [audio]
+
+    keep subtitles where lang in [eng, und] and not commentary
+    remove subtitles where title contains "auto-generated"
+    remove attachments where not font
+
+    defaults {
+      subtitle: first
+    }
+  }
+}

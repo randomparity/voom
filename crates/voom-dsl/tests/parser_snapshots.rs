@@ -1,5 +1,5 @@
 use insta::assert_yaml_snapshot;
-use voom_dsl::parse_policy;
+use voom_dsl::{compile_policy_with_bundled, parse_policy};
 
 #[test]
 fn snapshot_minimal_policy() {
@@ -336,6 +336,15 @@ fn example_anime_collection_parses() {
     let ast = parse_policy(input).unwrap();
     assert_eq!(ast.name, "anime-collection");
     assert_eq!(ast.phases.len(), 5);
+}
+
+#[test]
+fn example_composed_anime_parses_and_validates() {
+    let input = include_str!("../../../docs/examples/composed-anime.voom");
+    let policy = compile_policy_with_bundled(input).unwrap();
+    assert_eq!(policy.name, "composed-anime");
+    assert_eq!(policy.metadata.extends_chain, ["anime-base"]);
+    assert_eq!(policy.phase_order, ["containerize", "audio", "subtitles"]);
 }
 
 #[test]
