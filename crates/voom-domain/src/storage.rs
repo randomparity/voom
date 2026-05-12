@@ -157,7 +157,38 @@ pub trait FileStorage: Send + Sync {
         &self,
         discovered: &[DiscoveredFile],
         scanned_dirs: &[PathBuf],
-    ) -> Result<ReconcileResult>;
+    ) -> Result<ReconcileResult> {
+        use crate::transition::IngestDecision;
+
+        let mut result = ReconcileResult::default();
+
+        with_scan_session(self, scanned_dirs, |session| -> Result<()> {
+            for df in discovered {
+                let decision = self.ingest_discovered_file(session, df)?;
+                match &decision {
+                    IngestDecision::New { .. } => result.new_files += 1,
+                    IngestDecision::Unchanged { .. } => result.unchanged += 1,
+                    IngestDecision::ExternallyChanged { .. } => result.external_changes += 1,
+                    IngestDecision::Moved { .. } => result.moved += 1,
+                    IngestDecision::Duplicate { .. } => {
+                        // Silently drop — preserves the prior `HashSet`-based
+                        // dedup semantics on the input list.
+                    }
+                }
+                if let Some(p) = decision.needs_introspection_path(&df.path) {
+                    result.needs_introspection.push(p);
+                }
+            }
+            let finish = self.finish_scan_session(session)?;
+            result.missing = finish.missing;
+            // Promoted moves were counted as New during ingestion; reclassify.
+            result.new_files = result.new_files.saturating_sub(finish.promoted_moves);
+            result.moved += finish.promoted_moves;
+            Ok(())
+        })?;
+
+        Ok(result)
+    }
     /// Mark active files under `scanned_dirs` as missing if their path is not
     /// in `discovered_paths`. This is a path-only operation — no hash needed.
     fn mark_missing_paths(
