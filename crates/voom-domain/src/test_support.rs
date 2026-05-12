@@ -32,8 +32,7 @@ use crate::storage::{
 };
 use crate::transcode::TranscodeOutcome;
 use crate::transition::{
-    DiscoveredFile, FileStatus, FileTransition, ReconcileResult, STALE_SESSION_SECS,
-    TransitionSource, is_under_any,
+    DiscoveredFile, FileStatus, FileTransition, STALE_SESSION_SECS, TransitionSource, is_under_any,
 };
 use crate::verification::{
     IntegritySummary, IntegritySummaryInput, VerificationFilters, VerificationMode,
@@ -633,53 +632,6 @@ impl FileStorage for InMemoryStore {
         let before = files.len();
         files.retain(|_, f| f.status != FileStatus::Missing);
         Ok((before - files.len()) as u64)
-    }
-
-    fn reconcile_discovered_files(
-        &self,
-        discovered: &[DiscoveredFile],
-        scanned_dirs: &[std::path::PathBuf],
-    ) -> Result<ReconcileResult> {
-        use crate::transition::IngestDecision;
-
-        let session = self.begin_scan_session(scanned_dirs)?;
-        let mut result = ReconcileResult::default();
-
-        let outcome: Result<()> = (|| {
-            for df in discovered {
-                let decision = self.ingest_discovered_file(session, df)?;
-                match &decision {
-                    IngestDecision::New { .. } => result.new_files += 1,
-                    IngestDecision::Unchanged { .. } => result.unchanged += 1,
-                    IngestDecision::ExternallyChanged { .. } => result.external_changes += 1,
-                    IngestDecision::Moved { .. } => result.moved += 1,
-                    IngestDecision::Duplicate { .. } => {}
-                }
-                if let Some(p) = decision.needs_introspection_path(&df.path) {
-                    result.needs_introspection.push(p);
-                }
-            }
-            let finish = self.finish_scan_session(session)?;
-            result.missing = finish.missing;
-            result.new_files = result.new_files.saturating_sub(finish.promoted_moves);
-            result.moved += finish.promoted_moves;
-            Ok(())
-        })();
-
-        match outcome {
-            Ok(()) => Ok(result),
-            Err(e) => {
-                if let Err(cancel_err) = self.cancel_scan_session(session) {
-                    tracing::warn!(
-                        session = %session,
-                        ingest_error = %e,
-                        cancel_error = %cancel_err,
-                        "failed to cancel scan session after ingest error",
-                    );
-                }
-                Err(e)
-            }
-        }
     }
 
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()> {
