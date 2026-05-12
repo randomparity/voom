@@ -3,7 +3,6 @@
 //! claim/process them concurrently while an `execution_gate` is held open.
 
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -14,7 +13,7 @@ use uuid::Uuid;
 use crate::progress::ProgressReporter;
 use crate::worker::{
     JobErrorStrategy, JobResult, WorkItem, WorkerContext, WorkerPool, cancel_unstarted_jobs,
-    run_one_job,
+    run_claimed_job,
 };
 
 /// Polling interval workers use when the queue is momentarily empty but the
@@ -28,7 +27,6 @@ const CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// `clippy::too_many_arguments` budget.
 struct WorkerSpawnArgs<F> {
     producer_done_flag: Arc<AtomicBool>,
-    pending: Arc<Mutex<Vec<Uuid>>>,
     execution_gate: Arc<Notify>,
     processor: Arc<F>,
     on_error: JobErrorStrategy,
@@ -45,23 +43,20 @@ impl WorkerPool {
     /// 1. the receiver has been drained (producer dropped the `tx` end),
     /// 2. and every worker has finished its last in-flight job.
     ///
+    /// Workers claim work via [`crate::queue::JobQueue::claim`], which honors
+    /// the SQLite store's priority ordering (`ORDER BY priority ASC, created_at
+    /// ASC`). This is the same dispatch order used by `voom process` in batch
+    /// mode and by `--priority-by-date`.
+    ///
     /// Cancellation: the pool's internal token (passed via [`WorkerPool::new`])
     /// is the shared signal. When cancelled, the enqueuer stops draining the
-    /// receiver, the remaining queued-but-unstarted jobs are cancelled via
-    /// [`cancel_unstarted_jobs`], and workers exit after their current job.
-    ///
-    /// The `producer_done` [`Notify`] parameter is accepted for API symmetry
-    /// with upstream callers that want to signal "no more items" explicitly,
-    /// but it is intentionally not consumed: dropping the `tx` end of `items`
-    /// is the canonical "producer done" signal and is sufficient on its own.
-    /// Internally we flip an `AtomicBool` when the receiver returns `None`,
-    /// avoiding the `Notify::notified()` consumption pitfall (notifications
-    /// don't latch — a poll loop on `notified()` would race itself).
-    #[tracing::instrument(skip(self, items, producer_done, execution_gate, processor, reporter))]
+    /// receiver, and workers exit after their current job. Any jobs that were
+    /// enqueued but never claimed (still in `Pending` state) are cancelled via
+    /// [`cancel_unstarted_jobs`].
+    #[tracing::instrument(skip(self, items, execution_gate, processor, reporter))]
     pub async fn process_stream<P, F, Fut>(
         &self,
         items: mpsc::Receiver<WorkItem<P>>,
-        producer_done: Arc<Notify>,
         execution_gate: Arc<Notify>,
         processor: F,
         on_error: JobErrorStrategy,
@@ -74,8 +69,6 @@ impl WorkerPool {
             + Send
             + 'static,
     {
-        let _ = producer_done; // intentionally unused: see doc comment above.
-
         let effective_workers = self.config.effective_workers();
         let processor = Arc::new(processor);
 
@@ -90,18 +83,12 @@ impl WorkerPool {
         // consumption pitfall of Notify::notified() in a polling loop.
         let producer_done_flag = Arc::new(AtomicBool::new(false));
 
-        // Tracks job IDs that have been enqueued and not yet been claimed by
-        // a worker. Workers pop one before invoking `run_one_job`; on
-        // cancellation, leftover IDs are sent to `cancel_unstarted_jobs`.
-        let pending: Arc<Mutex<Vec<Uuid>>> = Arc::new(Mutex::new(Vec::new()));
-
         let (result_tx, mut result_rx) = mpsc::channel::<JobResult>(effective_workers.max(1) * 4);
 
         // --- Enqueuer task --------------------------------------------------
         let enqueuer_handle = self.spawn_enqueuer(
             items,
             producer_done_flag.clone(),
-            pending.clone(),
             reporter.clone(),
             result_tx.clone(),
         );
@@ -111,7 +98,6 @@ impl WorkerPool {
         for _ in 0..effective_workers {
             let handle = self.spawn_worker(WorkerSpawnArgs {
                 producer_done_flag: producer_done_flag.clone(),
-                pending: pending.clone(),
                 execution_gate: execution_gate.clone(),
                 processor: processor.clone(),
                 on_error,
@@ -125,8 +111,6 @@ impl WorkerPool {
         // enqueuer have dropped their clones.
         drop(result_tx);
 
-        // Wait for the enqueuer to exit before draining results: it owns the
-        // `pending` list and we want it fully populated before cancel cleanup.
         if let Err(e) = enqueuer_handle.await {
             tracing::error!(error = %e, "enqueuer task join error");
         }
@@ -143,13 +127,13 @@ impl WorkerPool {
             }
         }
 
-        // If we were cancelled, cancel anything still pending (i.e. enqueued
-        // but never claimed). On the happy path `pending` is empty here.
+        // If we were cancelled, sweep any jobs that were enqueued but never
+        // claimed. We rely on the queue: anything still `Pending` by the time
+        // workers have joined was never claimed and should be cancelled. The
+        // streaming pool owns the queue for the duration of a run, so no
+        // unrelated `Pending` jobs are expected.
         if self.token.is_cancelled() {
-            let leftover: Vec<Uuid> = {
-                let mut guard = pending.lock().expect("pending mutex poisoned");
-                std::mem::take(&mut *guard)
-            };
+            let leftover = collect_pending_job_ids(&self.queue);
             cancel_unstarted_jobs(self.queue.clone(), leftover).await;
         }
 
@@ -161,13 +145,12 @@ impl WorkerPool {
         results
     }
 
-    /// Spawn the single enqueuer task that drains `items` into the job queue,
-    /// tracks pending IDs, and flips `producer_done_flag` on completion.
+    /// Spawn the single enqueuer task that drains `items` into the job queue
+    /// and flips `producer_done_flag` on completion.
     fn spawn_enqueuer<P>(
         &self,
         mut items: mpsc::Receiver<WorkItem<P>>,
         producer_done_flag: Arc<AtomicBool>,
-        pending: Arc<Mutex<Vec<Uuid>>>,
         reporter: Arc<dyn ProgressReporter>,
         result_tx: mpsc::Sender<JobResult>,
     ) -> JoinHandle<()>
@@ -206,8 +189,7 @@ impl WorkerPool {
                     None => None,
                 };
                 match queue.enqueue(item.job_type, item.priority, json_payload) {
-                    Ok(id) => {
-                        pending.lock().expect("pending mutex poisoned").push(id);
+                    Ok(_id) => {
                         reporter.on_jobs_extended(1);
                     }
                     Err(e) => {
@@ -228,7 +210,7 @@ impl WorkerPool {
     }
 
     /// Spawn one worker task that loops on `queue.claim`, runs each claimed
-    /// job, and exits cleanly when the enqueuer is done and no jobs remain.
+    /// job, and exits cleanly when the enqueuer is done and the queue drains.
     fn spawn_worker<F, Fut>(&self, args: WorkerSpawnArgs<F>) -> JoinHandle<()>
     where
         F: Fn(voom_domain::job::Job) -> Fut + Send + Sync + 'static,
@@ -238,7 +220,6 @@ impl WorkerPool {
     {
         let WorkerSpawnArgs {
             producer_done_flag,
-            pending,
             execution_gate,
             processor,
             on_error,
@@ -271,19 +252,37 @@ impl WorkerPool {
                     return;
                 }
 
-                // Pop the next job ID from the pending list. Workers consume
-                // IDs the enqueuer has produced; `run_one_job` then claims by
-                // ID and runs the processor.
-                let next_id = pending.lock().expect("pending mutex poisoned").pop();
+                // Claim the next pending job via the queue, which honors the
+                // SQLite store's priority ordering. This is the same dispatch
+                // order used by the batch path and by `--priority-by-date`.
+                let claim_queue = queue.clone();
+                let wid = worker_id.clone();
+                let claim_result =
+                    tokio::task::spawn_blocking(move || claim_queue.claim(&wid)).await;
 
-                let Some(job_id) = next_id else {
-                    // No pending work. If the enqueuer is done, we're
-                    // finished; otherwise sleep briefly and re-check.
-                    if producer_done_flag.load(Ordering::SeqCst) {
-                        return;
+                let job = match claim_result {
+                    Ok(Ok(Some(job))) => job,
+                    Ok(Ok(None)) => {
+                        // No pending work right now. If the enqueuer is done,
+                        // we're finished; otherwise sleep briefly and retry.
+                        if producer_done_flag.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        tokio::time::sleep(CLAIM_POLL_INTERVAL).await;
+                        continue;
                     }
-                    tokio::time::sleep(CLAIM_POLL_INTERVAL).await;
-                    continue;
+                    Ok(Err(e)) => {
+                        tracing::error!(error = %e, "Failed to claim next job");
+                        // No job id to report against; keep looping. The token
+                        // will eventually be cancelled if storage is broken.
+                        tokio::time::sleep(CLAIM_POLL_INTERVAL).await;
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Task join error during claim");
+                        tokio::time::sleep(CLAIM_POLL_INTERVAL).await;
+                        continue;
+                    }
                 };
 
                 let pre_failed = failed.load(Ordering::SeqCst);
@@ -300,10 +299,10 @@ impl WorkerPool {
                     worker_id: worker_id.clone(),
                     on_error,
                 };
-                run_one_job(job_id, ctx).await;
+                run_claimed_job(job, ctx).await;
 
                 // Fail-fast: if the on_error strategy is Fail and the failure
-                // counter just incremented, this worker exits. `run_one_job`
+                // counter just incremented, this worker exits. `run_claimed_job`
                 // itself cancels the token on failure under the Fail strategy,
                 // so sibling workers will observe the cancellation on their
                 // next loop iteration.
@@ -317,12 +316,27 @@ impl WorkerPool {
     }
 }
 
+/// Return the ids of all jobs still in `Pending` state. Used after streaming
+/// cancellation to cancel anything that was enqueued but never claimed.
+fn collect_pending_job_ids(queue: &Arc<crate::queue::JobQueue>) -> Vec<Uuid> {
+    let mut filters = voom_domain::storage::JobFilters::default();
+    filters.status = Some(voom_domain::job::JobStatus::Pending);
+    match queue.list_jobs(&filters) {
+        Ok(jobs) => jobs.into_iter().map(|j| j.id).collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to enumerate pending jobs for cancellation");
+            Vec::new()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::progress::NoopReporter;
     use crate::queue::JobQueue;
     use crate::worker::{JobErrorStrategy, WorkerPool, WorkerPoolConfig};
+    use std::sync::Mutex;
     use std::sync::atomic::AtomicU64;
     use tokio_util::sync::CancellationToken;
     use voom_domain::job::JobType;
@@ -348,14 +362,12 @@ mod tests {
     async fn process_stream_basic() {
         let (pool, _queue) = fresh_pool();
         let (tx, rx) = mpsc::channel::<WorkItem<()>>(8);
-        let producer_done = Arc::new(Notify::new());
         let gate = Arc::new(Notify::new());
 
         for _ in 0..5 {
             tx.send(dummy_item()).await.unwrap();
         }
         drop(tx);
-        producer_done.notify_waiters();
 
         let counter = Arc::new(AtomicU64::new(0));
         let counter_clone = counter.clone();
@@ -363,7 +375,6 @@ mod tests {
         let handle = tokio::spawn(async move {
             pool.process_stream(
                 rx,
-                producer_done,
                 gate_for_task,
                 move |_job| {
                     let c = counter_clone.clone();
@@ -393,14 +404,12 @@ mod tests {
     async fn process_stream_respects_gate() {
         let (pool, _queue) = fresh_pool();
         let (tx, rx) = mpsc::channel::<WorkItem<()>>(8);
-        let producer_done = Arc::new(Notify::new());
         let gate = Arc::new(Notify::new());
 
         for _ in 0..3 {
             tx.send(dummy_item()).await.unwrap();
         }
         drop(tx);
-        producer_done.notify_waiters();
 
         let counter = Arc::new(AtomicU64::new(0));
         let counter_clone = counter.clone();
@@ -409,7 +418,6 @@ mod tests {
         let handle = tokio::spawn(async move {
             pool.process_stream(
                 rx,
-                producer_done,
                 gate_for_task,
                 move |_job| {
                     let c = counter_clone.clone();
@@ -445,14 +453,12 @@ mod tests {
         let pool = WorkerPool::new(queue.clone(), cfg, token.clone());
 
         let (tx, rx) = mpsc::channel::<WorkItem<()>>(8);
-        let producer_done = Arc::new(Notify::new());
         let gate = Arc::new(Notify::new());
 
         for _ in 0..3 {
             tx.send(dummy_item()).await.unwrap();
         }
         drop(tx);
-        producer_done.notify_waiters();
 
         let counter = Arc::new(AtomicU64::new(0));
         let counter_clone = counter.clone();
@@ -460,7 +466,6 @@ mod tests {
         let handle = tokio::spawn(async move {
             pool.process_stream(
                 rx,
-                producer_done,
                 gate_for_task,
                 move |_job| {
                     let c = counter_clone.clone();
@@ -493,14 +498,12 @@ mod tests {
     async fn process_stream_fail_fast() {
         let (pool, _queue) = fresh_pool();
         let (tx, rx) = mpsc::channel::<WorkItem<()>>(8);
-        let producer_done = Arc::new(Notify::new());
         let gate = Arc::new(Notify::new());
 
         for _ in 0..5 {
             tx.send(dummy_item()).await.unwrap();
         }
         drop(tx);
-        producer_done.notify_waiters();
 
         let invocations = Arc::new(AtomicU64::new(0));
         let invocations_clone = invocations.clone();
@@ -508,7 +511,6 @@ mod tests {
         let handle = tokio::spawn(async move {
             pool.process_stream(
                 rx,
-                producer_done,
                 gate_for_task,
                 move |_job| {
                     let c = invocations_clone.clone();
@@ -543,14 +545,12 @@ mod tests {
     async fn process_stream_continue_after_failures() {
         let (pool, _queue) = fresh_pool();
         let (tx, rx) = mpsc::channel::<WorkItem<()>>(8);
-        let producer_done = Arc::new(Notify::new());
         let gate = Arc::new(Notify::new());
 
         for _ in 0..4 {
             tx.send(dummy_item()).await.unwrap();
         }
         drop(tx);
-        producer_done.notify_waiters();
 
         let invocations = Arc::new(AtomicU64::new(0));
         let invocations_clone = invocations.clone();
@@ -558,7 +558,6 @@ mod tests {
         let handle = tokio::spawn(async move {
             pool.process_stream(
                 rx,
-                producer_done,
                 gate_for_task,
                 move |_job| {
                     let c = invocations_clone.clone();
@@ -589,18 +588,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_stream_enqueue_serialization_error() {
-        // Intentionally a no-op: there is no easy way to produce a payload
-        // type that fails to serialize except via a custom Serialize impl,
-        // and the same code path is already covered by the equivalent test
-        // in `worker.rs` (`payload_serialization_failure_returns_failed_result_and_continues`).
-    }
-
-    #[tokio::test]
     async fn process_stream_extends_reporter_total() {
         let (pool, _queue) = fresh_pool();
         let (tx, rx) = mpsc::channel::<WorkItem<()>>(8);
-        let producer_done = Arc::new(Notify::new());
         let gate = Arc::new(Notify::new());
 
         struct CountReporter {
@@ -624,14 +614,12 @@ mod tests {
             tx.send(dummy_item()).await.unwrap();
         }
         drop(tx);
-        producer_done.notify_waiters();
 
         let reporter_for_pool = reporter.clone();
         let gate_for_task = gate.clone();
         let handle = tokio::spawn(async move {
             pool.process_stream(
                 rx,
-                producer_done,
                 gate_for_task,
                 move |_job| async { Ok(None) },
                 JobErrorStrategy::Continue,
@@ -645,5 +633,73 @@ mod tests {
         let _ = handle.await.unwrap();
 
         assert_eq!(reporter.extended.load(Ordering::SeqCst), 6);
+    }
+
+    /// Spec compliance: workers must dispatch jobs in SQLite priority order
+    /// (lowest priority number first, then created_at). Regression test for
+    /// the original `Vec::pop()` design which served jobs LIFO and bypassed
+    /// the queue's priority ordering used by `--priority-by-date`.
+    #[tokio::test]
+    async fn process_stream_honors_priority_ordering() {
+        let store: Arc<dyn JobStorage> = Arc::new(InMemoryStore::new());
+        let queue = Arc::new(JobQueue::new(store));
+        // Single worker so the dispatch order is deterministic.
+        let cfg = WorkerPoolConfig {
+            max_workers: 1,
+            worker_prefix: "prio".into(),
+        };
+        let token = CancellationToken::new();
+        let pool = WorkerPool::new(queue.clone(), cfg, token);
+
+        let (tx, rx) = mpsc::channel::<WorkItem<i32>>(8);
+        let gate = Arc::new(Notify::new());
+
+        // Enqueue in mixed priority order. Expected dispatch order: 10, 50, 100, 200.
+        for priority in [100, 50, 200, 10] {
+            tx.send(WorkItem::new(JobType::Process, priority, Some(priority)))
+                .await
+                .unwrap();
+        }
+        drop(tx);
+
+        let seen: Arc<Mutex<Vec<i32>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_clone = seen.clone();
+        let gate_for_task = gate.clone();
+
+        let handle = tokio::spawn(async move {
+            pool.process_stream(
+                rx,
+                gate_for_task,
+                move |job| {
+                    let seen = seen_clone.clone();
+                    async move {
+                        let payload = job.payload.as_ref().expect("priority payload missing");
+                        let priority =
+                            i32::try_from(payload.as_i64().expect("priority is integer"))
+                                .expect("priority fits in i32");
+                        seen.lock().expect("seen mutex").push(priority);
+                        Ok(None)
+                    }
+                },
+                JobErrorStrategy::Continue,
+                Arc::new(NoopReporter),
+            )
+            .await
+        });
+
+        // Give the enqueuer a moment to insert all four jobs before opening
+        // the gate. If we open the gate first, a worker could claim job 1
+        // (priority 100) before jobs 2-4 are enqueued.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        gate.notify_waiters();
+        let results = handle.await.unwrap();
+
+        assert_eq!(results.iter().filter(|r| r.is_success()).count(), 4);
+        let order = seen.lock().expect("seen mutex").clone();
+        assert_eq!(
+            order,
+            vec![10, 50, 100, 200],
+            "workers must claim jobs in SQLite priority order"
+        );
     }
 }

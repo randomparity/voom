@@ -511,7 +511,7 @@ pub(crate) async fn cancel_unstarted_jobs(queue: Arc<JobQueue>, job_ids: Vec<Uui
 /// Shared context passed to each worker task.
 ///
 /// All fields are owned (Arc, owned types, cheap-clone tokens). This is reused
-/// by [`worker_stream::WorkerPool::process_stream`] via [`run_one_job`].
+/// by [`worker_stream::WorkerPool::process_stream`] via [`run_claimed_job`].
 pub(crate) struct WorkerContext<F> {
     pub(crate) queue: Arc<JobQueue>,
     pub(crate) token: CancellationToken,
@@ -564,7 +564,7 @@ where
     .inspect_err(|e| tracing::error!(job_id = %job_id, error = %e, "job update failed"))
 }
 
-/// Execute a single job: claim it, run the processor, and record the result.
+/// Execute a single job: claim it by id, run the processor, and record the result.
 pub(crate) async fn run_one_job<F, Fut>(job_id: Uuid, ctx: WorkerContext<F>)
 where
     F: Fn(voom_domain::job::Job) -> Fut + Send + Sync + 'static,
@@ -608,12 +608,29 @@ where
         }
     };
 
+    run_claimed_job(job, ctx).await;
+}
+
+/// Execute a job that has already been claimed by this worker. Used by the
+/// streaming pool: workers call `queue.claim(worker_id)` (which honors SQLite
+/// priority ordering) and pass the returned [`voom_domain::job::Job`] here.
+///
+/// Mirrors the post-claim portion of [`run_one_job`]: cancellation re-check,
+/// processor invocation, result/error recording, and `Fail` strategy cancel.
+pub(crate) async fn run_claimed_job<F, Fut>(job: voom_domain::job::Job, ctx: WorkerContext<F>)
+where
+    F: Fn(voom_domain::job::Job) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = std::result::Result<Option<serde_json::Value>, String>>
+        + Send
+        + 'static,
+{
+    let job_id = job.id;
+
     // Re-check cancellation after claiming (closes race with JobErrorStrategy::Fail)
     if ctx.token.is_cancelled() {
         let q = ctx.queue.clone();
-        let jid = job.id;
         if let Err(e) =
-            record_job_update(job_id, "mark job as cancelled", move || q.cancel(&jid)).await
+            record_job_update(job_id, "mark job as cancelled", move || q.cancel(&job_id)).await
         {
             send_failure(&ctx, job_id, e).await;
             return;
@@ -622,7 +639,6 @@ where
         return;
     }
 
-    let job_id = job.id;
     ctx.reporter.on_job_start(&job);
 
     match (ctx.processor)(job).await {
