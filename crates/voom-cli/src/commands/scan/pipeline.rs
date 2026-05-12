@@ -378,10 +378,15 @@ fn spawn_ingest_stage(
                 kernel.dispatch(Event::FileDiscovered(event.clone()));
                 probe_progress.add_pending(1);
                 if let Err(e) = tx_probe.blocking_send(event) {
-                    // Probe stage closed its receiver — it has died (panic or
-                    // early exit). Cancel the pipeline token so siblings stop,
-                    // and return Err so the caller does not proceed to
-                    // mark_missing_paths on a partial scan.
+                    if token.is_cancelled() {
+                        // Cancellation was already requested; the channel close
+                        // is its expected consequence (probe exited its recv
+                        // loop due to token cancellation). Stop ingesting
+                        // cleanly. The post-loop `if token.is_cancelled()`
+                        // check will skip mark_missing_paths.
+                        break;
+                    }
+                    // Token was NOT cancelled — probe died unexpectedly. Fatal.
                     token.cancel();
                     return Err(anyhow::anyhow!(
                         "probe stage closed its receiver unexpectedly: {e}"
@@ -458,11 +463,24 @@ fn spawn_ingest_stage(
                             // probe so the file still gets introspected.
                             probe_progress.add_pending(1);
                             if let Err(e) = tx_probe.blocking_send(event) {
-                                // Probe stage closed its receiver — it has died
-                                // (panic or early exit). Cancel the pipeline token
-                                // so siblings stop, and return Err so
-                                // with_scan_session calls cancel_scan_session
-                                // instead of finish_scan_session.
+                                if token.is_cancelled() {
+                                    // Probe closed its receiver because
+                                    // cancellation was already requested
+                                    // (external Ctrl-C, or a sibling stage
+                                    // errored and cancelled the child token).
+                                    // The channel close is the expected
+                                    // downstream consequence, NOT a probe-stage
+                                    // fault. Route through the same path the
+                                    // in-loop cancellation check uses so the
+                                    // session ends Cancelled and no files are
+                                    // marked missing.
+                                    store
+                                        .cancel_scan_session(session)
+                                        .context("cancel_scan_session failed")?;
+                                    return Ok(ScanFinishOutcome::default());
+                                }
+                                // Token was NOT cancelled — probe died
+                                // unexpectedly. Fatal.
                                 token.cancel();
                                 return Err(anyhow::anyhow!(
                                     "probe stage closed its receiver unexpectedly: {e}"
@@ -482,11 +500,24 @@ fn spawn_ingest_stage(
                         if decision.needs_introspection_path(&event.path).is_some() {
                             probe_progress.add_pending(1);
                             if let Err(e) = tx_probe.blocking_send(event) {
-                                // Probe stage closed its receiver — it has died
-                                // (panic or early exit). Cancel the pipeline token
-                                // so siblings stop, and return Err so
-                                // with_scan_session calls cancel_scan_session
-                                // instead of finish_scan_session.
+                                if token.is_cancelled() {
+                                    // Probe closed its receiver because
+                                    // cancellation was already requested
+                                    // (external Ctrl-C, or a sibling stage
+                                    // errored and cancelled the child token).
+                                    // The channel close is the expected
+                                    // downstream consequence, NOT a probe-stage
+                                    // fault. Route through the same path the
+                                    // in-loop cancellation check uses so the
+                                    // session ends Cancelled and no files are
+                                    // marked missing.
+                                    store
+                                        .cancel_scan_session(session)
+                                        .context("cancel_scan_session failed")?;
+                                    return Ok(ScanFinishOutcome::default());
+                                }
+                                // Token was NOT cancelled — probe died
+                                // unexpectedly. Fatal.
                                 token.cancel();
                                 return Err(anyhow::anyhow!(
                                     "probe stage closed its receiver unexpectedly: {e}"

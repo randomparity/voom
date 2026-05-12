@@ -973,6 +973,83 @@ mod streaming_tests {
              mark unprocessed files as missing"
         );
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closed_probe_channel_with_cancelled_token_is_not_an_error() {
+        // Regression: previously, ingest reported "probe stage closed its
+        // receiver unexpectedly" whenever tx_probe.blocking_send failed —
+        // even when the channel was closed because cancellation was already
+        // in flight. Now we check token.is_cancelled() first and route
+        // cancelled flows through the clean cancellation path (session ends
+        // Cancelled, no files marked Missing, ingest returns Ok).
+        let bed = make_bed();
+
+        // Seed a canary so we can verify finish_scan_session did NOT run.
+        // If finish_scan_session ran it would mark this row Missing (since
+        // no discovery event is sent for it during the scan).
+        let canary_path = bed.media_dir.path().join("canary.mkv");
+        let mut canary = MediaFile::new(canary_path.clone())
+            .with_container(Container::Mkv)
+            .with_tracks(vec![Track::new(0, TrackType::Video, "h264".into())]);
+        canary.size = 9;
+        canary.content_hash = Some("abcdef0123456789".into());
+        canary.expected_hash = canary.content_hash.clone();
+        bed.store.upsert_file(&canary).expect("seed canary");
+
+        let (tx_disc, rx_disc) = tokio::sync::mpsc::channel(4);
+        let (tx_probe, rx_probe) = tokio::sync::mpsc::channel(4);
+        drop(rx_probe); // simulate probe-already-exited
+
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel(); // pre-cancel: the external request that caused probe to exit
+
+        let paths = vec![bed.media_dir.path().to_path_buf()];
+
+        let ingest_fut = tokio::spawn(super::pipeline::run_ingest_for_test(
+            bed.store.clone(),
+            bed.kernel.clone(),
+            paths,
+            rx_disc,
+            tx_probe,
+            token.clone(),
+        ));
+
+        // Send one event for a path NOT in the DB — ingest decides New and
+        // tries to forward to probe. blocking_send fails (rx_probe dropped),
+        // but the token is already cancelled, so this must be treated as a
+        // clean cancellation, NOT a fatal probe-stage failure.
+        let new_path = bed.media_dir.path().join("new_file.mkv");
+        tx_disc
+            .send(voom_domain::events::FileDiscoveredEvent::new(
+                new_path,
+                42,
+                Some("ffffffffffffffff".into()),
+            ))
+            .await
+            .expect("send disc event");
+        drop(tx_disc);
+
+        let result = ingest_fut.await.expect("join ingest");
+
+        // Cancellation must NOT be reported as a probe failure.
+        assert!(
+            result.is_ok(),
+            "ingest must return Ok when probe close coincides with cancellation; got: {:?}",
+            result.err()
+        );
+
+        // Canary must remain Active — finish_scan_session must not have run.
+        let row = bed
+            .store
+            .file_by_path(&canary_path)
+            .expect("file_by_path ok")
+            .expect("canary present");
+        assert_ne!(
+            row.status,
+            FileStatus::Missing,
+            "cancelled scan must not mark files missing"
+        );
+    }
 }
 
 #[cfg(test)]
