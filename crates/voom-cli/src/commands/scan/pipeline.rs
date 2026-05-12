@@ -78,6 +78,13 @@ impl PipelineOutcome {
 /// roughly `probe_workers * CHANNEL_DEPTH_PER_WORKER`.
 const CHANNEL_DEPTH_PER_WORKER: usize = 4;
 
+/// How often the streaming ingest stage refreshes its scan-session
+/// heartbeat. Must be comfortably below
+/// [`voom_domain::transition::STALE_SESSION_SECS`] (60s) so a sluggish
+/// directory walk can't accidentally let the session look stale to a
+/// concurrent `voom scan`. 20s gives a 3x safety margin.
+const HEARTBEAT_INTERVAL_SECS: u64 = 20;
+
 /// Drive the full streaming pipeline. Returns the outcome counters used by
 /// the caller for the final summary and `ScanComplete` dispatch.
 ///
@@ -411,6 +418,12 @@ fn spawn_ingest_stage(
                 store.as_ref(),
                 &paths,
                 |session| -> Result<ScanFinishOutcome> {
+                    // Drive a periodic heartbeat so a slow initial directory walk
+                    // (>STALE_SESSION_SECS) can't make this session look stale to a
+                    // concurrent `voom scan`. The handle's drop guard ensures the
+                    // heartbeat task is cancelled even on panic / early return.
+                    let _heartbeat = spawn_heartbeat_task(store.clone(), session);
+
                     while let Some(event) = rx_disc.blocking_recv() {
                         if token.is_cancelled() {
                             // Explicitly cancel the session to leave it in
@@ -600,6 +613,57 @@ fn handle_probe_join_result(
             tracing::warn!(error = %e, "probe task cancelled");
         }
     }
+}
+
+/// RAII handle for the periodic scan-session heartbeat task. Drop = cancel.
+struct HeartbeatHandle {
+    cancel: CancellationToken,
+}
+
+impl Drop for HeartbeatHandle {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+/// Spawn a tokio task that calls `heartbeat_scan_session(session)` every
+/// `HEARTBEAT_INTERVAL_SECS` until the returned handle is dropped.
+///
+/// Errors from the storage call are logged at `warn` and not propagated —
+/// a missed heartbeat will at worst cause a concurrent scan to view this
+/// session as stale. The fix in that case is operator-visible (the next
+/// `begin_scan_session` log message will name the auto-cancellation),
+/// not a silent data corruption.
+#[must_use = "dropping the handle stops the heartbeat task"]
+fn spawn_heartbeat_task(
+    store: Arc<dyn StorageTrait>,
+    session: voom_domain::transition::ScanSessionId,
+) -> HeartbeatHandle {
+    let cancel = CancellationToken::new();
+    let cancel_for_task = cancel.clone();
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+        // Skip the immediate tick: ingest_discovered_file already bumps
+        // the heartbeat on each ingest, so the first heartbeat from this
+        // task should only fire if we sit idle for HEARTBEAT_INTERVAL_SECS.
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                () = cancel_for_task.cancelled() => break,
+                _ = interval.tick() => {
+                    if let Err(e) = store.heartbeat_scan_session(session) {
+                        tracing::warn!(
+                            session = %session,
+                            error = %e,
+                            "scan session heartbeat failed; continuing"
+                        );
+                    }
+                }
+            }
+        }
+    });
+    HeartbeatHandle { cancel }
 }
 
 #[cfg(test)]
