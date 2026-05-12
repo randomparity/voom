@@ -377,8 +377,15 @@ fn spawn_ingest_stage(
                 formatted.push((event.path.clone(), event.size, event.content_hash.clone()));
                 kernel.dispatch(Event::FileDiscovered(event.clone()));
                 probe_progress.add_pending(1);
-                if tx_probe.blocking_send(event).is_err() {
-                    break;
+                if let Err(e) = tx_probe.blocking_send(event) {
+                    // Probe stage closed its receiver — it has died (panic or
+                    // early exit). Cancel the pipeline token so siblings stop,
+                    // and return Err so the caller does not proceed to
+                    // mark_missing_paths on a partial scan.
+                    token.cancel();
+                    return Err(anyhow::anyhow!(
+                        "probe stage closed its receiver unexpectedly: {e}"
+                    ));
                 }
             }
             drop(tx_probe);
@@ -450,8 +457,16 @@ fn spawn_ingest_stage(
                             // No hash → can't ingest into the session; forward to
                             // probe so the file still gets introspected.
                             probe_progress.add_pending(1);
-                            if tx_probe.blocking_send(event).is_err() {
-                                break;
+                            if let Err(e) = tx_probe.blocking_send(event) {
+                                // Probe stage closed its receiver — it has died
+                                // (panic or early exit). Cancel the pipeline token
+                                // so siblings stop, and return Err so
+                                // with_scan_session calls cancel_scan_session
+                                // instead of finish_scan_session.
+                                token.cancel();
+                                return Err(anyhow::anyhow!(
+                                    "probe stage closed its receiver unexpectedly: {e}"
+                                ));
                             }
                             continue;
                         };
@@ -466,8 +481,16 @@ fn spawn_ingest_stage(
                         }
                         if decision.needs_introspection_path(&event.path).is_some() {
                             probe_progress.add_pending(1);
-                            if tx_probe.blocking_send(event).is_err() {
-                                break;
+                            if let Err(e) = tx_probe.blocking_send(event) {
+                                // Probe stage closed its receiver — it has died
+                                // (panic or early exit). Cancel the pipeline token
+                                // so siblings stop, and return Err so
+                                // with_scan_session calls cancel_scan_session
+                                // instead of finish_scan_session.
+                                token.cancel();
+                                return Err(anyhow::anyhow!(
+                                    "probe stage closed its receiver unexpectedly: {e}"
+                                ));
                             }
                         }
                     }
