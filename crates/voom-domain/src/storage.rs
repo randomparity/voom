@@ -256,6 +256,51 @@ pub trait FileStorage: Send + Sync {
     fn predecessor_id_of(&self, successor_id: &Uuid) -> Result<Option<Uuid>>;
 }
 
+/// Drive a scan session: call `begin_scan_session`, run `body`, and on
+/// error from `body` best-effort `cancel_scan_session` so the session is
+/// not left `InProgress` to block the next begin.
+///
+/// The body is responsible for calling `finish_scan_session` itself —
+/// finish returns a [`crate::transition::ScanFinishOutcome`] that callers
+/// usually need to thread back into their result, and embedding the
+/// finish call here would force a single return shape on every caller.
+///
+/// Generic over the body's error type via [`From<VoomError>`] so callers
+/// using `anyhow::Error` (CLI) and callers using `VoomError` directly
+/// (trait default impls) can share the same helper.
+///
+/// # Errors
+/// Returns the error from `begin_scan_session` (converted via `From`) or
+/// propagates the error from `body`. A failure inside
+/// `cancel_scan_session` is logged at `warn` but does not mask the
+/// original error.
+pub fn with_scan_session<S, F, T, E>(
+    store: &S,
+    roots: &[std::path::PathBuf],
+    body: F,
+) -> std::result::Result<T, E>
+where
+    S: FileStorage + ?Sized,
+    F: FnOnce(crate::transition::ScanSessionId) -> std::result::Result<T, E>,
+    E: From<crate::errors::VoomError> + std::fmt::Display,
+{
+    let session = store.begin_scan_session(roots)?;
+    match body(session) {
+        Ok(value) => Ok(value),
+        Err(e) => {
+            if let Err(cancel_err) = store.cancel_scan_session(session) {
+                tracing::warn!(
+                    session = %session,
+                    ingest_error = %e,
+                    cancel_error = %cancel_err,
+                    "failed to cancel scan session after ingest error",
+                );
+            }
+            Err(e)
+        }
+    }
+}
+
 /// Job queue operations.
 ///
 /// # Errors
