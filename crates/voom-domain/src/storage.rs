@@ -276,7 +276,7 @@ pub trait FileStorage: Send + Sync {
 /// original error.
 pub fn with_scan_session<S, F, T, E>(
     store: &S,
-    roots: &[std::path::PathBuf],
+    roots: &[PathBuf],
     body: F,
 ) -> std::result::Result<T, E>
 where
