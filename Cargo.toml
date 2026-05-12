@@ -94,6 +94,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Synchronization
+num_cpus = "1"
 parking_lot = "0.12"
 
 # Text matching

@@ -65,7 +65,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 # Concurrency
-num_cpus = "1"
+num_cpus.workspace = true
 parking_lot.workspace = true
 rayon.workspace = true
 
