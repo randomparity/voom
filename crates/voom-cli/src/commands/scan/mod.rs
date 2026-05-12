@@ -492,6 +492,270 @@ fn print_verify_summary(records: &[VerificationRecord]) {
 }
 
 #[cfg(test)]
+mod streaming_tests {
+    use super::pipeline::{self, PipelineOutcome};
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use tokio_util::sync::CancellationToken;
+    use voom_domain::media::{Container, MediaFile, Track, TrackType};
+    use voom_domain::storage::StorageTrait;
+    use voom_domain::transition::FileStatus;
+
+    struct Bed {
+        _db_dir: TempDir,
+        media_dir: TempDir,
+        store: Arc<dyn StorageTrait>,
+        kernel: Arc<voom_kernel::Kernel>,
+    }
+
+    fn make_bed() -> Bed {
+        let db_dir = tempfile::tempdir().expect("temp db dir");
+        let db_path = db_dir.path().join("voom.db");
+        let store: Arc<dyn StorageTrait> =
+            Arc::new(voom_sqlite_store::store::SqliteStore::open(&db_path).expect("open store"));
+        let kernel = Arc::new(voom_kernel::Kernel::new());
+        let media_dir = tempfile::tempdir().expect("temp media dir");
+        Bed {
+            _db_dir: db_dir,
+            media_dir,
+            store,
+            kernel,
+        }
+    }
+
+    fn args_with(probe_workers: usize, no_hash: bool) -> crate::cli::ScanArgs {
+        crate::cli::ScanArgs {
+            paths: vec![],
+            recursive: true,
+            workers: 0,
+            probe_workers,
+            no_hash,
+            verify: false,
+            format: None,
+        }
+    }
+
+    async fn run_for(
+        bed: &Bed,
+        probe_workers: usize,
+        hash_files: bool,
+        ffprobe_path: Option<String>,
+        token: CancellationToken,
+    ) -> anyhow::Result<PipelineOutcome> {
+        let args = args_with(probe_workers, !hash_files);
+        pipeline::run_streaming_pipeline(
+            &args,
+            &[bed.media_dir.path().to_path_buf()],
+            hash_files,
+            bed.store.clone(),
+            bed.kernel.clone(),
+            ffprobe_path,
+            voom_ffprobe_introspector::parser::AnimationDetectionMode::Off,
+            crate::progress::DiscoveryProgress::hidden(),
+            crate::progress::ProbeProgress::hidden_dynamic(),
+            token,
+        )
+        .await
+    }
+
+    fn write_media(root: &std::path::Path, names: &[&str]) {
+        for n in names {
+            std::fs::write(root.join(n), b"fake-media-data").unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_scan_returns_zero_counts_and_no_missing() {
+        let bed = make_bed();
+        let outcome = run_for(&bed, 2, true, None, CancellationToken::new())
+            .await
+            .expect("pipeline ok");
+        assert_eq!(outcome.files_discovered, 0);
+        assert_eq!(outcome.files_introspected, 0);
+        assert_eq!(outcome.errors(), 0);
+        assert_eq!(outcome.missing, 0);
+        assert_eq!(outcome.orphans, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn empty_scan_does_not_re_run_reconciliation() {
+        // Regression: previously, handle_empty_scan ran a second
+        // reconcile_discovered_files after the pipeline already finished a
+        // session — clobbering the missing count and double-running
+        // missing-file detection.
+        let bed = make_bed();
+        let seeded_path = bed.media_dir.path().join("vanished.mkv");
+        let mut seeded = MediaFile::new(seeded_path.clone())
+            .with_container(Container::Mkv)
+            .with_tracks(vec![Track::new(0, TrackType::Video, "h264".into())]);
+        seeded.size = 9;
+        seeded.content_hash = Some("abcdef0123456789".into());
+        seeded.expected_hash = seeded.content_hash.clone();
+        bed.store.upsert_file(&seeded).expect("seed upsert");
+
+        let outcome = run_for(&bed, 2, true, None, CancellationToken::new())
+            .await
+            .expect("pipeline ok");
+        assert_eq!(outcome.files_discovered, 0);
+        assert_eq!(
+            outcome.missing, 1,
+            "first session must report the missing file"
+        );
+
+        // The seeded row should now be Missing in the DB.
+        let row = bed
+            .store
+            .file_by_path(&seeded_path)
+            .expect("file_by_path ok")
+            .expect("row still in DB");
+        assert_eq!(row.status, FileStatus::Missing);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelled_scan_does_not_mark_missing() {
+        let bed = make_bed();
+        let seeded_path = bed.media_dir.path().join("seed.mkv");
+        let mut seeded = MediaFile::new(seeded_path.clone())
+            .with_container(Container::Mkv)
+            .with_tracks(vec![Track::new(0, TrackType::Video, "h264".into())]);
+        seeded.size = 9;
+        seeded.content_hash = Some("abcdef0123456789".into());
+        seeded.expected_hash = seeded.content_hash.clone();
+        bed.store.upsert_file(&seeded).expect("seed upsert");
+
+        let token = CancellationToken::new();
+        token.cancel();
+        let outcome = run_for(&bed, 2, true, None, token)
+            .await
+            .expect("pipeline ok");
+        assert_eq!(outcome.missing, 0, "cancelled scan must not mark missing");
+
+        let row = bed
+            .store
+            .file_by_path(&seeded_path)
+            .expect("file_by_path ok")
+            .expect("seed still present");
+        assert_eq!(row.status, FileStatus::Active);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn introspection_failures_are_counted() {
+        let bed = make_bed();
+        write_media(bed.media_dir.path(), &["a.mkv", "b.mkv", "c.mkv"]);
+
+        let outcome = run_for(
+            &bed,
+            2,
+            true,
+            Some("/this/path/does/not/exist/ffprobe".to_string()),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("pipeline ok");
+
+        assert_eq!(outcome.files_discovered, 3);
+        assert_eq!(outcome.files_introspected, 0);
+        assert_eq!(outcome.probe_errors, 3);
+        assert_eq!(outcome.discovery_errors, 0);
+        assert_eq!(outcome.errors(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cache_hits_skip_probe_entirely() {
+        let bed = make_bed();
+        let file_path = bed.media_dir.path().join("cached.mkv");
+        std::fs::write(&file_path, b"cached-content").unwrap();
+        // Canonicalize so the stored path matches what the discovery scanner
+        // emits (it calls normalize_path → fs::canonicalize, which on macOS
+        // expands /var → /private/var).
+        let canonical_path = std::fs::canonicalize(&file_path).unwrap_or(file_path);
+        let on_disk_size = std::fs::metadata(&canonical_path).unwrap().len();
+        let actual_hash = voom_discovery::hash_file(&canonical_path).expect("hash");
+
+        let mut seeded = MediaFile::new(canonical_path.clone())
+            .with_container(Container::Mkv)
+            .with_tracks(vec![Track::new(0, TrackType::Video, "h264".into())]);
+        seeded.size = on_disk_size;
+        seeded.content_hash = Some(actual_hash.clone());
+        seeded.expected_hash = Some(actual_hash);
+        bed.store.upsert_file(&seeded).expect("seed upsert");
+
+        // Broken ffprobe path: any probe invocation would bump probe_errors.
+        let outcome = run_for(
+            &bed,
+            2,
+            true,
+            Some("/this/path/does/not/exist/ffprobe".to_string()),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("pipeline ok");
+
+        assert_eq!(outcome.files_discovered, 1);
+        assert_eq!(
+            outcome.files_introspected, 0,
+            "cache hit should skip ffprobe"
+        );
+        assert_eq!(
+            outcome.probe_errors, 0,
+            "ffprobe must not have been invoked"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_finalisation_visible_after_pipeline_returns() {
+        let bed = make_bed();
+        write_media(bed.media_dir.path(), &["x.mkv", "y.mkv"]);
+
+        let outcome = run_for(
+            &bed,
+            2,
+            true,
+            Some("/no/such/ffprobe".to_string()),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("pipeline ok");
+        assert_eq!(outcome.files_discovered, 2);
+
+        // The scanner canonicalizes paths (normalize_path → fs::canonicalize),
+        // so rows are stored under the real path. Canonicalize the lookup path
+        // to match on macOS where /var is a symlink to /private/var.
+        let canonical_dir = std::fs::canonicalize(bed.media_dir.path())
+            .unwrap_or_else(|_| bed.media_dir.path().to_path_buf());
+        for name in ["x.mkv", "y.mkv"] {
+            let p = canonical_dir.join(name);
+            let row = bed
+                .store
+                .file_by_path(&p)
+                .expect("file_by_path ok")
+                .expect("row present after drain");
+            assert_eq!(row.status, FileStatus::Active);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_hash_mode_streams_through_probe() {
+        let bed = make_bed();
+        write_media(bed.media_dir.path(), &["a.mkv", "b.mkv"]);
+
+        let outcome = run_for(
+            &bed,
+            2,
+            false, // --no-hash
+            Some("/no/such/ffprobe".to_string()),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("pipeline ok");
+
+        assert_eq!(outcome.files_discovered, 2);
+        assert_eq!(outcome.files_introspected, 0);
+        assert_eq!(outcome.probe_errors, 2);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

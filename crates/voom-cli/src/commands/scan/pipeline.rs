@@ -405,6 +405,17 @@ fn spawn_ingest_stage(
                     }
                 }
                 drop(tx_probe);
+                // Re-check cancellation after the receive loop drains. If
+                // discovery was cancelled before sending any events, the loop
+                // body never runs, so the in-loop check is never reached. We
+                // must cancel the session here too to avoid marking every
+                // known file as missing.
+                if token.is_cancelled() {
+                    store
+                        .cancel_scan_session(session)
+                        .context("cancel_scan_session (post-loop) failed")?;
+                    return Ok(ScanFinishOutcome::default());
+                }
                 let finish = store
                     .finish_scan_session(session)
                     .context("finish_scan_session failed")?;
