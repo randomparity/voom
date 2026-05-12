@@ -22,6 +22,8 @@ use voom_verifier::VerifierConfig;
 
 use crate::commands::verify::{QuickVerifyTarget, run_quick_pass};
 
+mod pipeline;
+
 /// Run the scan command.
 ///
 /// Discovery and introspection are driven directly for deterministic progress
