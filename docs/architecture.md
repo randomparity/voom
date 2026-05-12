@@ -286,6 +286,21 @@ See `docs/superpowers/specs/2026-05-11-scan-sessions-design.md`,
 `docs/superpowers/specs/2026-05-11-scan-session-hardening-design.md`, and
 issue #358 for the full specification.
 
+### Scan pipeline (streaming, phase 2)
+
+`voom scan` runs three cooperating stages: a discovery task that walks the
+filesystem (via `voom-discovery::scan_directory_streaming`), an ingest task
+that holds the active scan session and writes per-file rows as events
+arrive, and a bounded pool of ffprobe workers (sized by `--probe-workers`,
+default = `min(num_cpus, sqlite_pool_size - 2)` with a floor of 1).
+Backpressure flows from the probe pool through ingest back to discovery,
+so memory usage stays bounded even on libraries with tens of thousands of
+files. Cancellation is honoured at every stage; cancelled sessions never
+mark files missing.
+
+See `docs/superpowers/specs/2026-05-11-issue-359-scan-streaming-phase-2-design.md`
+for the full design.
+
 ## Data Flow
 
 ```

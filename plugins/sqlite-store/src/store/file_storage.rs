@@ -756,6 +756,25 @@ impl FileStorage for SqliteStore {
         .map_err(storage_err("failed to cancel scan session"))?;
         Ok(())
     }
+
+    fn heartbeat_scan_session(
+        &self,
+        session: voom_domain::transition::ScanSessionId,
+    ) -> voom_domain::errors::Result<()> {
+        let conn = self.conn()?;
+        let now = format_datetime(&Utc::now());
+        let session_str = session.to_string();
+        // Gate on status = 'in_progress' so a stale heartbeat task that
+        // races against finish/cancel cannot accidentally revive a session.
+        conn.execute(
+            "UPDATE scan_sessions \
+             SET last_heartbeat_at = ?1 \
+             WHERE id = ?2 AND status = 'in_progress'",
+            params![now, session_str],
+        )
+        .map_err(storage_err("failed to bump scan session heartbeat"))?;
+        Ok(())
+    }
 }
 
 /// Bundles the per-call common context for ingest helpers. Avoids
@@ -4023,5 +4042,87 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ext_count, 0, "no external transition should exist");
+    }
+
+    #[test]
+    fn heartbeat_scan_session_bumps_last_heartbeat_at_for_in_progress() {
+        use std::path::PathBuf;
+        use voom_domain::storage::FileStorage;
+
+        let store = SqliteStore::in_memory().expect("in-memory");
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/m")])
+            .expect("begin");
+        let session_str = session.to_string();
+
+        // Force last_heartbeat_at into the distant past so we can prove
+        // the bump moved it forward.
+        let conn = store.conn().expect("conn");
+        conn.execute(
+            "UPDATE scan_sessions SET last_heartbeat_at = '1970-01-01T00:00:00Z' WHERE id = ?1",
+            rusqlite::params![&session_str],
+        )
+        .expect("force-set heartbeat");
+
+        store.heartbeat_scan_session(session).expect("heartbeat ok");
+
+        let now: String = conn
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                rusqlite::params![&session_str],
+                |row| row.get(0),
+            )
+            .expect("query");
+        assert_ne!(
+            now, "1970-01-01T00:00:00Z",
+            "heartbeat should have been moved off epoch"
+        );
+        // Sanity: parses as a real RFC3339 timestamp.
+        chrono::DateTime::parse_from_rfc3339(&now).expect("parse new heartbeat as RFC3339");
+    }
+
+    #[test]
+    fn heartbeat_scan_session_is_silent_for_non_in_progress_sessions() {
+        use std::path::PathBuf;
+        use voom_domain::storage::FileStorage;
+
+        let store = SqliteStore::in_memory().expect("in-memory");
+        let session = store
+            .begin_scan_session(&[PathBuf::from("/m")])
+            .expect("begin");
+        // Cancel it.
+        store.cancel_scan_session(session).expect("cancel");
+
+        let session_str = session.to_string();
+        let conn = store.conn().expect("conn");
+
+        // Note the heartbeat value AFTER cancel.
+        let before: String = conn
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                rusqlite::params![&session_str],
+                |row| row.get(0),
+            )
+            .expect("query");
+
+        // Sleep briefly so a successful bump would produce a different timestamp.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        store
+            .heartbeat_scan_session(session)
+            .expect("heartbeat ok on cancelled session");
+
+        let after: String = conn
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                rusqlite::params![&session_str],
+                |row| row.get(0),
+            )
+            .expect("query");
+
+        assert_eq!(
+            before, after,
+            "heartbeat must NOT bump non-in_progress sessions"
+        );
     }
 }

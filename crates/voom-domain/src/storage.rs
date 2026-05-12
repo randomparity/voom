@@ -232,6 +232,19 @@ pub trait FileStorage: Send + Sync {
     /// when scan errors out mid-way.
     fn cancel_scan_session(&self, session: crate::transition::ScanSessionId) -> Result<()>;
 
+    /// Bump the `last_heartbeat_at` for an in-progress scan session.
+    ///
+    /// Backends with stale-session auto-cancellation (see
+    /// [`crate::transition::STALE_SESSION_SECS`]) must override this; the
+    /// default is a no-op for backends without such a timeout.
+    ///
+    /// Implementations MUST NOT modify a session that is not currently
+    /// `InProgress`. A bump on a finished/cancelled session is silently
+    /// ignored (returns `Ok(())`).
+    fn heartbeat_scan_session(&self, _session: crate::transition::ScanSessionId) -> Result<()> {
+        Ok(())
+    }
+
     /// Update the expected hash for a file (set after a successful voom operation).
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()>;
     /// Update the `files.status` column for the given file id. Used by the

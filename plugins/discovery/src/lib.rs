@@ -2,8 +2,10 @@
 
 pub mod scanner;
 
+pub use scanner::EventSink;
 pub use scanner::hash_file;
 pub use scanner::normalize_path;
+pub use scanner::scan_directory_streaming;
 
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
@@ -120,6 +122,15 @@ impl DiscoveryPlugin {
     /// Scan a directory for media files and return discovery events.
     pub fn scan(&self, options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>> {
         scanner::scan_directory(options)
+    }
+
+    /// Streaming scan. See [`scanner::scan_directory_streaming`].
+    pub fn scan_streaming(
+        &self,
+        options: &ScanOptions,
+        on_event: scanner::EventSink,
+    ) -> Result<()> {
+        scanner::scan_directory_streaming(options, on_event)
     }
 }
 
