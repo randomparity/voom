@@ -300,12 +300,12 @@ impl JobResult {
 /// up to `max_workers` concurrently. Each work item is processed by a
 /// user-provided async function.
 pub struct WorkerPool {
-    config: WorkerPoolConfig,
-    queue: Arc<JobQueue>,
-    token: CancellationToken,
-    completed_count: Arc<AtomicU64>,
-    failed_count: Arc<AtomicU64>,
-    already_claimed_count: Arc<AtomicU64>,
+    pub(crate) config: WorkerPoolConfig,
+    pub(crate) queue: Arc<JobQueue>,
+    pub(crate) token: CancellationToken,
+    pub(crate) completed_count: Arc<AtomicU64>,
+    pub(crate) failed_count: Arc<AtomicU64>,
+    pub(crate) already_claimed_count: Arc<AtomicU64>,
 }
 
 impl WorkerPool {
@@ -480,7 +480,7 @@ impl WorkerPool {
     }
 }
 
-async fn cancel_unstarted_jobs(queue: Arc<JobQueue>, job_ids: Vec<Uuid>) {
+pub(crate) async fn cancel_unstarted_jobs(queue: Arc<JobQueue>, job_ids: Vec<Uuid>) {
     if job_ids.is_empty() {
         return;
     }
@@ -509,17 +509,20 @@ async fn cancel_unstarted_jobs(queue: Arc<JobQueue>, job_ids: Vec<Uuid>) {
 }
 
 /// Shared context passed to each worker task.
-struct WorkerContext<F> {
-    queue: Arc<JobQueue>,
-    token: CancellationToken,
-    completed: Arc<AtomicU64>,
-    failed: Arc<AtomicU64>,
-    already_claimed: Arc<AtomicU64>,
-    processor: Arc<F>,
-    reporter: Arc<dyn ProgressReporter>,
-    result_tx: mpsc::Sender<JobResult>,
-    worker_id: String,
-    on_error: JobErrorStrategy,
+///
+/// All fields are owned (Arc, owned types, cheap-clone tokens). This is reused
+/// by [`worker_stream::WorkerPool::process_stream`] via [`run_one_job`].
+pub(crate) struct WorkerContext<F> {
+    pub(crate) queue: Arc<JobQueue>,
+    pub(crate) token: CancellationToken,
+    pub(crate) completed: Arc<AtomicU64>,
+    pub(crate) failed: Arc<AtomicU64>,
+    pub(crate) already_claimed: Arc<AtomicU64>,
+    pub(crate) processor: Arc<F>,
+    pub(crate) reporter: Arc<dyn ProgressReporter>,
+    pub(crate) result_tx: mpsc::Sender<JobResult>,
+    pub(crate) worker_id: String,
+    pub(crate) on_error: JobErrorStrategy,
 }
 
 /// Increment the failed counter and send a `JobResult` describing the failure.
@@ -562,7 +565,7 @@ where
 }
 
 /// Execute a single job: claim it, run the processor, and record the result.
-async fn run_one_job<F, Fut>(job_id: Uuid, ctx: WorkerContext<F>)
+pub(crate) async fn run_one_job<F, Fut>(job_id: Uuid, ctx: WorkerContext<F>)
 where
     F: Fn(voom_domain::job::Job) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<Option<serde_json::Value>, String>>
