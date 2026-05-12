@@ -4,7 +4,8 @@ use std::time::Duration;
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use tempfile::TempDir;
 use voom_domain::storage::FileStorage;
-use voom_domain::transition::DiscoveredFile;
+#[allow(unused_imports)]
+use voom_domain::transition::{DiscoveredFile, IngestDecision};
 use voom_sqlite_store::store::SqliteStore;
 
 const SEED_FILES: usize = 100_000;
@@ -32,6 +33,58 @@ fn seed_active(store: &SqliteStore, count: usize) {
         store.ingest_discovered_file(session, &df).expect("ingest");
     }
     store.finish_scan_session(session).expect("finish");
+}
+
+/// Build a template database with `file_count` active files under `/media/...`,
+/// then checkpoint its WAL into the main file so the resulting `.sqlite` file
+/// is self-contained and ready to be cloned per-iteration. Returns the
+/// `TempDir` that owns the template file's directory — keep it alive for as
+/// long as the bench needs the template.
+#[allow(dead_code)]
+fn build_template_db(file_count: usize) -> TempDir {
+    let dir = TempDir::new().expect("template dir");
+    let template_path = dir.path().join("template.sqlite");
+
+    {
+        let store = SqliteStore::open(&template_path).expect("open template");
+        let roots = vec![PathBuf::from(SCAN_ROOT)];
+        let session = store.begin_scan_session(&roots).expect("begin");
+        for i in 0..file_count {
+            let df = DiscoveredFile::new(
+                PathBuf::from(format!("{SCAN_ROOT}/file-{i:06}.mkv")),
+                (i as u64) + 1,
+                format!("hash-{i:06}"),
+            );
+            store.ingest_discovered_file(session, &df).expect("ingest");
+        }
+        store.finish_scan_session(session).expect("finish");
+        // SqliteStore (and its connection pool) drops here.
+    }
+
+    // Fold the WAL into the main DB file so a single-file copy is sufficient.
+    // PRAGMA wal_checkpoint(TRUNCATE) writes all WAL frames into the main DB
+    // and truncates the WAL file to zero bytes.
+    {
+        let conn =
+            rusqlite::Connection::open(&template_path).expect("open template for checkpoint");
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("checkpoint template");
+    }
+
+    dir
+}
+
+/// Clone the template DB into a fresh per-iteration `TempDir` and open a
+/// `SqliteStore` on it. The returned `TempDir` must outlive the `SqliteStore`
+/// — Criterion's `iter_batched` keeps the setup return value alive through
+/// the routine, so returning both as a tuple is sufficient.
+#[allow(dead_code)]
+fn fresh_clone_from(template_dir: &TempDir) -> (TempDir, SqliteStore) {
+    let iter_dir = TempDir::new().expect("iter dir");
+    let dest = iter_dir.path().join("iter.sqlite");
+    std::fs::copy(template_dir.path().join("template.sqlite"), &dest).expect("copy template");
+    let store = SqliteStore::open(&dest).expect("open iter store");
+    (iter_dir, store)
 }
 
 fn bench_ingest_new(c: &mut Criterion) {
