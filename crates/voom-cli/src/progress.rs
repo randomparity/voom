@@ -155,6 +155,7 @@ impl DiscoveryProgress {
 }
 
 /// Determinate progress bar for introspection (probing) loops.
+#[derive(Clone)]
 pub struct ProbeProgress {
     pb: ProgressBar,
     start: Instant,
@@ -182,6 +183,54 @@ impl ProbeProgress {
             start: Instant::now(),
             total,
         }
+    }
+
+    /// Create a probe progress bar with an *initial* total of zero.
+    /// The total is grown via [`Self::add_pending`] as work is enqueued.
+    /// Suitable for streaming mode where the caller doesn't know the final
+    /// total until discovery completes.
+    // Dead code until Task 6 wires the streaming pipeline into the scan command.
+    #[allow(dead_code)]
+    pub fn new_dynamic() -> Self {
+        let pb = ProgressBar::new(0);
+        pb.set_style(bar_style());
+        pb.enable_steady_tick(TICK_INTERVAL);
+        pb.set_message("Probing...");
+        Self {
+            pb,
+            start: Instant::now(),
+            total: 0,
+        }
+    }
+
+    /// Hidden no-op equivalent of [`Self::new_dynamic`].
+    // Dead code until Task 6 wires the streaming pipeline into the scan command.
+    #[allow(dead_code)]
+    pub fn hidden_dynamic() -> Self {
+        Self {
+            pb: ProgressBar::hidden(),
+            start: Instant::now(),
+            total: 0,
+        }
+    }
+
+    /// Increase the bar's total by `n`. Safe to call from any thread.
+    // Dead code until Task 6 wires the streaming pipeline into the scan command.
+    #[allow(dead_code)]
+    pub fn add_pending(&self, n: u64) {
+        self.pb.inc_length(n);
+    }
+
+    /// Current bar length (for tests).
+    #[cfg(test)]
+    pub(crate) fn length(&self) -> u64 {
+        self.pb.length().unwrap_or(0)
+    }
+
+    /// Current bar position (for tests).
+    #[cfg(test)]
+    pub(crate) fn position(&self) -> u64 {
+        self.pb.position()
     }
 
     /// Update progress for the current file being probed.
@@ -686,6 +735,29 @@ mod tests {
 
         let estimate = state.estimate();
         assert!(estimate.eta.unwrap_or_default() >= Duration::from_secs(50));
+    }
+
+    #[test]
+    fn test_probe_progress_dynamic_total_starts_at_zero() {
+        let pb = ProbeProgress::new_dynamic();
+        assert_eq!(pb.length(), 0);
+    }
+
+    #[test]
+    fn test_probe_progress_add_pending_grows_total() {
+        let pb = ProbeProgress::new_dynamic();
+        pb.add_pending(3);
+        assert_eq!(pb.length(), 3);
+        pb.add_pending(2);
+        assert_eq!(pb.length(), 5);
+    }
+
+    #[test]
+    fn test_probe_progress_inc_position() {
+        let pb = ProbeProgress::new_dynamic();
+        pb.add_pending(2);
+        pb.inc();
+        assert_eq!(pb.position(), 1);
     }
 
     #[test]
