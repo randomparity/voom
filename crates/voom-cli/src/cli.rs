@@ -131,6 +131,11 @@ pub struct ScanArgs {
     #[arg(short, long, default_value_t = 0)]
     pub workers: usize,
 
+    /// Number of parallel workers for ffprobe introspection. Default 0 = auto
+    /// (min(num_cpus, sqlite_pool_size - 2), floor 1).
+    #[arg(long, default_value_t = 0)]
+    pub probe_workers: usize,
+
     /// Skip content hashing
     #[arg(long)]
     pub no_hash: bool,
@@ -1179,6 +1184,26 @@ mod tests {
         match cli.command {
             Commands::Scan(args) => assert!(matches!(args.format, Some(OutputFormat::Plain))),
             _ => panic!("expected Scan"),
+        }
+    }
+
+    #[test]
+    fn test_scan_args_probe_workers_defaults_to_zero() {
+        let args = Cli::try_parse_from(["voom", "scan", "/tmp"]).unwrap();
+        if let Commands::Scan(scan) = args.command {
+            assert_eq!(scan.probe_workers, 0);
+        } else {
+            panic!("expected Scan command");
+        }
+    }
+
+    #[test]
+    fn test_scan_args_probe_workers_explicit() {
+        let args = Cli::try_parse_from(["voom", "scan", "/tmp", "--probe-workers", "3"]).unwrap();
+        if let Commands::Scan(scan) = args.command {
+            assert_eq!(scan.probe_workers, 3);
+        } else {
+            panic!("expected Scan command");
         }
     }
 
