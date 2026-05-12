@@ -109,6 +109,13 @@ pub(crate) async fn run_streaming_pipeline(
     let probe_errors = Arc::new(AtomicU64::new(0));
     let orphans = Arc::new(AtomicU64::new(0));
 
+    // Pipeline-internal cancellation token. When any stage errors, we cancel
+    // this token so sibling stages observe the failure and clean up promptly
+    // (e.g., ingest runs cancel_scan_session instead of finish_scan_session).
+    // It is a child of the external `token` so external cancellation also
+    // propagates automatically.
+    let pipeline_cancel = token.child_token();
+
     let discovery_handle = spawn_discovery_stage(
         args,
         paths,
@@ -117,7 +124,7 @@ pub(crate) async fn run_streaming_pipeline(
         kernel.clone(),
         discovery_progress.clone(),
         tx_disc,
-        token.clone(),
+        pipeline_cancel.clone(),
         orphans.clone(),
     );
 
@@ -129,7 +136,7 @@ pub(crate) async fn run_streaming_pipeline(
         rx_disc,
         tx_probe,
         probe_progress.clone(),
-        token.clone(),
+        pipeline_cancel.clone(),
     );
 
     let probe_handle = spawn_probe_stage(
@@ -139,24 +146,44 @@ pub(crate) async fn run_streaming_pipeline(
         animation_mode,
         probe_workers,
         probe_progress.clone(),
-        token.clone(),
+        pipeline_cancel.clone(),
         introspected.clone(),
         probe_errors.clone(),
     );
 
-    // Wait for all three stages. If any errors, propagate.
-    let disc_result = discovery_handle
-        .await
-        .context("discovery task join failed")?;
-    let ingest_result = ingest_handle.await.context("ingest task join failed")?;
-    let probe_result = probe_handle.await.context("probe task join failed")?;
+    // Await all three stages unconditionally before propagating any error so
+    // that:
+    //   - the scan session always ends in a terminal state (Finished or
+    //     Cancelled), never InProgress
+    //   - progress bars always finish() before we return
+    //   - probe tasks always drain
+    //
+    // After each await, if the result indicates failure (join error OR the
+    // task's own Err), cancel the internal token so sibling stages observe
+    // the failure and take the cancel path rather than the finish path.
+    let disc_join = discovery_handle.await;
+    if disc_join.as_ref().map_or(true, |r| r.is_err()) {
+        pipeline_cancel.cancel();
+    }
 
-    let discovery_errors = disc_result?;
-    let (finish_outcome, formatted, files_discovered) = ingest_result?;
-    probe_result?;
+    let ingest_join = ingest_handle.await;
+    if ingest_join.as_ref().map_or(true, |r| r.is_err()) {
+        pipeline_cancel.cancel();
+    }
 
+    let probe_join = probe_handle.await;
+
+    // Finish progress bars before propagating errors so they never hang.
     discovery_progress.finish();
     probe_progress.finish();
+
+    // Propagate errors in source order: discovery → ingest → probe.
+    // The `??` idiom: outer `?` propagates the JoinError (after .context()),
+    // inner `?` propagates the task's own Err.
+    let discovery_errors = disc_join.context("discovery task join failed")??;
+    let (finish_outcome, formatted, files_discovered) =
+        ingest_join.context("ingest task join failed")??;
+    probe_join.context("probe task join failed")??;
 
     let mut moved = finish_outcome.moved_from_ingest;
     moved += finish_outcome.scan_finish.promoted_moves;
@@ -460,6 +487,14 @@ fn spawn_probe_stage(
                 .acquire_owned()
                 .await
                 .context("probe semaphore closed unexpectedly")?;
+            // Drain any tasks that completed since the last poll. This is what
+            // keeps the JoinSet bounded by `probe_workers` rather than by the
+            // total number of files scanned. The Semaphore prevents
+            // oversubscription; the opportunistic drain prevents JoinHandle
+            // accumulation.
+            while let Some(joined) = set.try_join_next() {
+                handle_probe_join_result(&joined, &probe_errors, &progress);
+            }
             let kernel_inner = kernel.clone();
             let introspected = introspected.clone();
             let probe_errors = probe_errors.clone();

@@ -753,6 +753,64 @@ mod streaming_tests {
         assert_eq!(outcome.files_introspected, 0);
         assert_eq!(outcome.probe_errors, 2);
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn discovery_error_does_not_mark_unprocessed_files_missing() {
+        // Seed an active row whose path lives under media_dir.
+        // Then run the pipeline against a nonexistent subdirectory so that
+        // scan_streaming returns Err immediately (the discovery plugin returns
+        // Err when options.root doesn't exist).
+        //
+        // Without the pipeline_cancel fix: discovery errors, tx_disc is dropped
+        // normally, ingest's recv loop returns None, the post-loop check sees
+        // token.is_cancelled() == false, and finish_scan_session runs — marking
+        // the seeded file missing.
+        //
+        // With the fix: disc_join.is_err() triggers pipeline_cancel.cancel(),
+        // ingest's post-loop check sees token.is_cancelled() == true, runs
+        // cancel_scan_session, and the seeded file stays Active.
+        let bed = make_bed();
+        let seeded_path = bed.media_dir.path().join("untouched.mkv");
+        let mut seeded = MediaFile::new(seeded_path.clone())
+            .with_container(Container::Mkv)
+            .with_tracks(vec![Track::new(0, TrackType::Video, "h264".into())]);
+        seeded.size = 9;
+        seeded.content_hash = Some("abcdef0123456789".into());
+        seeded.expected_hash = seeded.content_hash.clone();
+        bed.store.upsert_file(&seeded).expect("seed upsert");
+
+        // Scan a path that does NOT exist — this makes scan_streaming return Err.
+        let nonexistent = bed.media_dir.path().join("nonexistent-subdir");
+        let args = args_with(2, false);
+        let result = pipeline::run_streaming_pipeline(
+            &args,
+            &[nonexistent],
+            true, // hash_files
+            bed.store.clone(),
+            bed.kernel.clone(),
+            None,
+            voom_ffprobe_introspector::parser::AnimationDetectionMode::Off,
+            crate::progress::DiscoveryProgress::hidden(),
+            crate::progress::ProbeProgress::hidden_dynamic(),
+            CancellationToken::new(),
+        )
+        .await;
+
+        // The pipeline must propagate the discovery error.
+        assert!(result.is_err(), "pipeline should propagate discovery error");
+
+        // The seeded file must remain Active — NOT marked Missing.
+        let row = bed
+            .store
+            .file_by_path(&seeded_path)
+            .expect("file_by_path ok")
+            .expect("seed still present");
+        assert_eq!(
+            row.status,
+            FileStatus::Active,
+            "discovery error must not cause unprocessed files to be marked missing"
+        );
+    }
 }
 
 #[cfg(test)]
