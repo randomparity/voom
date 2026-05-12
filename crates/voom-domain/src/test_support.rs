@@ -1921,3 +1921,19 @@ mod transcode_outcome_storage_tests {
         assert_eq!(latest.id, Uuid::from_u128(2));
     }
 }
+
+#[cfg(test)]
+mod heartbeat_tests {
+    use super::*;
+
+    #[test]
+    fn in_memory_store_heartbeat_is_a_no_op() {
+        use crate::storage::FileStorage;
+        let store = InMemoryStore::default();
+        let session = store
+            .begin_scan_session(&[std::path::PathBuf::from("/m")])
+            .expect("begin session");
+        // Default impl is a no-op — must return Ok without observable side effect.
+        store.heartbeat_scan_session(session).expect("heartbeat ok");
+    }
+}
