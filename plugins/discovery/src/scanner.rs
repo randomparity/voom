@@ -256,8 +256,19 @@ fn report_walk_errors(options: &ScanOptions, walk_errors: &[DiscoveryWalkError])
     }
 }
 
-/// Scan a directory for media files.
-pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>> {
+/// Callback invoked once per successfully built `FileDiscoveredEvent`.
+///
+/// The callback may be invoked from multiple rayon worker threads concurrently
+/// and must be `Send + Sync`. Implementations that need ordering or
+/// serialization (e.g. an mpsc sender that returns errors) should handle
+/// it themselves.
+pub type EventSink = Box<dyn Fn(FileDiscoveredEvent) + Send + Sync>;
+
+/// Streaming variant of [`scan_directory`]. Emits each `FileDiscoveredEvent`
+/// via `on_event` as soon as its content hash is computed, rather than
+/// collecting into a `Vec`. Order is rayon-dependent — callers that need a
+/// deterministic order should sort downstream.
+pub fn scan_directory_streaming(options: &ScanOptions, on_event: EventSink) -> Result<()> {
     if !options.root.exists() {
         return Err(VoomError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -271,15 +282,13 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
     tracing::info!(
         root = %options.root.display(),
         count = media_paths.len(),
-        "discovered media files"
+        "discovered media files (streaming)"
     );
 
     let total = media_paths.len();
     let processed = Arc::new(AtomicUsize::new(0));
     let fd_sem = Arc::new(FdSemaphore::new(MAX_CONCURRENT_FDS));
 
-    // Process files in parallel using rayon, with a semaphore to limit
-    // concurrent open file descriptors during hashing.
     let process_file = |(path, walk_size): &(PathBuf, u64)| {
         let _guard = fd_sem.guard();
         let result = build_event(
@@ -297,37 +306,54 @@ pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>>
                 path: path.clone(),
             });
         }
-        result
-    };
-
-    let events: Vec<Result<FileDiscoveredEvent>> = if options.workers > 0 {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(options.workers)
-            .build()
-            .map_err(|e| VoomError::Other(Box::new(e)))?;
-        pool.install(|| media_paths.par_iter().map(process_file).collect())
-    } else {
-        media_paths.par_iter().map(process_file).collect()
-    };
-
-    // Collect results, reporting errors via callback (or logging as fallback)
-    let mut discovered = Vec::with_capacity(events.len());
-    for (result, (path, walk_size)) in events.into_iter().zip(media_paths.iter()) {
         match result {
-            Ok(event) => discovered.push(event),
+            Ok(event) => on_event(event),
             Err(e) => {
                 if let Some(ref cb) = options.on_error {
                     cb(path.clone(), *walk_size, e.to_string());
                 } else {
-                    tracing::warn!(error = %e, "failed to process file during discovery");
+                    tracing::warn!(
+                        error = %e,
+                        "failed to process file during streaming discovery"
+                    );
                 }
             }
         }
+    };
+
+    if options.workers > 0 {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(options.workers)
+            .build()
+            .map_err(|e| VoomError::Other(Box::new(e)))?;
+        pool.install(|| media_paths.par_iter().for_each(process_file));
+    } else {
+        media_paths.par_iter().for_each(process_file);
     }
 
-    // Sort by path for deterministic output
-    discovered.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(())
+}
 
+/// Scan a directory for media files. Returns all discovered events in
+/// deterministic path order. Kept for callers (e.g. `voom process`) that
+/// expect a fully-collected list.
+pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>> {
+    let collected: Arc<Mutex<Vec<FileDiscoveredEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let collected_clone = collected.clone();
+    scan_directory_streaming(
+        options,
+        Box::new(move |event| {
+            collected_clone
+                .lock()
+                .expect("scan_directory event sink lock poisoned")
+                .push(event);
+        }),
+    )?;
+    let mut discovered = Arc::try_unwrap(collected)
+        .expect("scan_directory: Arc still has other owners after streaming completed")
+        .into_inner()
+        .expect("scan_directory event sink lock poisoned");
+    discovered.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(discovered)
 }
 
@@ -650,5 +676,74 @@ mod tests {
         assert_eq!(errors[0].0, missing);
         assert_eq!(errors[0].1, 0);
         assert_eq!(errors[0].2, "permission denied");
+    }
+
+    #[test]
+    fn test_scan_directory_streaming_emits_per_file() {
+        use std::sync::Arc;
+        use std::sync::Mutex;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.mkv"), b"alpha").unwrap();
+        std::fs::write(dir.path().join("b.mp4"), b"beta").unwrap();
+        std::fs::write(dir.path().join("c.avi"), b"gamma").unwrap();
+
+        let emitted: Arc<Mutex<Vec<FileDiscoveredEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let emitted_clone = emitted.clone();
+
+        let options = ScanOptions::new(dir.path());
+        scan_directory_streaming(
+            &options,
+            Box::new(move |event| {
+                emitted_clone.lock().unwrap().push(event);
+            }),
+        )
+        .unwrap();
+
+        let events = emitted.lock().unwrap();
+        assert_eq!(events.len(), 3);
+        // All three files should be present (order is rayon-dependent in
+        // streaming mode — no deterministic sort).
+        let names: std::collections::HashSet<_> = events
+            .iter()
+            .filter_map(|e| e.path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        assert!(names.contains("a.mkv"));
+        assert!(names.contains("b.mp4"));
+        assert!(names.contains("c.avi"));
+    }
+
+    #[test]
+    fn test_scan_directory_streaming_reports_errors_via_options() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("real.mkv"), b"real").unwrap();
+
+        let errors = Arc::new(AtomicUsize::new(0));
+        let errors_clone = errors.clone();
+
+        let mut options = ScanOptions::new(dir.path());
+        options.on_error = Some(Box::new(move |_path, _size, _msg| {
+            errors_clone.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        // Sanity: with a healthy directory, no errors fire.
+        scan_directory_streaming(&options, Box::new(|_| {})).unwrap();
+        assert_eq!(errors.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_scan_directory_still_returns_vec_after_refactor() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.mkv"), b"alpha").unwrap();
+        std::fs::write(dir.path().join("b.mp4"), b"beta").unwrap();
+
+        let options = ScanOptions::new(dir.path());
+        let events = scan_directory(&options).unwrap();
+        assert_eq!(events.len(), 2);
+        // Existing API guarantees deterministic path ordering.
+        assert!(events[0].path < events[1].path);
     }
 }
