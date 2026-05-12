@@ -974,51 +974,107 @@ mod streaming_tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn closed_probe_channel_with_cancelled_token_is_not_an_error() {
-        // Regression: previously, ingest reported "probe stage closed its
-        // receiver unexpectedly" whenever tx_probe.blocking_send failed —
-        // even when the channel was closed because cancellation was already
-        // in flight. Now we check token.is_cancelled() first and route
-        // cancelled flows through the clean cancellation path (session ends
-        // Cancelled, no files marked Missing, ingest returns Ok).
-        let bed = make_bed();
+    /// Test plugin that cancels a `CancellationToken` whenever it observes
+    /// a `FileDiscovered` event. Used to deterministically trigger the
+    /// race the cancel-vs-probe-death fix addresses.
+    struct CancelOnFileDiscovered {
+        token: tokio_util::sync::CancellationToken,
+    }
 
-        // Seed a canary so we can verify finish_scan_session did NOT run.
-        // If finish_scan_session ran it would mark this row Missing (since
-        // no discovery event is sent for it during the scan).
-        let canary_path = bed.media_dir.path().join("canary.mkv");
+    impl voom_kernel::Plugin for CancelOnFileDiscovered {
+        fn name(&self) -> &str {
+            "cancel-on-file-discovered"
+        }
+        fn version(&self) -> &str {
+            "0.0.0"
+        }
+        fn capabilities(&self) -> &[voom_domain::capabilities::Capability] {
+            &[]
+        }
+        fn handles(&self, event_type: &str) -> bool {
+            event_type == voom_domain::events::Event::FILE_DISCOVERED
+        }
+        fn on_event(
+            &self,
+            event: &voom_domain::events::Event,
+        ) -> voom_domain::errors::Result<Option<voom_domain::events::EventResult>> {
+            if matches!(event, voom_domain::events::Event::FileDiscovered(_)) {
+                self.token.cancel();
+            }
+            Ok(None)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancellation_between_top_check_and_probe_send_is_not_an_error() {
+        // Regression for the cancel-vs-probe-death race the previous
+        // test couldn't trigger:
+        //
+        // 1. Top-of-loop `if token.is_cancelled()` → false (we haven't
+        //    cancelled yet).
+        // 2. Body proceeds, calls kernel.dispatch(FileDiscovered).
+        // 3. A registered plugin synchronously cancels the token from
+        //    its on_event handler.
+        // 4. blocking_send fails because rx_probe is closed.
+        // 5. The fix's new `if token.is_cancelled()` check fires and
+        //    routes through the clean cancellation path → Ok.
+        //
+        // Without the fix, step 5 would unconditionally treat the
+        // failed send as a probe-stage fault and return Err — even
+        // though the cancellation is what closed the channel.
+
+        let db_dir = tempfile::tempdir().expect("temp db dir");
+        let db_path = db_dir.path().join("voom.db");
+        let store: Arc<dyn voom_domain::storage::StorageTrait> =
+            Arc::new(voom_sqlite_store::store::SqliteStore::open(&db_path).expect("open store"));
+        let media_dir = tempfile::tempdir().expect("temp media dir");
+
+        let token = CancellationToken::new();
+
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel
+            .register_plugin(
+                Arc::new(CancelOnFileDiscovered {
+                    token: token.clone(),
+                }),
+                10,
+            )
+            .expect("register cancel plugin");
+        let kernel = Arc::new(kernel);
+
+        // Seed a canary row so we can verify finish_scan_session did
+        // NOT run.
+        let canary_path = media_dir.path().join("canary.mkv");
         let mut canary = MediaFile::new(canary_path.clone())
             .with_container(Container::Mkv)
             .with_tracks(vec![Track::new(0, TrackType::Video, "h264".into())]);
         canary.size = 9;
         canary.content_hash = Some("abcdef0123456789".into());
         canary.expected_hash = canary.content_hash.clone();
-        bed.store.upsert_file(&canary).expect("seed canary");
+        store.upsert_file(&canary).expect("seed canary");
 
+        // Pre-close rx_probe so blocking_send is guaranteed to fail.
         let (tx_disc, rx_disc) = tokio::sync::mpsc::channel(4);
         let (tx_probe, rx_probe) = tokio::sync::mpsc::channel(4);
-        drop(rx_probe); // simulate probe-already-exited
+        drop(rx_probe);
 
-        let token = tokio_util::sync::CancellationToken::new();
-        token.cancel(); // pre-cancel: the external request that caused probe to exit
-
-        let paths = vec![bed.media_dir.path().to_path_buf()];
+        let paths = vec![media_dir.path().to_path_buf()];
 
         let ingest_fut = tokio::spawn(super::pipeline::run_ingest_for_test(
-            bed.store.clone(),
-            bed.kernel.clone(),
+            store.clone(),
+            kernel.clone(),
             paths,
             rx_disc,
             tx_probe,
             token.clone(),
         ));
 
-        // Send one event for a path NOT in the DB — ingest decides New and
-        // tries to forward to probe. blocking_send fails (rx_probe dropped),
-        // but the token is already cancelled, so this must be treated as a
-        // clean cancellation, NOT a fatal probe-stage failure.
-        let new_path = bed.media_dir.path().join("new_file.mkv");
+        // Send one event for a path NOT in the DB. ingest's flow:
+        //   recv → top-check passes → ingest_discovered_file (New) →
+        //   kernel.dispatch(FileDiscovered) → our plugin cancels the
+        //   token → blocking_send fails → fix's is_cancelled check
+        //   sees true → return Ok.
+        let new_path = media_dir.path().join("new_file.mkv");
         tx_disc
             .send(voom_domain::events::FileDiscoveredEvent::new(
                 new_path,
@@ -1031,24 +1087,21 @@ mod streaming_tests {
 
         let result = ingest_fut.await.expect("join ingest");
 
-        // Cancellation must NOT be reported as a probe failure.
+        // The cancel happened mid-iteration via the plugin, so the
+        // close of tx_probe must NOT be reported as a probe-stage
+        // failure.
         assert!(
             result.is_ok(),
-            "ingest must return Ok when probe close coincides with cancellation; got: {:?}",
+            "cancellation occurring mid-iteration must not be \
+             reported as a probe-stage failure; got: {:?}",
             result.err()
         );
-
-        // Canary must remain Active — finish_scan_session must not have run.
-        let row = bed
-            .store
+        // The canary row must remain Active.
+        let row = store
             .file_by_path(&canary_path)
             .expect("file_by_path ok")
             .expect("canary present");
-        assert_ne!(
-            row.status,
-            FileStatus::Missing,
-            "cancelled scan must not mark files missing"
-        );
+        assert_ne!(row.status, FileStatus::Missing);
     }
 }
 
