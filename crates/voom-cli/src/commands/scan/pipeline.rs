@@ -657,6 +657,22 @@ impl Drop for HeartbeatHandle {
 /// session as stale. The fix in that case is operator-visible (the next
 /// `begin_scan_session` log message will name the auto-cancellation),
 /// not a silent data corruption.
+///
+/// # Testing
+///
+/// The heartbeat task spins on a 20s interval — too slow for fast unit
+/// tests. We rely instead on:
+/// 1. Storage-level unit tests in `voom-sqlite-store` that verify
+///    `heartbeat_scan_session` updates `last_heartbeat_at` and is silent
+///    on non-in_progress sessions.
+/// 2. Manual smoke verification: run `voom scan` on a large library
+///    (>60s wall clock) and confirm `last_heartbeat_at` advances by
+///    inspecting the DB.
+///
+/// A future enhancement could plumb `HEARTBEAT_INTERVAL_SECS` through as
+/// a parameter (or `#[cfg(test)]`-gated function) to enable a faster
+/// test, but the current trade-off is reasonable given the unit-test
+/// coverage above.
 #[must_use = "dropping the handle stops the heartbeat task"]
 fn spawn_heartbeat_task(
     store: Arc<dyn StorageTrait>,
