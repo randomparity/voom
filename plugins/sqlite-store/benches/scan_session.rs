@@ -11,35 +11,11 @@ const SEED_FILES: usize = 100_000;
 const SCAN_ROOT: &str = "/media";
 const INGEST_OPS_PER_ITER: usize = 1000;
 
-fn fresh_store() -> (TempDir, SqliteStore) {
-    let dir = TempDir::new().expect("temp dir");
-    let store =
-        SqliteStore::open(&dir.path().join("scan_bench.sqlite")).expect("open sqlite store");
-    (dir, store)
-}
-
-/// Seed `count` active files under `/media/...` via a completed scan session,
-/// so the rows have `last_seen_session_id` set and `expected_hash` populated.
-fn seed_active(store: &SqliteStore, count: usize) {
-    let roots = vec![PathBuf::from(SCAN_ROOT)];
-    let session = store.begin_scan_session(&roots).expect("begin");
-    for i in 0..count {
-        let df = DiscoveredFile::new(
-            PathBuf::from(format!("{SCAN_ROOT}/file-{i:06}.mkv")),
-            (i as u64) + 1,
-            format!("hash-{i:06}"),
-        );
-        store.ingest_discovered_file(session, &df).expect("ingest");
-    }
-    store.finish_scan_session(session).expect("finish");
-}
-
 /// Build a template database with `file_count` active files under `/media/...`,
 /// then checkpoint its WAL into the main file so the resulting `.sqlite` file
 /// is self-contained and ready to be cloned per-iteration. Returns the
 /// `TempDir` that owns the template file's directory — keep it alive for as
 /// long as the bench needs the template.
-#[allow(dead_code)]
 fn build_template_db(file_count: usize) -> TempDir {
     let dir = TempDir::new().expect("template dir");
     let template_path = dir.path().join("template.sqlite");
@@ -77,7 +53,6 @@ fn build_template_db(file_count: usize) -> TempDir {
 /// `SqliteStore` on it. The returned `TempDir` must outlive the `SqliteStore`
 /// — Criterion's `iter_batched` keeps the setup return value alive through
 /// the routine, so returning both as a tuple is sufficient.
-#[allow(dead_code)]
 fn fresh_clone_from(template_dir: &TempDir) -> (TempDir, SqliteStore) {
     let iter_dir = TempDir::new().expect("iter dir");
     let dest = iter_dir.path().join("iter.sqlite");
@@ -157,15 +132,15 @@ fn bench_ingest_unchanged(c: &mut Criterion) {
 }
 
 fn bench_finish_with_moves_and_missing(c: &mut Criterion) {
+    let template = build_template_db(SEED_FILES);
+    let roots = vec![PathBuf::from(SCAN_ROOT)];
     let mut group = c.benchmark_group("finish");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(20));
     group.bench_function("100k_seed_5k_unseen_500_moves", |b| {
         b.iter_batched(
             || {
-                let (dir, store) = fresh_store();
-                seed_active(&store, SEED_FILES);
-                let roots = vec![PathBuf::from(SCAN_ROOT)];
+                let (dir, store) = fresh_clone_from(&template);
                 let session = store.begin_scan_session(&roots).expect("begin");
                 // Re-ingest 95k as unchanged (skip last 5k for missing pass).
                 for i in 0..(SEED_FILES - 5_000) {
@@ -190,7 +165,17 @@ fn bench_finish_with_moves_and_missing(c: &mut Criterion) {
                 (dir, store, session)
             },
             |(_dir, store, session)| {
-                store.finish_scan_session(session).expect("finish");
+                let outcome = store.finish_scan_session(session).expect("finish");
+                assert_eq!(
+                    outcome.missing, 4500,
+                    "expected 4500 missing, got {}",
+                    outcome.missing,
+                );
+                assert_eq!(
+                    outcome.promoted_moves, 500,
+                    "expected 500 promoted_moves, got {}",
+                    outcome.promoted_moves,
+                );
             },
             BatchSize::PerIteration,
         );
