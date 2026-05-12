@@ -35,3 +35,7 @@ voom-domain = { workspace = true, features = ["testing"] }
 [[bench]]
 name = "verification_due"
 harness = false
+
+[[bench]]
+name = "scan_session"
+harness = false
