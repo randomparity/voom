@@ -70,6 +70,11 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         .await?;
 
         if outcome.files_discovered == 0 {
+            // Missing-file reconciliation already ran INSIDE the pipeline
+            // (finish_scan_session for the hashed path, mark_missing_paths
+            // for --no-hash). outcome.missing / outcome.orphans are
+            // authoritative — do NOT re-run reconciliation here. A second
+            // session would clobber the count from the first.
             if !quiet && outcome.missing > 0 {
                 print_missing_count(outcome.missing);
             }

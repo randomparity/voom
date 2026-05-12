@@ -489,10 +489,35 @@ fn spawn_probe_stage(
             });
         }
 
-        // Drain remaining workers.
-        while set.join_next().await.is_some() {}
+        // Drain remaining workers. A panicked probe task would otherwise be
+        // silently lost — we'd miss both the error count AND the progress
+        // bar increment, leaving the total stuck below the discovered count.
+        while let Some(joined) = set.join_next().await {
+            handle_probe_join_result(&joined, &probe_errors, &progress);
+        }
         Ok(())
     })
+}
+
+/// Account for a probe-task `JoinResult`. Non-panicked completions
+/// already updated counters and the progress bar inside the spawned task;
+/// only panics need attention here. Cancellation is treated as a warning for
+/// accounting purposes (rare — JoinSet tasks are not normally cancelled
+/// individually).
+fn handle_probe_join_result(
+    joined: &Result<(), tokio::task::JoinError>,
+    probe_errors: &Arc<AtomicU64>,
+    progress: &crate::progress::ProbeProgress,
+) {
+    if let Err(e) = joined {
+        if e.is_panic() {
+            tracing::error!(error = %e, "probe task panicked");
+            probe_errors.fetch_add(1, Ordering::Relaxed);
+            progress.inc();
+        } else {
+            tracing::warn!(error = %e, "probe task cancelled");
+        }
+    }
 }
 
 #[cfg(test)]
