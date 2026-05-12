@@ -123,27 +123,32 @@ fn bench_ingest_new(c: &mut Criterion) {
 }
 
 fn bench_ingest_unchanged(c: &mut Criterion) {
-    let (_dir, store) = fresh_store();
-    seed_active(&store, SEED_FILES);
+    let template = build_template_db(SEED_FILES);
     let roots = vec![PathBuf::from(SCAN_ROOT)];
     let mut group = c.benchmark_group("ingest");
     group.sample_size(20);
     group.measurement_time(Duration::from_secs(15));
     group.bench_function("unchanged_1000", |b| {
         b.iter_batched(
-            || store.begin_scan_session(&roots).expect("begin"),
-            |session| {
+            || {
+                let (dir, store) = fresh_clone_from(&template);
+                let session = store.begin_scan_session(&roots).expect("begin");
+                (dir, store, session)
+            },
+            |(_dir, store, session)| {
                 for i in 0..INGEST_OPS_PER_ITER {
                     let df = DiscoveredFile::new(
                         PathBuf::from(format!("{SCAN_ROOT}/file-{i:06}.mkv")),
                         i as u64 + 1,
                         format!("hash-{i:06}"),
                     );
-                    store.ingest_discovered_file(session, &df).expect("ingest");
+                    let decision = store.ingest_discovered_file(session, &df).expect("ingest");
+                    assert!(
+                        matches!(decision, IngestDecision::Unchanged { .. }),
+                        "expected IngestDecision::Unchanged, got a different variant",
+                    );
                 }
-                // Cancel (not finish) so the seeded 100k rows are never marked missing —
-                // the next iteration must observe the same starting state.
-                store.cancel_scan_session(session).expect("cancel");
+                // No cancel — clone is discarded with the TempDir.
             },
             BatchSize::PerIteration,
         );
