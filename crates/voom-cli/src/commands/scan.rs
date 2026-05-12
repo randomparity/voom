@@ -163,12 +163,13 @@ fn drive_session_ingest(
     quiet: bool,
     kernel: &Arc<voom_kernel::Kernel>,
 ) -> anyhow::Result<ReconcileOutcome> {
-    use voom_domain::transition::{DiscoveredFile, IngestDecision};
+    use voom_domain::storage::with_scan_session;
+    use voom_domain::transition::{DiscoveredFile, IngestDecision, ScanFinishOutcome};
 
     let mut needs_introspection: Vec<FileDiscoveredEvent> = Vec::new();
 
     if !hash_files {
-        // --no-hash path: dispatch events + path-only missing-mark
+        // --no-hash path: dispatch events + path-only missing-mark.
         let discovered: Vec<PathBuf> = events.iter().map(|e| e.path.clone()).collect();
         let missing = store
             .mark_missing_paths(&discovered, paths)
@@ -185,59 +186,42 @@ fn drive_session_ingest(
         });
     }
 
-    let session = store
-        .begin_scan_session(paths)
-        .context("failed to begin scan session")?;
-
     let mut moved = 0u32;
     let mut external_changes = 0u32;
 
-    // Wrap ingest + finish so any error routes through the cancel path below
-    // and the session is never left in_progress.
-    let combined_result: anyhow::Result<voom_domain::transition::ScanFinishOutcome> = (|| {
-        for event in events {
-            // Dispatch before ingest so bus subscribers see every event even if
-            // ingest later errors and aborts the loop.
-            kernel.dispatch(Event::FileDiscovered(event.clone()));
+    let finish: ScanFinishOutcome = with_scan_session(
+        store,
+        paths,
+        |session| -> anyhow::Result<ScanFinishOutcome> {
+            for event in events {
+                // Dispatch before ingest so bus subscribers see every event even if
+                // ingest later errors and aborts the loop.
+                kernel.dispatch(Event::FileDiscovered(event.clone()));
 
-            let Some(hash) = event.content_hash.clone() else {
-                continue;
-            };
-            let df = DiscoveredFile::new(event.path.clone(), event.size, hash);
-            let decision = store
-                .ingest_discovered_file(session, &df)
-                .context("ingest_discovered_file failed")?;
-            match &decision {
-                IngestDecision::Moved { .. } => moved += 1,
-                IngestDecision::ExternallyChanged { .. } => external_changes += 1,
-                _ => {}
+                let Some(hash) = event.content_hash.clone() else {
+                    continue;
+                };
+                let df = DiscoveredFile::new(event.path.clone(), event.size, hash);
+                let decision = store
+                    .ingest_discovered_file(session, &df)
+                    .context("ingest_discovered_file failed")?;
+                match &decision {
+                    IngestDecision::Moved { .. } => moved += 1,
+                    IngestDecision::ExternallyChanged { .. } => external_changes += 1,
+                    _ => {}
+                }
+                if decision.needs_introspection_path(&event.path).is_some() {
+                    needs_introspection.push(event.clone());
+                }
             }
-            if decision.needs_introspection_path(&event.path).is_some() {
-                needs_introspection.push(event.clone());
-            }
-        }
-        let finish = store
-            .finish_scan_session(session)
-            .context("finish_scan_session failed")?;
-        Ok(finish)
-    })();
+            let finish = store
+                .finish_scan_session(session)
+                .context("finish_scan_session failed")?;
+            Ok(finish)
+        },
+    )?;
 
-    let finish = match combined_result {
-        Ok(f) => f,
-        Err(e) => {
-            if let Err(cancel_err) = store.cancel_scan_session(session) {
-                tracing::warn!(
-                    session = %session,
-                    ingest_error = %e,
-                    cancel_error = %cancel_err,
-                    "failed to cancel scan session after ingest error",
-                );
-            }
-            return Err(e);
-        }
-    };
-
-    // Promoted moves were counted as New during ingestion; correct both totals.
+    // Promoted moves were counted as New during ingestion; correct the total.
     moved += finish.promoted_moves;
     if !quiet {
         if finish.missing > 0 {
