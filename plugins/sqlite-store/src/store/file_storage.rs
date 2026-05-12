@@ -9,8 +9,8 @@ use voom_domain::errors::Result;
 use voom_domain::media::{MediaFile, StoredFingerprint, Track};
 use voom_domain::storage::{FileFilters, FileStorage};
 use voom_domain::transition::{
-    DiscoveredFile, FileStatus, FileTransition, IngestDecision, ReconcileResult,
-    STALE_SESSION_SECS, ScanFinishOutcome, ScanSessionStatus, TransitionSource, is_under_any,
+    DiscoveredFile, FileStatus, FileTransition, IngestDecision, STALE_SESSION_SECS,
+    ScanFinishOutcome, ScanSessionStatus, TransitionSource, is_under_any,
 };
 
 use super::{
@@ -353,60 +353,6 @@ impl FileStorage for SqliteStore {
             )
             .map_err(storage_err("failed to purge missing files"))?;
         Ok(deleted as u64)
-    }
-
-    fn reconcile_discovered_files(
-        &self,
-        discovered: &[DiscoveredFile],
-        scanned_dirs: &[PathBuf],
-    ) -> Result<ReconcileResult> {
-        let session = self.begin_scan_session(scanned_dirs)?;
-        let mut result = ReconcileResult::default();
-
-        // Single closure so any `?` on ingest/finish error routes through
-        // the cancel path below.
-        let outcome: Result<()> = (|| {
-            for df in discovered {
-                let decision = self.ingest_discovered_file(session, df)?;
-                match &decision {
-                    IngestDecision::New { .. } => result.new_files += 1,
-                    IngestDecision::Unchanged { .. } => result.unchanged += 1,
-                    IngestDecision::ExternallyChanged { .. } => result.external_changes += 1,
-                    IngestDecision::Moved { .. } => result.moved += 1,
-                    IngestDecision::Duplicate { .. } => {
-                        // Silently drop — preserves today's `HashSet`-based
-                        // dedup semantics on the input list.
-                    }
-                }
-                if let Some(p) = decision.needs_introspection_path(&df.path) {
-                    result.needs_introspection.push(p);
-                }
-            }
-            let finish = self.finish_scan_session(session)?;
-            result.missing = finish.missing;
-            // Promoted moves: each was counted as New during ingestion, so decrement
-            // new_files and increment moved to reflect the retroactive reclassification.
-            result.new_files = result.new_files.saturating_sub(finish.promoted_moves);
-            result.moved += finish.promoted_moves;
-            Ok(())
-        })();
-
-        match outcome {
-            Ok(()) => Ok(result),
-            Err(e) => {
-                // Best-effort: cancel the session so it doesn't linger as
-                // in_progress and block the next begin.
-                if let Err(cancel_err) = self.cancel_scan_session(session) {
-                    tracing::warn!(
-                        session = %session,
-                        ingest_error = %e,
-                        cancel_error = %cancel_err,
-                        "failed to cancel scan session after ingest error",
-                    );
-                }
-                Err(e)
-            }
-        }
     }
 
     fn update_expected_hash(&self, id: &Uuid, hash: &str) -> Result<()> {
