@@ -10,6 +10,7 @@
 pub mod progress;
 pub mod queue;
 pub mod worker;
+pub mod worker_stream;
 
 pub use worker::{JobErrorStrategy, JobOutcome, JobResult, WorkerPool, WorkerPoolConfig};
 
