@@ -231,90 +231,108 @@ fn spawn_discovery_stage(
         // failures). Returned via the JoinHandle's Ok value.
         let discovery_errors = Arc::new(AtomicU64::new(0));
 
-        for path in &paths {
-            if token.is_cancelled() {
-                break;
+        // Wrap the scan loop so we can inspect the result BEFORE dropping
+        // tx_disc. On Err, we cancel the pipeline token first; that ensures
+        // ingest's post-loop cancellation check observes the cancellation when
+        // blocking_recv() returns None — closing the race where ingest would
+        // otherwise call finish_scan_session and mark files Missing.
+        let run_scan = || -> Result<u64> {
+            for path in &paths {
+                if token.is_cancelled() {
+                    break;
+                }
+                progress.reset_to_spinner();
+                let pre = cumulative_discovered.load(Ordering::Relaxed);
+
+                let mut options = voom_discovery::ScanOptions::new(path.clone());
+                options.recursive = recursive;
+                options.hash_files = hash_files;
+                options.workers = workers;
+                options.fingerprint_lookup =
+                    Some(crate::introspect::fingerprint_lookup(store.clone()));
+
+                let progress_clone = progress.clone();
+                let cum_disc = cumulative_discovered.clone();
+                let proc_base = processing_base.clone();
+                let orphans_progress = orphans.clone();
+                let hash_for_progress = hash_files;
+                options.on_progress = Some(Box::new(move |p| match p {
+                    voom_discovery::ScanProgress::Discovered { count: _, path } => {
+                        let n = cum_disc.fetch_add(1, Ordering::Relaxed) + 1;
+                        let n = usize::try_from(n).unwrap_or(usize::MAX);
+                        progress_clone.on_discovered(n, &path);
+                    }
+                    voom_discovery::ScanProgress::Processing {
+                        current,
+                        total,
+                        path,
+                    } => {
+                        let base = proc_base.load(Ordering::Relaxed);
+                        let base = usize::try_from(base).unwrap_or(usize::MAX);
+                        let action = if hash_for_progress {
+                            "Hashing"
+                        } else {
+                            "Processing"
+                        };
+                        progress_clone.on_processing(base + current, base + total, &path, action);
+                    }
+                    voom_discovery::ScanProgress::OrphanedTempFiles { count } => {
+                        // Capture orphan-temp count so the discovery summary line
+                        // can report it (parity with the pre-streaming behaviour).
+                        orphans_progress.fetch_add(count as u64, Ordering::Relaxed);
+                    }
+                    voom_discovery::ScanProgress::HashReused { .. } => {}
+                }));
+
+                let kernel_clone = kernel.clone();
+                let errors_clone = discovery_errors.clone();
+                options.on_error = Some(Box::new(move |path, size, error| {
+                    tracing::warn!(path = %path.display(), error = %error, "discovery error");
+                    errors_clone.fetch_add(1, Ordering::Relaxed);
+                    crate::introspect::dispatch_failure(
+                        &kernel_clone,
+                        path,
+                        size,
+                        None,
+                        &error,
+                        BadFileSource::Discovery,
+                    );
+                }));
+
+                let token_inner = token.clone();
+                let tx_inner = tx_disc.clone();
+                let on_event: voom_discovery::EventSink = Box::new(move |event| {
+                    if token_inner.is_cancelled() {
+                        return;
+                    }
+                    // blocking_send blocks the current rayon worker until the
+                    // ingest stage drains. This is the backpressure mechanism.
+                    let _ = tx_inner.blocking_send(event);
+                });
+
+                discovery
+                    .scan_streaming(&options, on_event)
+                    .with_context(|| format!("filesystem scan failed for {}", path.display()))?;
+
+                let dir_count = cumulative_discovered.load(Ordering::Relaxed) - pre;
+                processing_base.fetch_add(dir_count, Ordering::Relaxed);
             }
-            progress.reset_to_spinner();
-            let pre = cumulative_discovered.load(Ordering::Relaxed);
 
-            let mut options = voom_discovery::ScanOptions::new(path.clone());
-            options.recursive = recursive;
-            options.hash_files = hash_files;
-            options.workers = workers;
-            options.fingerprint_lookup = Some(crate::introspect::fingerprint_lookup(store.clone()));
+            Ok(discovery_errors.load(Ordering::Relaxed))
+        };
+        let result = run_scan();
 
-            let progress_clone = progress.clone();
-            let cum_disc = cumulative_discovered.clone();
-            let proc_base = processing_base.clone();
-            let orphans_progress = orphans.clone();
-            let hash_for_progress = hash_files;
-            options.on_progress = Some(Box::new(move |p| match p {
-                voom_discovery::ScanProgress::Discovered { count: _, path } => {
-                    let n = cum_disc.fetch_add(1, Ordering::Relaxed) + 1;
-                    let n = usize::try_from(n).unwrap_or(usize::MAX);
-                    progress_clone.on_discovered(n, &path);
-                }
-                voom_discovery::ScanProgress::Processing {
-                    current,
-                    total,
-                    path,
-                } => {
-                    let base = proc_base.load(Ordering::Relaxed);
-                    let base = usize::try_from(base).unwrap_or(usize::MAX);
-                    let action = if hash_for_progress {
-                        "Hashing"
-                    } else {
-                        "Processing"
-                    };
-                    progress_clone.on_processing(base + current, base + total, &path, action);
-                }
-                voom_discovery::ScanProgress::OrphanedTempFiles { count } => {
-                    // Capture orphan-temp count so the discovery summary line
-                    // can report it (parity with the pre-streaming behaviour).
-                    orphans_progress.fetch_add(count as u64, Ordering::Relaxed);
-                }
-                voom_discovery::ScanProgress::HashReused { .. } => {}
-            }));
-
-            let kernel_clone = kernel.clone();
-            let errors_clone = discovery_errors.clone();
-            options.on_error = Some(Box::new(move |path, size, error| {
-                tracing::warn!(path = %path.display(), error = %error, "discovery error");
-                errors_clone.fetch_add(1, Ordering::Relaxed);
-                crate::introspect::dispatch_failure(
-                    &kernel_clone,
-                    path,
-                    size,
-                    None,
-                    &error,
-                    BadFileSource::Discovery,
-                );
-            }));
-
-            let token_inner = token.clone();
-            let tx_inner = tx_disc.clone();
-            let on_event: voom_discovery::EventSink = Box::new(move |event| {
-                if token_inner.is_cancelled() {
-                    return;
-                }
-                // blocking_send blocks the current rayon worker until the
-                // ingest stage drains. This is the backpressure mechanism.
-                let _ = tx_inner.blocking_send(event);
-            });
-
-            discovery
-                .scan_streaming(&options, on_event)
-                .with_context(|| format!("filesystem scan failed for {}", path.display()))?;
-
-            let dir_count = cumulative_discovered.load(Ordering::Relaxed) - pre;
-            processing_base.fetch_add(dir_count, Ordering::Relaxed);
+        // Cancel BEFORE dropping tx_disc so ingest's post-loop cancellation
+        // check observes the token as cancelled when blocking_recv() returns
+        // None. CancellationToken::cancel() carries Release semantics; the
+        // channel close that follows establishes the happens-before edge to
+        // ingest's blocking_recv returning None.
+        if result.is_err() {
+            token.cancel();
         }
-
-        // Closing tx_disc signals the ingest stage that discovery is done.
+        // Explicit drop makes the ordering visible at the call site.
         drop(tx_disc);
-
-        Ok(discovery_errors.load(Ordering::Relaxed))
+        result
     })
 }
 
@@ -384,71 +402,89 @@ fn spawn_ingest_stage(
         let mut external_changes: u32 = 0;
         let mut seen: HashSet<PathBuf> = HashSet::new();
 
-        let session_outcome: ScanFinishOutcome = with_scan_session(
-            store.as_ref(),
-            &paths,
-            |session| -> Result<ScanFinishOutcome> {
-                while let Some(event) = rx_disc.blocking_recv() {
+        // Wrap with_scan_session in a named closure so we can inspect the
+        // result BEFORE tx_probe's implicit drop at closure end. On Err,
+        // cancel the pipeline token first so that the probe stage's post-recv
+        // check observes the cancellation when rx_probe returns None.
+        let run_ingest = || -> Result<ScanFinishOutcome> {
+            with_scan_session(
+                store.as_ref(),
+                &paths,
+                |session| -> Result<ScanFinishOutcome> {
+                    while let Some(event) = rx_disc.blocking_recv() {
+                        if token.is_cancelled() {
+                            // Explicitly cancel the session to leave it in
+                            // Cancelled state (no missing-file marking), then
+                            // return an Ok sentinel so the outer with_scan_session
+                            // doesn't double-cancel.
+                            store
+                                .cancel_scan_session(session)
+                                .context("cancel_scan_session failed")?;
+                            return Ok(ScanFinishOutcome::default());
+                        }
+                        if !seen.insert(event.path.clone()) {
+                            continue;
+                        }
+                        files_discovered += 1;
+                        formatted.push((
+                            event.path.clone(),
+                            event.size,
+                            event.content_hash.clone(),
+                        ));
+                        kernel.dispatch(Event::FileDiscovered(event.clone()));
+
+                        let Some(hash) = event.content_hash.clone() else {
+                            // No hash → can't ingest into the session; forward to
+                            // probe so the file still gets introspected.
+                            probe_progress.add_pending(1);
+                            if tx_probe.blocking_send(event).is_err() {
+                                break;
+                            }
+                            continue;
+                        };
+                        let df = DiscoveredFile::new(event.path.clone(), event.size, hash);
+                        let decision = store
+                            .ingest_discovered_file(session, &df)
+                            .context("ingest_discovered_file failed")?;
+                        match &decision {
+                            IngestDecision::Moved { .. } => moved += 1,
+                            IngestDecision::ExternallyChanged { .. } => external_changes += 1,
+                            _ => {}
+                        }
+                        if decision.needs_introspection_path(&event.path).is_some() {
+                            probe_progress.add_pending(1);
+                            if tx_probe.blocking_send(event).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    drop(tx_probe);
+                    // Re-check cancellation after the receive loop drains. If
+                    // discovery cancelled the token BEFORE dropping tx_disc
+                    // (the per-stage cancel-on-err fix), this check will see
+                    // is_cancelled() == true and avoid finish_scan_session.
                     if token.is_cancelled() {
-                        // Explicitly cancel the session to leave it in
-                        // Cancelled state (no missing-file marking), then
-                        // return an Ok sentinel so the outer with_scan_session
-                        // doesn't double-cancel.
                         store
                             .cancel_scan_session(session)
-                            .context("cancel_scan_session failed")?;
+                            .context("cancel_scan_session (post-loop) failed")?;
                         return Ok(ScanFinishOutcome::default());
                     }
-                    if !seen.insert(event.path.clone()) {
-                        continue;
-                    }
-                    files_discovered += 1;
-                    formatted.push((event.path.clone(), event.size, event.content_hash.clone()));
-                    kernel.dispatch(Event::FileDiscovered(event.clone()));
+                    let finish = store
+                        .finish_scan_session(session)
+                        .context("finish_scan_session failed")?;
+                    Ok(finish)
+                },
+            )
+        };
+        let ingest_result = run_ingest();
 
-                    let Some(hash) = event.content_hash.clone() else {
-                        // No hash → can't ingest into the session; forward to
-                        // probe so the file still gets introspected.
-                        probe_progress.add_pending(1);
-                        if tx_probe.blocking_send(event).is_err() {
-                            break;
-                        }
-                        continue;
-                    };
-                    let df = DiscoveredFile::new(event.path.clone(), event.size, hash);
-                    let decision = store
-                        .ingest_discovered_file(session, &df)
-                        .context("ingest_discovered_file failed")?;
-                    match &decision {
-                        IngestDecision::Moved { .. } => moved += 1,
-                        IngestDecision::ExternallyChanged { .. } => external_changes += 1,
-                        _ => {}
-                    }
-                    if decision.needs_introspection_path(&event.path).is_some() {
-                        probe_progress.add_pending(1);
-                        if tx_probe.blocking_send(event).is_err() {
-                            break;
-                        }
-                    }
-                }
-                drop(tx_probe);
-                // Re-check cancellation after the receive loop drains. If
-                // discovery was cancelled before sending any events, the loop
-                // body never runs, so the in-loop check is never reached. We
-                // must cancel the session here too to avoid marking every
-                // known file as missing.
-                if token.is_cancelled() {
-                    store
-                        .cancel_scan_session(session)
-                        .context("cancel_scan_session (post-loop) failed")?;
-                    return Ok(ScanFinishOutcome::default());
-                }
-                let finish = store
-                    .finish_scan_session(session)
-                    .context("finish_scan_session failed")?;
-                Ok(finish)
-            },
-        )?;
+        // Cancel BEFORE the closure's captured locals (including any remaining
+        // tx_probe handle) are dropped, so the probe stage observes the
+        // cancellation when rx_probe returns None.
+        if ingest_result.is_err() {
+            token.cancel();
+        }
+        let session_outcome = ingest_result?;
 
         Ok((
             IngestSummary {

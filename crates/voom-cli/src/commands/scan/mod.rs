@@ -811,6 +811,81 @@ mod streaming_tests {
             "discovery error must not cause unprocessed files to be marked missing"
         );
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mid_scan_discovery_error_does_not_mark_processed_roots_files_missing() {
+        // Race regression: when discovery succeeds on root 1 (sending events
+        // to ingest) then errors on root 2 (nonexistent), the ingest task sees
+        // tx_disc close. Without per-stage cancel-on-err, ingest's post-loop
+        // check observes token.is_cancelled() == false (the orchestrator hasn't
+        // awaited disc_join yet), so it calls finish_scan_session — which marks
+        // any active file under any scanned root that wasn't seen this session
+        // as Missing. With the fix, discovery cancels the token BEFORE dropping
+        // tx_disc, so ingest's post-loop check correctly cancels the session.
+        let bed = make_bed();
+        let root1_dir = tempfile::tempdir().expect("root1 temp dir");
+        let root1 = std::fs::canonicalize(root1_dir.path()).expect("canonicalize root1");
+        let seeded_path = root1.join("seed.mkv");
+        std::fs::write(&seeded_path, b"unused").expect("write seed");
+
+        // Seed an Active row whose path is under root1 but with a hash that
+        // does NOT match the on-disk file's actual hash — this forces an
+        // ExternallyChanged decision, ensuring ingest processes the file
+        // before the discovery error on root2 fires.
+        let mut seeded = MediaFile::new(seeded_path.clone())
+            .with_container(Container::Mkv)
+            .with_tracks(vec![Track::new(0, TrackType::Video, "h264".into())]);
+        seeded.size = 6;
+        seeded.content_hash = Some("deadbeefdeadbeef".into());
+        seeded.expected_hash = seeded.content_hash.clone();
+        bed.store.upsert_file(&seeded).expect("seed upsert");
+
+        // Also seed an Active row under root1 for a file that does NOT exist
+        // on disk. Without the fix this row would be marked Missing.
+        let absent_path = root1.join("absent.mkv");
+        let mut absent = MediaFile::new(absent_path.clone())
+            .with_container(Container::Mkv)
+            .with_tracks(vec![Track::new(0, TrackType::Video, "h264".into())]);
+        absent.size = 100;
+        absent.content_hash = Some("absentabsentabse".into());
+        absent.expected_hash = absent.content_hash.clone();
+        bed.store.upsert_file(&absent).expect("seed absent");
+
+        let nonexistent_root = bed.media_dir.path().join("does-not-exist");
+
+        let args = args_with(2, false);
+        let result = pipeline::run_streaming_pipeline(
+            &args,
+            &[root1.clone(), nonexistent_root],
+            true, // hash_files
+            bed.store.clone(),
+            bed.kernel.clone(),
+            None,
+            voom_ffprobe_introspector::parser::AnimationDetectionMode::Off,
+            crate::progress::DiscoveryProgress::hidden(),
+            crate::progress::ProbeProgress::hidden_dynamic(),
+            CancellationToken::new(),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "pipeline should propagate the discovery error"
+        );
+
+        // The absent file MUST still be Active. Without the cancel-on-err fix,
+        // ingest's post-loop check would let finish_scan_session mark it Missing.
+        let row = bed
+            .store
+            .file_by_path(&absent_path)
+            .expect("file_by_path ok")
+            .expect("absent row still present");
+        assert_eq!(
+            row.status,
+            FileStatus::Active,
+            "discovery error must not allow finish_scan_session to run"
+        );
+    }
 }
 
 #[cfg(test)]
