@@ -1,7 +1,4 @@
-use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::app;
@@ -10,11 +7,10 @@ use crate::config;
 use crate::output;
 use crate::paths::resolve_paths;
 use crate::progress::{DiscoveryProgress, ProbeProgress};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use console::style;
-use indicatif::HumanDuration;
+use indicatif::{HumanDuration, MultiProgress};
 use tokio_util::sync::CancellationToken;
-use voom_domain::bad_file::BadFileSource;
 use voom_domain::events::{Event, FileDiscoveredEvent, ScanCompleteEvent};
 use voom_domain::storage::StorageTrait;
 use voom_domain::verification::{VerificationMode, VerificationOutcome, VerificationRecord};
@@ -26,9 +22,9 @@ mod pipeline;
 
 /// Run the scan command.
 ///
-/// Discovery and introspection are driven directly for deterministic progress
-/// reporting, but all events are also published through the kernel's event bus
-/// so that subscribers (sqlite-store, WASM plugins) receive them.
+/// Discovery, ingest, and introspection run as three concurrent streaming
+/// stages. All events are published through the kernel's event bus so that
+/// subscribers (sqlite-store, WASM plugins) receive them.
 pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Result<()> {
     let config = config::load_config()?;
     let app::BootstrapResult { kernel, store, .. } = app::bootstrap_kernel_with_store(&config)?;
@@ -47,69 +43,117 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
             eprintln!("{} {}", style("Scanning").bold(), path_list.join(", "));
         }
 
-        let (mut all_events, orphans, disc_errors) =
-            run_discovery(&args, &paths, hash_files, quiet, &kernel, store.clone())?;
+        let mp = MultiProgress::new();
+        let discovery_progress = if quiet {
+            DiscoveryProgress::hidden()
+        } else {
+            DiscoveryProgress::new_in(&mp)
+        };
+        let probe_progress = if quiet {
+            ProbeProgress::hidden_dynamic()
+        } else {
+            ProbeProgress::new_dynamic_in(&mp)
+        };
 
-        // Deduplicate by path: overlapping scan roots can produce the same path
-        // multiple times. Doing this here keeps the dispatch, summary,
-        // introspection, verification, and JSON output paths all
-        // single-counted. The session API's IngestDecision::Duplicate is now
-        // defense in depth for the hash path.
-        {
-            let mut seen = HashSet::new();
-            all_events.retain(|e| seen.insert(e.path.clone()));
-        }
+        let outcome = pipeline::run_streaming_pipeline(
+            &args,
+            &paths,
+            hash_files,
+            store.clone(),
+            kernel.clone(),
+            config.ffprobe_path().map(|s| s.to_owned()),
+            config.animation_detection_mode(),
+            discovery_progress,
+            probe_progress,
+            token.clone(),
+        )
+        .await?;
 
-        if all_events.is_empty() {
-            handle_empty_scan(&*store, &paths, hash_files, orphans, quiet, args.format)?;
+        if outcome.files_discovered == 0 {
+            if !quiet && outcome.missing > 0 {
+                print_missing_count(outcome.missing);
+            }
+            if !quiet {
+                if outcome.orphans > 0 {
+                    eprintln!(
+                        "{} ({} orphaned temp {} skipped)",
+                        style("No media files found.").yellow(),
+                        outcome.orphans,
+                        if outcome.orphans == 1 {
+                            "file"
+                        } else {
+                            "files"
+                        },
+                    );
+                } else {
+                    eprintln!("{}", style("No media files found.").yellow());
+                }
+            }
+            if matches!(args.format, Some(crate::cli::OutputFormat::Json)) {
+                #[allow(clippy::print_stdout)]
+                {
+                    println!("[]");
+                }
+            }
             return Ok(());
         }
 
         if !quiet {
             print_discovery_summary(
-                all_events.len(),
+                outcome.files_discovered as usize,
                 start.elapsed(),
                 hash_files,
-                orphans,
-                disc_errors,
+                outcome.orphans,
+                outcome.discovery_errors,
             );
         }
 
-        let reconcile_outcome =
-            drive_session_ingest(&*store, &all_events, &paths, hash_files, quiet, &kernel)?;
-        let needs_introspection = reconcile_outcome.needs_introspection;
-        let needs_introspection_refs: Vec<&FileDiscoveredEvent> =
-            needs_introspection.iter().collect();
-        let (introspected, errors) = run_introspection(
-            &needs_introspection_refs,
-            &kernel,
-            config.ffprobe_path(),
-            config.animation_detection_mode(),
-            &token,
-            quiet,
-        )
-        .await;
+        if !quiet {
+            if outcome.missing > 0 {
+                print_missing_count(outcome.missing);
+            }
+            if outcome.moved > 0 {
+                eprintln!(
+                    "  {} {} files moved/renamed",
+                    style("Moved").dim(),
+                    outcome.moved,
+                );
+            }
+            if outcome.external_changes > 0 {
+                eprintln!(
+                    "  {} {} files changed externally",
+                    style("Changed").dim(),
+                    outcome.external_changes,
+                );
+            }
+        }
 
-        let formatted_results = args.format.map(|fmt| (fmt, format_results(&all_events)));
         print_scan_summary(
-            all_events.len(),
-            introspected,
-            errors,
+            outcome.files_discovered as usize,
+            outcome.files_introspected,
+            outcome.errors(),
             start.elapsed(),
             token.is_cancelled(),
             quiet,
-            formatted_results,
         );
 
         if token.is_cancelled() {
+            if let Some(format) = args.format {
+                output::format_scan_results(&outcome.formatted, format);
+            }
             return Ok(());
         }
 
         purge_stale_records(&*store, config.pruning.retention_days, quiet);
 
-        // Optional quick-verification pass after introspection. Discovery itself
-        // is not blocked by this — verifications run as a separate fan-out only
-        // once the discovery + introspection phases have completed.
+        // Build FileDiscoveredEvent stubs for the verify helper.
+        let all_events: Vec<FileDiscoveredEvent> = outcome
+            .formatted
+            .iter()
+            .map(|(path, size, hash)| FileDiscoveredEvent::new(path.clone(), *size, hash.clone()))
+            .collect();
+
+        // Optional quick-verification pass after introspection.
         let verifier_cfg = read_verifier_config(&config);
         let should_verify = args.verify || verifier_cfg.verify_on_scan;
         if should_verify {
@@ -123,7 +167,6 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
             );
         }
 
-        // Protected from cancelled runs by the early return above (line 91).
         // `ScanComplete` carries both files_discovered and files_introspected and
         // is the single lifecycle event for a full scan. We deliberately do NOT
         // dispatch `IntrospectComplete` here — that event is reserved for
@@ -131,12 +174,12 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         // both would cause subscribers like the report plugin to capture two
         // back-to-back snapshots (see issue #153).
         kernel.dispatch(Event::ScanComplete(ScanCompleteEvent::new(
-            all_events.len() as u64,
-            introspected,
+            outcome.files_discovered,
+            outcome.files_introspected,
         )));
 
         if let Some(format) = args.format {
-            output::format_scan_results(&format_results(&all_events), format);
+            output::format_scan_results(&outcome.formatted, format);
         }
 
         Ok(())
@@ -146,229 +189,6 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     crate::retention::maybe_run_after_cli(store, &config.retention, Some(kernel));
 
     primary_result
-}
-
-/// Outcome of driving the session-based ingest flow.
-struct ReconcileOutcome {
-    needs_introspection: Vec<FileDiscoveredEvent>,
-}
-
-/// Drive the scan-session lifecycle (begin → ingest each → finish) over
-/// discovered events, dispatching `FileDiscovered` on the bus and collecting
-/// the set of events that need introspection. On error mid-loop, cancels the
-/// session so no file is marked missing.
-fn drive_session_ingest(
-    store: &dyn voom_domain::storage::StorageTrait,
-    events: &[FileDiscoveredEvent],
-    paths: &[PathBuf],
-    hash_files: bool,
-    quiet: bool,
-    kernel: &Arc<voom_kernel::Kernel>,
-) -> anyhow::Result<ReconcileOutcome> {
-    use voom_domain::storage::with_scan_session;
-    use voom_domain::transition::{DiscoveredFile, IngestDecision, ScanFinishOutcome};
-
-    let mut needs_introspection: Vec<FileDiscoveredEvent> = Vec::new();
-
-    if !hash_files {
-        // --no-hash path: dispatch events + path-only missing-mark.
-        let discovered: Vec<PathBuf> = events.iter().map(|e| e.path.clone()).collect();
-        let missing = store
-            .mark_missing_paths(&discovered, paths)
-            .context("path-only reconciliation failed")?;
-        if !quiet && missing > 0 {
-            print_missing_count(missing);
-        }
-        for event in events {
-            kernel.dispatch(Event::FileDiscovered(event.clone()));
-        }
-        needs_introspection = events.to_vec();
-        return Ok(ReconcileOutcome {
-            needs_introspection,
-        });
-    }
-
-    let mut moved = 0u32;
-    let mut external_changes = 0u32;
-
-    let finish: ScanFinishOutcome = with_scan_session(
-        store,
-        paths,
-        |session| -> anyhow::Result<ScanFinishOutcome> {
-            for event in events {
-                // Dispatch before ingest so bus subscribers see every event even if
-                // ingest later errors and aborts the loop.
-                kernel.dispatch(Event::FileDiscovered(event.clone()));
-
-                let Some(hash) = event.content_hash.clone() else {
-                    continue;
-                };
-                let df = DiscoveredFile::new(event.path.clone(), event.size, hash);
-                let decision = store
-                    .ingest_discovered_file(session, &df)
-                    .context("ingest_discovered_file failed")?;
-                match &decision {
-                    IngestDecision::Moved { .. } => moved += 1,
-                    IngestDecision::ExternallyChanged { .. } => external_changes += 1,
-                    _ => {}
-                }
-                if decision.needs_introspection_path(&event.path).is_some() {
-                    needs_introspection.push(event.clone());
-                }
-            }
-            let finish = store
-                .finish_scan_session(session)
-                .context("finish_scan_session failed")?;
-            Ok(finish)
-        },
-    )?;
-
-    // Promoted moves were counted as New during ingestion; correct the total.
-    moved += finish.promoted_moves;
-    if !quiet {
-        if finish.missing > 0 {
-            print_missing_count(finish.missing);
-        }
-        if moved > 0 {
-            eprintln!("  {} {} files moved/renamed", style("Moved").dim(), moved,);
-        }
-        if external_changes > 0 {
-            eprintln!(
-                "  {} {} files changed externally",
-                style("Changed").dim(),
-                external_changes,
-            );
-        }
-    }
-    Ok(ReconcileOutcome {
-        needs_introspection,
-    })
-}
-
-/// Run filesystem discovery across all paths, returning events and counters.
-fn run_discovery(
-    args: &ScanArgs,
-    paths: &[PathBuf],
-    hash_files: bool,
-    quiet: bool,
-    kernel: &Arc<voom_kernel::Kernel>,
-    store: Arc<dyn voom_domain::storage::StorageTrait>,
-) -> Result<(Vec<FileDiscoveredEvent>, u64, u64)> {
-    let discovery = voom_discovery::DiscoveryPlugin::new();
-    let progress = if quiet {
-        DiscoveryProgress::hidden()
-    } else {
-        DiscoveryProgress::new()
-    };
-    let orphan_count = Arc::new(AtomicU64::new(0));
-    let discovery_errors = Arc::new(AtomicU64::new(0));
-    let cumulative_discovered = Arc::new(AtomicU64::new(0));
-    let processing_base = Arc::new(AtomicU64::new(0));
-    let mut all_events = Vec::new();
-
-    for path in paths {
-        progress.reset_to_spinner();
-
-        let progress_clone = progress.clone();
-        let orphan_clone = orphan_count.clone();
-        let errors_clone = discovery_errors.clone();
-        let kernel_clone = kernel.clone();
-        let cum_disc = cumulative_discovered.clone();
-        let proc_base = processing_base.clone();
-        let pre_scan = cumulative_discovered.load(Ordering::Relaxed);
-
-        let mut options = voom_discovery::ScanOptions::new(path.clone());
-        options.recursive = args.recursive;
-        options.hash_files = hash_files;
-        options.workers = args.workers;
-        options.fingerprint_lookup = Some(crate::introspect::fingerprint_lookup(store.clone()));
-        options.on_progress = Some(Box::new(move |progress| match progress {
-            voom_discovery::ScanProgress::Discovered { count: _, path } => {
-                let cumulative = cum_disc.fetch_add(1, Ordering::Relaxed) + 1;
-                let cumulative = usize::try_from(cumulative).unwrap_or(usize::MAX);
-                progress_clone.on_discovered(cumulative, &path);
-            }
-            voom_discovery::ScanProgress::Processing {
-                current,
-                total,
-                path,
-            } => {
-                let base = proc_base.load(Ordering::Relaxed);
-                let base = usize::try_from(base).unwrap_or(usize::MAX);
-                let action = if hash_files { "Hashing" } else { "Processing" };
-                progress_clone.on_processing(base + current, base + total, &path, action);
-            }
-            voom_discovery::ScanProgress::OrphanedTempFiles { count } => {
-                orphan_clone.fetch_add(count as u64, Ordering::Relaxed);
-            }
-            voom_discovery::ScanProgress::HashReused { .. } => {}
-        }));
-        options.on_error = Some(Box::new(move |path, size, error| {
-            tracing::warn!(path = %path.display(), error = %error, "discovery error");
-            errors_clone.fetch_add(1, Ordering::Relaxed);
-            crate::introspect::dispatch_failure(
-                &kernel_clone,
-                path,
-                size,
-                None,
-                &error,
-                BadFileSource::Discovery,
-            );
-        }));
-
-        let events = discovery.scan(&options).context("filesystem scan failed")?;
-
-        let dir_discovered = cumulative_discovered.load(Ordering::Relaxed) - pre_scan;
-        processing_base.fetch_add(dir_discovered, Ordering::Relaxed);
-        all_events.extend(events);
-    }
-
-    progress.finish();
-
-    let orphans = orphan_count.load(Ordering::Relaxed);
-    let errors = discovery_errors.load(Ordering::Relaxed);
-    Ok((all_events, orphans, errors))
-}
-
-/// Handle the case where discovery found no files. Runs reconciliation
-/// to mark previously known files as missing, then prints output.
-fn handle_empty_scan(
-    store: &dyn voom_domain::storage::StorageTrait,
-    paths: &[PathBuf],
-    hash_files: bool,
-    orphans: u64,
-    quiet: bool,
-    format: Option<crate::cli::OutputFormat>,
-) -> Result<()> {
-    if hash_files {
-        let result = store.reconcile_discovered_files(&[], paths)?;
-        if !quiet && result.missing > 0 {
-            print_missing_count(result.missing);
-        }
-    } else {
-        let missing = store.mark_missing_paths(&[], paths)?;
-        if !quiet && missing > 0 {
-            print_missing_count(missing);
-        }
-    }
-
-    if !quiet {
-        if orphans > 0 {
-            eprintln!(
-                "{} ({} orphaned temp {} skipped)",
-                style("No media files found.").yellow(),
-                orphans,
-                if orphans == 1 { "file" } else { "files" },
-            );
-        } else {
-            eprintln!("{}", style("No media files found.").yellow());
-        }
-    }
-
-    if matches!(format, Some(crate::cli::OutputFormat::Json)) {
-        println!("[]");
-    }
-    Ok(())
 }
 
 /// Print the discovery/hashing summary line.
@@ -423,67 +243,12 @@ fn print_discovery_summary(
     }
 }
 
-/// Run ffprobe introspection on files. Returns (introspected, errors) counts.
-async fn run_introspection(
-    events: &[&FileDiscoveredEvent],
-    kernel: &Arc<voom_kernel::Kernel>,
-    ffprobe_path: Option<&str>,
-    animation_mode: voom_ffprobe_introspector::parser::AnimationDetectionMode,
-    token: &CancellationToken,
-    quiet: bool,
-) -> (u64, u64) {
-    let probe = if quiet {
-        ProbeProgress::hidden(events.len())
-    } else {
-        ProbeProgress::new(events.len())
-    };
-    let mut introspected = 0u64;
-    let mut errors = 0u64;
-
-    for (i, event) in events.iter().enumerate() {
-        if token.is_cancelled() {
-            break;
-        }
-        probe.on_file(i + 1, &event.path);
-
-        match crate::introspect::introspect_file(
-            event.path.clone(),
-            event.size,
-            event.content_hash.clone(),
-            kernel,
-            ffprobe_path,
-            animation_mode,
-        )
-        .await
-        {
-            Ok(_file) => introspected += 1,
-            Err(e) => {
-                tracing::warn!(
-                    path = %event.path.display(),
-                    error = %e,
-                    "introspection failed"
-                );
-                errors += 1;
-            }
-        }
-        probe.inc();
-    }
-
-    probe.finish();
-    (introspected, errors)
-}
-
-type FormattedScanResults = (
-    crate::cli::OutputFormat,
-    Vec<(PathBuf, u64, Option<String>)>,
-);
-
 /// Print the final scan summary (completion or interruption).
 ///
-/// Takes primitive counts plus an optional pre-built `(format, results)`
-/// pair instead of borrowing the events slice. This keeps tainted data
-/// from CodeQL's `rust/cleartext-logging` flow analysis out of the
-/// logging sink — the print sites see only `usize`/`u64`/`Duration`.
+/// Takes primitive counts plus elapsed time instead of borrowing the events
+/// slice. This keeps tainted data from CodeQL's `rust/cleartext-logging` flow
+/// analysis out of the logging sink — the print sites see only
+/// `usize`/`u64`/`Duration`.
 fn print_scan_summary(
     total_files: usize,
     introspected: u64,
@@ -491,7 +256,6 @@ fn print_scan_summary(
     elapsed: Duration,
     cancelled: bool,
     quiet: bool,
-    formatted_results: Option<FormattedScanResults>,
 ) {
     let total = total_files as u64;
     let error_suffix = if errors > 0 {
@@ -511,9 +275,6 @@ fn print_scan_summary(
                 error_suffix,
                 HumanDuration(elapsed),
             );
-        }
-        if let Some((fmt, results)) = formatted_results {
-            output::format_scan_results(&results, fmt);
         }
         return;
     }
@@ -560,13 +321,6 @@ fn print_missing_count(count: u32) {
         style("Missing").dim(),
         count
     );
-}
-
-fn format_results(events: &[FileDiscoveredEvent]) -> Vec<(PathBuf, u64, Option<String>)> {
-    events
-        .iter()
-        .map(|e| (e.path.clone(), e.size, e.content_hash.clone()))
-        .collect()
 }
 
 /// Read `[plugin.verifier]` from the loaded `AppConfig`, falling back to defaults.

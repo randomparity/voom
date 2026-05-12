@@ -109,6 +109,19 @@ impl DiscoveryProgress {
         }
     }
 
+    /// Like [`Self::new`] but attached to a shared `MultiProgress` so the
+    /// bar coexists with other bars (e.g. the probe bar in streaming mode).
+    pub fn new_in(mp: &indicatif::MultiProgress) -> Self {
+        let pb = mp.add(ProgressBar::new_spinner());
+        pb.set_style(spinner_style());
+        pb.enable_steady_tick(TICK_INTERVAL);
+        Self {
+            pb,
+            start: Instant::now(),
+            transitioned: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Reset from bar back to spinner for a new discovery phase.
     ///
     /// Called between directories so the progress bar doesn't show stale
@@ -163,7 +176,12 @@ pub struct ProbeProgress {
 }
 
 impl ProbeProgress {
-    /// Create a new introspection progress bar.
+    /// Create a new introspection progress bar with a fixed total.
+    ///
+    /// Used by commands that collect all files before probing (e.g. a future
+    /// `process --re-introspect` mode). The streaming scan uses
+    /// [`Self::new_dynamic_in`] instead.
+    #[allow(dead_code)] // retained for future serial-introspection callers
     pub fn new(total: usize) -> Self {
         let pb = ProgressBar::new(total as u64);
         pb.set_style(bar_style());
@@ -176,7 +194,11 @@ impl ProbeProgress {
         }
     }
 
-    /// Create a hidden (no-op) progress bar for quiet/scripted mode.
+    /// Create a hidden (no-op) progress bar with a fixed total.
+    ///
+    /// Used by commands that collect all files before probing. The streaming
+    /// scan uses [`Self::hidden_dynamic`] instead.
+    #[allow(dead_code)] // retained for future serial-introspection callers
     pub fn hidden(total: usize) -> Self {
         Self {
             pb: ProgressBar::hidden(),
@@ -189,8 +211,10 @@ impl ProbeProgress {
     /// The total is grown via [`Self::add_pending`] as work is enqueued.
     /// Suitable for streaming mode where the caller doesn't know the final
     /// total until discovery completes.
-    // Dead code until Task 6 wires the streaming pipeline into the scan command.
-    #[allow(dead_code)]
+    ///
+    /// Production code uses [`Self::new_dynamic_in`] (attached to a
+    /// `MultiProgress`). This variant is used in tests and standalone contexts.
+    #[allow(dead_code)] // used in tests; production callers use new_dynamic_in
     pub fn new_dynamic() -> Self {
         let pb = ProgressBar::new(0);
         pb.set_style(bar_style());
@@ -204,8 +228,6 @@ impl ProbeProgress {
     }
 
     /// Hidden no-op equivalent of [`Self::new_dynamic`].
-    // Dead code until Task 6 wires the streaming pipeline into the scan command.
-    #[allow(dead_code)]
     pub fn hidden_dynamic() -> Self {
         Self {
             pb: ProgressBar::hidden(),
@@ -214,9 +236,20 @@ impl ProbeProgress {
         }
     }
 
+    /// Like [`Self::new_dynamic`] but attached to a shared `MultiProgress`.
+    pub fn new_dynamic_in(mp: &indicatif::MultiProgress) -> Self {
+        let pb = mp.add(ProgressBar::new(0));
+        pb.set_style(bar_style());
+        pb.enable_steady_tick(TICK_INTERVAL);
+        pb.set_message("Probing...");
+        Self {
+            pb,
+            start: Instant::now(),
+            total: 0,
+        }
+    }
+
     /// Increase the bar's total by `n`. Safe to call from any thread.
-    // Dead code until Task 6 wires the streaming pipeline into the scan command.
-    #[allow(dead_code)]
     pub fn add_pending(&self, n: u64) {
         self.pb.inc_length(n);
     }
