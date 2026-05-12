@@ -176,37 +176,6 @@ pub struct ProbeProgress {
 }
 
 impl ProbeProgress {
-    /// Create a new introspection progress bar with a fixed total.
-    ///
-    /// Used by commands that collect all files before probing (e.g. a future
-    /// `process --re-introspect` mode). The streaming scan uses
-    /// [`Self::new_dynamic_in`] instead.
-    #[allow(dead_code)] // retained for future serial-introspection callers
-    pub fn new(total: usize) -> Self {
-        let pb = ProgressBar::new(total as u64);
-        pb.set_style(bar_style());
-        pb.enable_steady_tick(TICK_INTERVAL);
-        pb.set_message("Probing...");
-        Self {
-            pb,
-            start: Instant::now(),
-            total,
-        }
-    }
-
-    /// Create a hidden (no-op) progress bar with a fixed total.
-    ///
-    /// Used by commands that collect all files before probing. The streaming
-    /// scan uses [`Self::hidden_dynamic`] instead.
-    #[allow(dead_code)] // retained for future serial-introspection callers
-    pub fn hidden(total: usize) -> Self {
-        Self {
-            pb: ProgressBar::hidden(),
-            start: Instant::now(),
-            total,
-        }
-    }
-
     /// Create a probe progress bar with an *initial* total of zero.
     /// The total is grown via [`Self::add_pending`] as work is enqueued.
     /// Suitable for streaming mode where the caller doesn't know the final
