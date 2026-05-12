@@ -57,6 +57,8 @@ fn bench_ingest_new(c: &mut Criterion) {
                     );
                     store.ingest_discovered_file(session, &df).expect("ingest");
                 }
+                // Cancel (not finish) so the seeded 100k rows are never marked missing —
+                // the next iteration must observe the same starting state.
                 store.cancel_scan_session(session).expect("cancel");
             },
             BatchSize::PerIteration,
@@ -84,6 +86,8 @@ fn bench_ingest_unchanged(c: &mut Criterion) {
                     );
                     store.ingest_discovered_file(session, &df).expect("ingest");
                 }
+                // Cancel (not finish) so the seeded 100k rows are never marked missing —
+                // the next iteration must observe the same starting state.
                 store.cancel_scan_session(session).expect("cancel");
             },
             BatchSize::PerIteration,
