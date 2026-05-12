@@ -689,6 +689,35 @@ fn spawn_heartbeat_task(
     HeartbeatHandle { cancel }
 }
 
+/// Test-only handle into the ingest stage's hashed-path body. Used by the
+/// `streaming_tests` module to assert that closing `tx_probe` (simulating
+/// a dead probe stage) causes the session to be cancelled rather than
+/// finalised. Not part of the public pipeline API.
+#[cfg(test)]
+pub(crate) async fn run_ingest_for_test(
+    store: Arc<dyn StorageTrait>,
+    kernel: Arc<voom_kernel::Kernel>,
+    paths: Vec<PathBuf>,
+    rx_disc: tokio::sync::mpsc::Receiver<FileDiscoveredEvent>,
+    tx_probe: tokio::sync::mpsc::Sender<FileDiscoveredEvent>,
+    token: CancellationToken,
+) -> Result<()> {
+    // Mirrors spawn_ingest_stage's spawn_blocking call but returns a
+    // simplified Result so tests can assert .is_err() / .is_ok().
+    let handle = spawn_ingest_stage(
+        store,
+        kernel,
+        paths,
+        true, // hash_files — only the hashed path has the probe-close issue
+        rx_disc,
+        tx_probe,
+        crate::progress::ProbeProgress::hidden_dynamic(),
+        token,
+    );
+    handle.await.context("ingest task join failed")??;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,5 +743,21 @@ mod tests {
     fn resolve_probe_workers_explicit_flag_wins() {
         assert_eq!(resolve_probe_workers(3), 3);
         assert_eq!(resolve_probe_workers(1), 1);
+    }
+
+    // Verify tokio's mpsc channel behavior: blocking_send to a channel
+    // whose receiver was dropped should return Err immediately.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn blocking_send_to_dropped_receiver_returns_err() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<u32>(4);
+        drop(rx);
+        // spawn_blocking because blocking_send must not be called on async thread
+        let result = tokio::task::spawn_blocking(move || tx.blocking_send(42))
+            .await
+            .expect("join");
+        assert!(
+            result.is_err(),
+            "blocking_send must Err when receiver dropped"
+        );
     }
 }

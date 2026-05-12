@@ -886,6 +886,93 @@ mod streaming_tests {
             "discovery error must not allow finish_scan_session to run"
         );
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn probe_channel_close_cancels_session_does_not_mark_missing() {
+        // Regression: if the probe stage dies (drops rx_probe) while
+        // ingest still has events to forward, tx_probe.blocking_send
+        // fails. Without the fix, ingest breaks out of its recv loop
+        // and falls through to finish_scan_session — marking every
+        // unprocessed active file under the roots as Missing. With the
+        // fix, ingest cancels the pipeline token and returns Err, so
+        // with_scan_session cancels the session instead.
+        let bed = make_bed();
+
+        // Seed a row that would be marked Missing by finish_scan_session
+        // if it runs (it's in the DB under the scan root but we never
+        // send a discovery event for it). This is the canary: if
+        // finish_scan_session ran, this row becomes Missing.
+        let canary_path = bed.media_dir.path().join("canary.mkv");
+        let mut canary = MediaFile::new(canary_path.clone())
+            .with_container(Container::Mkv)
+            .with_tracks(vec![Track::new(0, TrackType::Video, "h264".into())]);
+        canary.size = 9;
+        canary.content_hash = Some("abcdef0123456789".into());
+        canary.expected_hash = canary.content_hash.clone();
+        bed.store.upsert_file(&canary).expect("canary upsert");
+
+        // Set up tx_probe with its receiver dropped immediately.
+        // When ingest tries to forward a NEW file to the probe stage,
+        // blocking_send will return Err because the receiver is closed.
+        let (tx_disc, rx_disc) = tokio::sync::mpsc::channel(4);
+        let (tx_probe, rx_probe) = tokio::sync::mpsc::channel(4);
+        drop(rx_probe);
+
+        let token = tokio_util::sync::CancellationToken::new();
+        let paths = vec![bed.media_dir.path().to_path_buf()];
+
+        let ingest_fut = tokio::spawn(super::pipeline::run_ingest_for_test(
+            bed.store.clone(),
+            bed.kernel.clone(),
+            paths,
+            rx_disc,
+            tx_probe,
+            token.clone(),
+        ));
+
+        // Send an event for a path that is NOT in the DB — ingest will
+        // call ingest_discovered_file, get IngestDecision::New
+        // (needs_introspection: true), and try to forward to probe.
+        // Since rx_probe is dropped, blocking_send returns Err.
+        let new_path = bed.media_dir.path().join("new_file.mkv");
+        tx_disc
+            .send(voom_domain::events::FileDiscoveredEvent::new(
+                new_path.clone(),
+                42,
+                Some("ffffffffffffffff".into()),
+            ))
+            .await
+            .expect("send disc event");
+        drop(tx_disc); // close so ingest's recv loop terminates
+
+        let result = ingest_fut.await.expect("join ingest");
+
+        // The ingest task must have returned Err.
+        assert!(
+            result.is_err(),
+            "ingest must return Err on probe channel close"
+        );
+        // The pipeline cancellation token must be set.
+        assert!(
+            token.is_cancelled(),
+            "ingest must cancel the pipeline token on probe channel close"
+        );
+
+        // The canary file MUST still be Active — finish_scan_session
+        // must NOT have run (which would have marked it Missing since
+        // no discovery event was sent for it in this session).
+        let row = bed
+            .store
+            .file_by_path(&canary_path)
+            .expect("file_by_path ok")
+            .expect("canary row still present");
+        assert_ne!(
+            row.status,
+            FileStatus::Missing,
+            "probe-channel-close must not cause finish_scan_session to \
+             mark unprocessed files as missing"
+        );
+    }
 }
 
 #[cfg(test)]
