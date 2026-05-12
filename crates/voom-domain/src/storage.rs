@@ -157,7 +157,38 @@ pub trait FileStorage: Send + Sync {
         &self,
         discovered: &[DiscoveredFile],
         scanned_dirs: &[PathBuf],
-    ) -> Result<ReconcileResult>;
+    ) -> Result<ReconcileResult> {
+        use crate::transition::IngestDecision;
+
+        let mut result = ReconcileResult::default();
+
+        with_scan_session(self, scanned_dirs, |session| -> Result<()> {
+            for df in discovered {
+                let decision = self.ingest_discovered_file(session, df)?;
+                match &decision {
+                    IngestDecision::New { .. } => result.new_files += 1,
+                    IngestDecision::Unchanged { .. } => result.unchanged += 1,
+                    IngestDecision::ExternallyChanged { .. } => result.external_changes += 1,
+                    IngestDecision::Moved { .. } => result.moved += 1,
+                    IngestDecision::Duplicate { .. } => {
+                        // Silently drop — preserves the prior `HashSet`-based
+                        // dedup semantics on the input list.
+                    }
+                }
+                if let Some(p) = decision.needs_introspection_path(&df.path) {
+                    result.needs_introspection.push(p);
+                }
+            }
+            let finish = self.finish_scan_session(session)?;
+            result.missing = finish.missing;
+            // Promoted moves were counted as New during ingestion; reclassify.
+            result.new_files = result.new_files.saturating_sub(finish.promoted_moves);
+            result.moved += finish.promoted_moves;
+            Ok(())
+        })?;
+
+        Ok(result)
+    }
     /// Mark active files under `scanned_dirs` as missing if their path is not
     /// in `discovered_paths`. This is a path-only operation — no hash needed.
     fn mark_missing_paths(
@@ -254,6 +285,51 @@ pub trait FileStorage: Send + Sync {
     /// Lightweight predecessor lookup — returns only the UUID, no tracks.
     /// Used by lineage chain walking where only the ID is needed.
     fn predecessor_id_of(&self, successor_id: &Uuid) -> Result<Option<Uuid>>;
+}
+
+/// Drive a scan session: call `begin_scan_session`, run `body`, and on
+/// error from `body` best-effort `cancel_scan_session` so the session is
+/// not left `InProgress` to block the next begin.
+///
+/// The body is responsible for calling `finish_scan_session` itself —
+/// finish returns a [`crate::transition::ScanFinishOutcome`] that callers
+/// usually need to thread back into their result, and embedding the
+/// finish call here would force a single return shape on every caller.
+///
+/// Generic over the body's error type via [`From<VoomError>`] so callers
+/// using `anyhow::Error` (CLI) and callers using `VoomError` directly
+/// (trait default impls) can share the same helper.
+///
+/// # Errors
+/// Returns the error from `begin_scan_session` (converted via `From`) or
+/// propagates the error from `body`. A failure inside
+/// `cancel_scan_session` is logged at `warn` but does not mask the
+/// original error.
+pub fn with_scan_session<S, F, T, E>(
+    store: &S,
+    roots: &[PathBuf],
+    body: F,
+) -> std::result::Result<T, E>
+where
+    S: FileStorage + ?Sized,
+    F: FnOnce(crate::transition::ScanSessionId) -> std::result::Result<T, E>,
+    E: From<crate::errors::VoomError> + std::fmt::Display,
+{
+    let session = store.begin_scan_session(roots)?;
+    match body(session) {
+        Ok(value) => Ok(value),
+        Err(e) => {
+            if let Err(cancel_err) = store.cancel_scan_session(session) {
+                tracing::warn!(
+                    session = %session,
+                    ingest_error = %e,
+                    cancel_error = %cancel_err,
+                    "failed to cancel scan session after ingest error",
+                );
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Job queue operations.
