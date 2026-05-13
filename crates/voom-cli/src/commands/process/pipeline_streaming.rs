@@ -107,7 +107,7 @@ where
     let execute_during_discovery = args.execute_during_discovery;
 
     // Log activation when the flag is on.
-    if execute_during_discovery && !args.dry_run && !plan_only {
+    if execute_during_discovery && !args.dry_run && !plan_only && !args.estimate {
         tracing::warn!(
             target: "voom.streaming.mode",
             flag = "execute_during_discovery",
@@ -129,8 +129,17 @@ where
     let (tx_items, rx_items) = mpsc::channel::<WorkItem<DiscoveredFilePayload>>(channel_depth);
 
     // Channel for discovery stage to signal root completion to the dispatcher.
-    // Capacity = number of roots so discovery never blocks on this send.
-    let (tx_root_done, rx_root_done) = mpsc::channel::<RootWalkCompletedEvent>(paths.len().max(1));
+    // Only created when the flag is on; when off, no channel exists so no
+    // spurious send-on-dropped-receiver warnings can fire.
+    let (tx_root_done, rx_root_done): (
+        Option<mpsc::Sender<RootWalkCompletedEvent>>,
+        Option<mpsc::Receiver<RootWalkCompletedEvent>>,
+    ) = if execute_during_discovery {
+        let (tx, rx) = mpsc::channel::<RootWalkCompletedEvent>(paths.len().max(1));
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
 
     let execution_gate = Arc::new(Notify::new());
     let pipeline_cancel = token.child_token();
@@ -260,7 +269,7 @@ fn spawn_discovery_stage(
     store: Arc<dyn StorageTrait>,
     kernel: Arc<voom_kernel::Kernel>,
     tx_disc: mpsc::Sender<FileDiscoveredEvent>,
-    tx_root_done: mpsc::Sender<RootWalkCompletedEvent>,
+    tx_root_done: Option<mpsc::Sender<RootWalkCompletedEvent>>,
     token: CancellationToken,
     discovery_errors: Arc<AtomicU64>,
     scan_session: ScanSessionId,
@@ -329,11 +338,15 @@ fn spawn_discovery_stage(
                     .with_context(|| format!("filesystem scan failed for {}", path.display()))?;
 
                 // Emit RootWalkCompleted so the dispatcher can open the gate
-                // and drain the holding buffer for this root.
-                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let evt = RootWalkCompletedEvent::new(path.clone(), scan_session, elapsed_ms);
-                if let Err(e) = tx_root_done.blocking_send(evt) {
-                    tracing::warn!(error = %e, "tx_root_done dropped; ingest dispatcher gone");
+                // and drain the holding buffer for this root. Only send when
+                // the channel exists (i.e. execute_during_discovery is on).
+                if let Some(tx) = tx_root_done.as_ref() {
+                    let elapsed_ms =
+                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    let evt = RootWalkCompletedEvent::new(path.clone(), scan_session, elapsed_ms);
+                    if let Err(e) = tx.blocking_send(evt) {
+                        tracing::warn!(error = %e, "tx_root_done dropped; ingest dispatcher gone");
+                    }
                 }
             }
             Ok(())
@@ -380,7 +393,7 @@ fn spawn_ingest_stage(
     priority_by_date: bool,
     roots: Vec<PathBuf>,
     mut rx_disc: mpsc::Receiver<FileDiscoveredEvent>,
-    rx_root_done: mpsc::Receiver<RootWalkCompletedEvent>,
+    rx_root_done: Option<mpsc::Receiver<RootWalkCompletedEvent>>,
     tx_items: mpsc::Sender<WorkItem<DiscoveredFilePayload>>,
     execution_gate: Arc<Notify>,
     token: CancellationToken,
@@ -399,15 +412,16 @@ fn spawn_ingest_stage(
 
         // Spawn dispatcher task when gate mode is on. It listens for
         // RootWalkCompleted events, opens the gate, and drains the holding
-        // buffer into tx_items.
-        let dispatcher_handle: Option<JoinHandle<()>> = if execute_during_discovery {
+        // buffer into tx_items. When the flag is off, rx_root_done is None
+        // so no channel exists and no spurious warnings can fire.
+        let dispatcher_handle: Option<JoinHandle<()>> = if let Some(rx) = rx_root_done {
             let gate_d = gate.clone();
             let holding_d = holding.clone();
             let tx_items_d = tx_items.clone();
             let enqueued_d = enqueued.clone();
             let token_d = token.clone();
             Some(tokio::spawn(async move {
-                let mut rx = rx_root_done;
+                let mut rx = rx;
                 loop {
                     let msg = tokio::select! {
                         biased;
@@ -426,9 +440,6 @@ fn spawn_ingest_stage(
                 }
             }))
         } else {
-            // Drop rx_root_done immediately — discovery will still send on
-            // tx_root_done but the sends are best-effort (warn on error).
-            drop(rx_root_done);
             None
         };
 
