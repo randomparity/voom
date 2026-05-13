@@ -167,8 +167,10 @@ where
     // serializing the awaits and cancelling on the first failure we mirror
     // the structure used in `scan/pipeline.rs`.
     let pool_reporter = reporter.clone();
+    let pool_for_task = pool.clone();
     let pool_handle: JoinHandle<Vec<JobResult>> = tokio::spawn(async move {
-        pool.process_stream(rx_items, execution_gate, processor, on_error, pool_reporter)
+        pool_for_task
+            .process_stream(rx_items, execution_gate, processor, on_error, pool_reporter)
             .await
     });
 
@@ -179,11 +181,17 @@ where
     let disc_join = discovery_handle.await;
     if disc_join.as_ref().map_or(true, |r| r.is_err()) {
         pipeline_cancel.cancel();
+        // Also cancel the worker pool so it exits its gate wait promptly.
+        // pipeline_cancel is a CHILD of `token`, but the pool was constructed
+        // with `token` — child cancellation alone won't reach the pool's
+        // internal token, leaving workers hung on execution_gate.notified().
+        pool.cancel();
     }
 
     let ingest_join = ingest_handle.await;
     if ingest_join.as_ref().map_or(true, |r| r.is_err()) {
         pipeline_cancel.cancel();
+        pool.cancel();
     }
 
     let pool_join = pool_handle.await;
@@ -685,6 +693,45 @@ mod tests {
             successes <= 4,
             "fail-fast should stop short of all 10 files, got {successes} successes"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn discovery_error_does_not_hang_pool() {
+        // Discovery is given a non-existent root so scan_streaming returns
+        // Err on the first path. The pipeline must propagate that error
+        // promptly and the pool must not be left waiting on the gate.
+        let token = CancellationToken::new();
+        let (pool, store, kernel) = make_pool(token.clone());
+
+        let missing = std::path::PathBuf::from("/does/not/exist/for/streaming/test");
+        let args = make_test_args(vec![missing.clone()]);
+
+        // Race with a 5-second hard timeout — without the fix this hangs
+        // forever.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_streaming_pipeline(
+                &args,
+                &args.paths,
+                kernel,
+                store,
+                pool.clone(),
+                Arc::new(NoopReporter),
+                JobErrorStrategy::Continue,
+                HashSet::new(),
+                |_job| async { Ok(None) },
+                true,
+                true,
+                token,
+            ),
+        )
+        .await;
+
+        match result {
+            Ok(Err(_)) => { /* pipeline returned an error — good */ }
+            Ok(Ok(_)) => panic!("pipeline returned Ok despite discovery error"),
+            Err(_) => panic!("pipeline hung instead of propagating the discovery error"),
+        }
     }
 
     #[tokio::test]
