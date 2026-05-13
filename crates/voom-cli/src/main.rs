@@ -3,19 +3,7 @@ use clap::Parser;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
-mod app;
-mod cli;
-mod commands;
-mod config;
-mod introspect;
-mod lock;
-mod output;
-mod paths;
-mod policy_map;
-mod progress;
-mod recovery;
-pub mod retention;
-mod tools;
+use voom_cli::{cli, commands, config, lock};
 
 use cli::{Cli, Commands, OutputFormat};
 

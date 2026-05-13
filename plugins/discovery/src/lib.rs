@@ -1,6 +1,8 @@
 //! Filesystem discovery plugin: parallel directory walking with content hashing.
 
 pub mod scanner;
+#[cfg(feature = "test-hooks")]
+pub mod test_hooks;
 
 pub use scanner::EventSink;
 pub use scanner::hash_file;

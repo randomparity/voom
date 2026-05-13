@@ -184,6 +184,11 @@ fn walk_media_files(
     options: &ScanOptions,
     snapshot: Option<&SessionMutationSnapshot>,
 ) -> (Vec<(PathBuf, u64)>, usize, Vec<DiscoveryWalkError>) {
+    #[cfg(feature = "test-hooks")]
+    if let Some(delay) = crate::test_hooks::delay_for(&options.root) {
+        std::thread::sleep(delay);
+    }
+
     let walker = if options.recursive {
         WalkDir::new(&options.root).follow_links(false)
     } else {

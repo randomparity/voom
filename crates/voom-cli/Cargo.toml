@@ -15,6 +15,10 @@ description = "CLI interface for VOOM — Video Orchestration Operations Manager
 name = "voom"
 path = "src/main.rs"
 
+[lib]
+name = "voom_cli"
+path = "src/lib.rs"
+
 [dependencies]
 voom-domain.workspace = true
 voom-dsl.workspace = true
@@ -81,6 +85,8 @@ default = ["wasm"]
 wasm = ["voom-kernel/wasm"]
 functional = []
 integration = []
+# Enable per-root scan-delay injection for acceptance tests.
+test-hooks = ["voom-discovery/test-hooks"]
 
 [lints]
 workspace = true
@@ -92,6 +98,9 @@ predicates = "3"
 rand = "0.10"
 rusqlite.workspace = true
 tempfile.workspace = true
+tokio-util.workspace = true
 voom-domain = { workspace = true, features = ["testing"] }
+voom-discovery.workspace = true
+voom-sqlite-store.workspace = true
 voom-ffmpeg-executor = { workspace = true, features = ["testing"] }
 voom-mkvtoolnix-executor = { workspace = true, features = ["testing"] }
