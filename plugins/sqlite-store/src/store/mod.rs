@@ -10,6 +10,7 @@ mod maintenance_storage;
 mod pending_ops_storage;
 mod plan_storage;
 mod plugin_data_storage;
+mod plugin_stats_storage;
 mod row_mappers;
 pub(crate) mod scan_session_mutations_storage;
 mod snapshot_storage;
