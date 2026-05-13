@@ -7,7 +7,10 @@ use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{
     ActionParams, ActionResult, ExecutionDetail, OperationType, PlannedAction,
 };
+use voom_domain::scan_session_mutations::record_mutation_for_pending_write;
+use voom_domain::storage::ScanSessionMutationStorage;
 use voom_domain::temp_file::temp_path_with_ext;
+use voom_domain::transition::ScanSessionId;
 use voom_process::run_with_timeout;
 
 /// Execute mkvmerge operations (remux, track removal, reorder).
@@ -18,7 +21,12 @@ use voom_process::run_with_timeout;
 /// 2. Write to a temp file (`.tmp.mkv`) in the same directory
 /// 3. On success, rename temp over the original (or to new extension if container changed)
 /// 4. On failure, clean up the temp file
-pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<Vec<ActionResult>> {
+pub fn execute_merge_actions(
+    path: &Path,
+    actions: &[&PlannedAction],
+    storage: Option<&dyn ScanSessionMutationStorage>,
+    scan_session: Option<ScanSessionId>,
+) -> Result<Vec<ActionResult>> {
     if actions.is_empty() {
         return Ok(Vec::new());
     }
@@ -58,6 +66,10 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
         // If there's a ConvertContainer action, the output stays as .mkv (already the temp name).
         // Otherwise, replace the original file.
         let final_path = determine_final_path(path, actions);
+
+        // Record the mutation before renaming so the scanner can exclude this path.
+        // Guard will clean up temp file on drop if this fails.
+        record_mutation_for_pending_write(storage, scan_session, path, &final_path)?;
 
         // Replace original with temp file
         fs::rename(&temp_path, &final_path).map_err(|e| VoomError::ToolExecution {
