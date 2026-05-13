@@ -1,6 +1,7 @@
 mod audio_language;
 mod dispatch;
 mod pipeline;
+mod pipeline_streaming;
 mod plan_outcome;
 mod safeguards;
 mod transitions;
@@ -717,7 +718,7 @@ use crate::introspect::DiscoveredFilePayload;
 /// - Modified within 30 days: 50
 /// - Modified within 1 year: 100
 /// - Older or metadata unavailable: 200
-fn compute_file_date_priority(path: &std::path::Path) -> i32 {
+pub(super) fn compute_file_date_priority(path: &std::path::Path) -> i32 {
     const SECS_PER_DAY: u64 = 86_400;
     let Ok(metadata) = std::fs::metadata(path) else {
         return 200;

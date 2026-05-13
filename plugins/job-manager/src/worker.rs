@@ -321,6 +321,12 @@ impl WorkerPool {
         }
     }
 
+    /// Read-only view of the pool's configuration.
+    #[must_use]
+    pub fn config(&self) -> &WorkerPoolConfig {
+        &self.config
+    }
+
     pub fn cancel(&self) {
         self.token.cancel();
     }
