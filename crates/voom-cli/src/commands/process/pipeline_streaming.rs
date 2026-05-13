@@ -445,6 +445,7 @@ mod tests {
             plan_only: false,
             confirm_savings: None,
             priority_by_date: false,
+            execute_during_discovery: false,
         }
     }
 

@@ -242,6 +242,14 @@ pub struct ProcessArgs {
     /// Assign job priority based on file modification date
     #[arg(long)]
     pub priority_by_date: bool,
+
+    /// Begin executing mutating plans for files in a scanned root as soon as
+    /// that root's filesystem walk completes, while other roots may still be
+    /// walking. Default is off: execution waits for every root to finish
+    /// walking. Use only with multiple roots and read the docs for the safety
+    /// model and recommended use cases.
+    #[arg(long)]
+    pub execute_during_discovery: bool,
 }
 
 #[derive(clap::Args)]
@@ -2773,5 +2781,26 @@ mod tests {
     fn test_verbose_after_subcommand() {
         let cli = parse(&["voom", "env", "check", "-vv"]);
         assert_eq!(cli.verbose, 2);
+    }
+
+    // ── Process --execute-during-discovery ───────────────────
+
+    #[test]
+    fn process_execute_during_discovery_defaults_off() {
+        let args = Cli::try_parse_from(["voom", "process", "/m"]).unwrap();
+        match args.command {
+            Commands::Process(p) => assert!(!p.execute_during_discovery),
+            _ => panic!("expected Process"),
+        }
+    }
+
+    #[test]
+    fn process_execute_during_discovery_flag_parses() {
+        let args =
+            Cli::try_parse_from(["voom", "process", "/m", "--execute-during-discovery"]).unwrap();
+        match args.command {
+            Commands::Process(p) => assert!(p.execute_during_discovery),
+            _ => panic!("expected Process"),
+        }
     }
 }
