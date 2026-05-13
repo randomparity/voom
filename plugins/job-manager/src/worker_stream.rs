@@ -142,14 +142,26 @@ impl WorkerPool {
         // enqueuer have dropped their clones.
         drop(result_tx);
 
+        // Spawn a collector that drains result_rx CONCURRENTLY with the
+        // enqueuer and workers. The enqueuer sends one `JobResult::failure`
+        // through `result_tx` for every enqueue/serialization failure. If we
+        // only drained AFTER `enqueuer_handle.await`, a burst of enqueue
+        // failures larger than the bounded channel capacity
+        // (`effective_workers * 4`) would block the enqueuer on
+        // `result_tx.send`, leave `producer_done_flag` unset, and deadlock
+        // the pool. The collector exits when every sender clone (held by the
+        // enqueuer + workers) has dropped, which only happens after those
+        // tasks finish.
+        let collector_handle: JoinHandle<Vec<JobResult>> = tokio::spawn(async move {
+            let mut results = Vec::new();
+            while let Some(result) = result_rx.recv().await {
+                results.push(result);
+            }
+            results
+        });
+
         if let Err(e) = enqueuer_handle.await {
             tracing::error!(error = %e, "enqueuer task join error");
-        }
-
-        // Collect results as workers report them.
-        let mut results = Vec::new();
-        while let Some(result) = result_rx.recv().await {
-            results.push(result);
         }
 
         for handle in worker_handles {
@@ -157,6 +169,13 @@ impl WorkerPool {
                 tracing::error!(error = %e, "worker task join error");
             }
         }
+
+        // All senders are dropped now (enqueuer + every worker have finished).
+        // The collector loop will observe `recv() -> None` and return.
+        let results = collector_handle.await.unwrap_or_else(|e| {
+            tracing::error!(error = %e, "result collector task join error");
+            Vec::new()
+        });
 
         // If we were cancelled, sweep any jobs that were enqueued but never
         // claimed. We restrict cancellation to ids we enqueued in this run —
@@ -863,5 +882,89 @@ mod tests {
             vec![10, 50, 100, 200],
             "workers must claim jobs in SQLite priority order"
         );
+    }
+
+    /// Regression test: `process_stream` must drain `result_rx` CONCURRENTLY
+    /// with the enqueuer task. The enqueuer sends one `JobResult::failure`
+    /// through the shared mpsc per enqueue/serialization error. If the
+    /// collector only runs AFTER `enqueuer_handle.await`, a burst of enqueue
+    /// failures larger than the channel capacity (`effective_workers * 4`)
+    /// will block the enqueuer on `result_tx.send`, never set
+    /// `producer_done_flag`, and deadlock `process_stream`.
+    #[tokio::test]
+    async fn process_stream_drains_results_concurrently_with_enqueuer() {
+        // One worker => channel capacity = 1 * 4 = 4. Sending 50 failures
+        // saturates the channel several times over, so the bug (if reintroduced)
+        // reliably manifests as a hang.
+        let store: Arc<dyn JobStorage> = Arc::new(InMemoryStore::new());
+        let queue = Arc::new(JobQueue::new(store));
+        let cfg = WorkerPoolConfig {
+            max_workers: 1,
+            worker_prefix: "test".into(),
+        };
+        let token = CancellationToken::new();
+        let pool = WorkerPool::new(queue.clone(), cfg, token);
+
+        let (tx, rx) = mpsc::channel::<WorkItem<FailingPayload>>(64);
+        let gate = Arc::new(Notify::new());
+
+        for _ in 0..50 {
+            tx.send(WorkItem::new(JobType::Process, 100, Some(FailingPayload)))
+                .await
+                .unwrap();
+        }
+        drop(tx);
+
+        // Open the gate AFTER `process_stream` starts so workers actually
+        // register on `gate.notified()` before being woken. Without this the
+        // workers would block on the gate forever, never drop their
+        // `result_tx` clones, and the collector would never observe channel
+        // closure even after the enqueuer finishes.
+        let gate_for_open = gate.clone();
+        let opener = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            gate_for_open.notify_waiters();
+        });
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            pool.process_stream(
+                rx,
+                gate,
+                |_job| async { Ok(None) },
+                JobErrorStrategy::Continue,
+                Arc::new(NoopReporter),
+            ),
+        )
+        .await;
+        let _ = opener.await;
+
+        let results = match outcome {
+            Ok(r) => r,
+            Err(_) => panic!("process_stream hung when enqueue failures filled result channel"),
+        };
+
+        assert_eq!(
+            results.len(),
+            50,
+            "every serialization failure must surface as a JobResult"
+        );
+        assert!(
+            results.iter().all(|r| !r.is_success()),
+            "all collected results should be failures"
+        );
+    }
+
+    /// Helper whose `Serialize` impl always errors. Used to force the enqueuer
+    /// onto its failure path (which sends a `JobResult::failure` through the
+    /// shared mpsc).
+    struct FailingPayload;
+    impl serde::Serialize for FailingPayload {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            _serializer: S,
+        ) -> std::result::Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("intentional failure for test"))
+        }
     }
 }
