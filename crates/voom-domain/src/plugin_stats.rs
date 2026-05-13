@@ -31,6 +31,11 @@ impl PluginInvocationOutcome {
     }
 }
 
+/// A single plugin invocation as captured by the event bus dispatcher.
+///
+/// One record is produced per (plugin, event) handler call and later persisted
+/// to the `plugin_stats` SQLite table. This is the raw unit that rollups
+/// aggregate over.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginStatRecord {
     pub plugin_id: String,
@@ -40,6 +45,12 @@ pub struct PluginStatRecord {
     pub outcome: PluginInvocationOutcome,
 }
 
+/// Aggregated per-plugin summary computed from a collection of
+/// [`PluginStatRecord`]s.
+///
+/// Produced by both the in-memory rollup (recent window) and the SQLite-backed
+/// historical rollup. Latency percentiles use nearest-rank over the matching
+/// records' `duration_ms` values.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginStatsRollup {
     pub plugin_id: String,
@@ -54,6 +65,10 @@ pub struct PluginStatsRollup {
     pub total_ms: u64,
 }
 
+/// Query parameters for selecting which [`PluginStatRecord`]s to roll up.
+///
+/// Passed to the in-memory and SQLite rollup APIs. Intentionally omits Serde
+/// derives because it's an in-process query parameter, not a wire type.
 #[derive(Debug, Clone, Default)]
 pub struct PluginStatsFilter {
     pub plugin: Option<String>,
@@ -69,13 +84,16 @@ pub struct PluginStatsFilter {
 /// - `nearest_rank_percentile(&v, 99)` → `99`
 ///
 /// Returns `0` when the slice is empty. Inputs MUST be sorted ascending.
+/// Boundary behavior: `p = 0` returns the minimum element (via the `.max(1)`
+/// rank clamp); `p > 100` returns the maximum element (via the `.min(n)` clamp).
 #[must_use]
 pub fn nearest_rank_percentile(sorted: &[u64], p: u64) -> u64 {
     let n = sorted.len();
     if n == 0 {
         return 0;
     }
-    let rank = ((p * n as u64).div_ceil(100)).max(1) as usize;
+    let rank_u128 = ((p as u128) * (n as u128)).div_ceil(100).max(1);
+    let rank = usize::try_from(rank_u128).unwrap_or(usize::MAX);
     let idx = rank.min(n) - 1;
     sorted[idx]
 }
@@ -131,5 +149,21 @@ mod tests {
         let s = serde_json::to_string(&r).unwrap();
         let back: PluginStatRecord = serde_json::from_str(&s).unwrap();
         assert_eq!(r, back);
+    }
+
+    #[test]
+    fn outcome_err_roundtrip() {
+        let outcome = PluginInvocationOutcome::Err {
+            category: "storage".into(),
+        };
+        let s = serde_json::to_string(&outcome).unwrap();
+        assert_eq!(s, r#"{"err":{"category":"storage"}}"#);
+        let back: PluginInvocationOutcome = serde_json::from_str(&s).unwrap();
+        assert_eq!(outcome, back);
+    }
+
+    #[test]
+    fn nearest_rank_handles_p_over_100() {
+        assert_eq!(nearest_rank_percentile(&[1, 2, 3, 4, 5], 200), 5);
     }
 }
