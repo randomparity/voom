@@ -265,6 +265,9 @@ impl MkvtoolnixExecutorPlugin {
         let mut file = voom_domain::media::MediaFile::new(event.path.clone());
         file.container = Container::Mkv;
         let mut plan = Plan::new(file, "subtitle-mux", phase_name);
+        if let Some(session) = event.scan_session {
+            plan = plan.with_scan_session(session);
+        }
         plan.actions = vec![PlannedAction::file_op(
             OperationType::MuxSubtitle,
             ActionParams::MuxSubtitle {
@@ -581,6 +584,63 @@ mod tests {
         ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_subtitle_generated_propagates_scan_session_to_synthesized_plan() {
+        use voom_domain::transition::ScanSessionId;
+
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
+        let session = ScanSessionId::new();
+        let event = Event::SubtitleGenerated(
+            voom_domain::events::SubtitleGeneratedEvent::new(
+                PathBuf::from("/media/movie.mkv"),
+                PathBuf::from("/media/movie.forced-eng.srt"),
+                "eng",
+                true,
+            )
+            .with_scan_session(session),
+        );
+
+        let result = plugin.on_event(&event).unwrap().expect("must claim event");
+        let plan_event = result
+            .produced_events
+            .iter()
+            .find_map(|e| match e {
+                Event::PlanCreated(pe) => Some(pe),
+                _ => None,
+            })
+            .expect("must emit PlanCreated");
+        assert_eq!(
+            plan_event.plan.scan_session,
+            Some(session),
+            "synthesized plan must carry the source event's scan_session"
+        );
+    }
+
+    #[test]
+    fn test_subtitle_generated_without_scan_session_plan_has_none() {
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
+        let event = Event::SubtitleGenerated(voom_domain::events::SubtitleGeneratedEvent::new(
+            PathBuf::from("/media/movie.mkv"),
+            PathBuf::from("/media/movie.forced-eng.srt"),
+            "eng",
+            false,
+        ));
+
+        let result = plugin.on_event(&event).unwrap().expect("must claim event");
+        let plan_event = result
+            .produced_events
+            .iter()
+            .find_map(|e| match e {
+                Event::PlanCreated(pe) => Some(pe),
+                _ => None,
+            })
+            .expect("must emit PlanCreated");
+        assert_eq!(
+            plan_event.plan.scan_session, None,
+            "synthesized plan must have no scan_session when event has none"
+        );
     }
 
     #[test]

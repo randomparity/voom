@@ -512,6 +512,12 @@ pub struct SubtitleGeneratedEvent {
     pub forced: bool,
     #[serde(default)]
     pub title: Option<String>,
+    /// Scan session this subtitle was produced within. Propagated by
+    /// producers (subtitle-generator plugins) so the downstream executor
+    /// that muxes the subtitle into its container records a VOOM mutation
+    /// for the rewrite. None when generation happens outside a scan session.
+    #[serde(default)]
+    pub scan_session: Option<crate::transition::ScanSessionId>,
 }
 
 impl SubtitleGeneratedEvent {
@@ -528,7 +534,18 @@ impl SubtitleGeneratedEvent {
             language: language.into(),
             forced,
             title: None,
+            scan_session: None,
         }
+    }
+
+    /// Attach a scan session ID to this event. Producers that emit
+    /// `SubtitleGenerated` from within an active scan session must call
+    /// this so downstream executors can record the rewrite as
+    /// VOOM-originated.
+    #[must_use]
+    pub fn with_scan_session(mut self, scan_session: crate::transition::ScanSessionId) -> Self {
+        self.scan_session = Some(scan_session);
+        self
     }
 }
 
