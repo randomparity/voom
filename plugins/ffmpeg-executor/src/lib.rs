@@ -158,6 +158,7 @@ impl FfmpegExecutorPlugin {
     }
 
     /// Return a storage handle as a `ScanSessionMutationStorage` trait object, if available.
+    #[must_use]
     fn mutation_storage(&self) -> Option<&dyn ScanSessionMutationStorage> {
         self.store
             .as_deref()

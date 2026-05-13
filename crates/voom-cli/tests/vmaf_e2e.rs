@@ -127,6 +127,7 @@ fn vmaf_guided_transcodes_hit_targets_and_persist_outcomes() {
             let execution = execute_plan_with_outcomes(
                 &vmaf_plan(file.clone(), *target_vmaf),
                 &HwAccelConfig::new(),
+                None,
             )
             .expect("execute VMAF-guided transcode");
             assert!(

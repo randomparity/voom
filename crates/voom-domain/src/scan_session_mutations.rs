@@ -69,6 +69,7 @@ impl VoomOriginatedMutation {
 /// - same path → `Overwrite`
 /// - different path AND different extension → `ContainerConversion`
 /// - different path AND same extension → `Rename`
+#[must_use = "Err means the pending write must be aborted; dropping this result silently re-opens the fail-open hole"]
 pub fn record_mutation_for_pending_write(
     storage: Option<&dyn crate::storage::ScanSessionMutationStorage>,
     scan_session: Option<crate::transition::ScanSessionId>,
