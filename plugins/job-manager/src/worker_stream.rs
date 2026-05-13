@@ -2,8 +2,9 @@
 //! `mpsc::Receiver`, enqueue them into the SQLite-backed `JobQueue`, and
 //! claim/process them concurrently while an `execution_gate` is held open.
 
-use std::sync::Arc;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::{Notify, mpsc};
@@ -83,12 +84,19 @@ impl WorkerPool {
         // consumption pitfall of Notify::notified() in a polling loop.
         let producer_done_flag = Arc::new(AtomicBool::new(false));
 
+        // Track the ids we successfully enqueue in this run. On cancellation
+        // cleanup we intersect this set with the queue's current Pending list
+        // so we only cancel jobs this run produced — never unrelated Pending
+        // rows that may already exist in a long-lived SQLite store.
+        let enqueued_ids: Arc<Mutex<HashSet<Uuid>>> = Arc::new(Mutex::new(HashSet::new()));
+
         let (result_tx, mut result_rx) = mpsc::channel::<JobResult>(effective_workers.max(1) * 4);
 
         // --- Enqueuer task --------------------------------------------------
         let enqueuer_handle = self.spawn_enqueuer(
             items,
             producer_done_flag.clone(),
+            enqueued_ids.clone(),
             reporter.clone(),
             result_tx.clone(),
         );
@@ -128,12 +136,11 @@ impl WorkerPool {
         }
 
         // If we were cancelled, sweep any jobs that were enqueued but never
-        // claimed. We rely on the queue: anything still `Pending` by the time
-        // workers have joined was never claimed and should be cancelled. The
-        // streaming pool owns the queue for the duration of a run, so no
-        // unrelated `Pending` jobs are expected.
+        // claimed. We restrict cancellation to ids we enqueued in this run —
+        // the SQLite store is long-lived and may legitimately hold Pending
+        // rows from prior crashes or other code paths.
         if self.token.is_cancelled() {
-            let leftover = collect_pending_job_ids(&self.queue);
+            let leftover = collect_unstarted_enqueued_ids(&self.queue, &enqueued_ids);
             cancel_unstarted_jobs(self.queue.clone(), leftover).await;
         }
 
@@ -146,11 +153,14 @@ impl WorkerPool {
     }
 
     /// Spawn the single enqueuer task that drains `items` into the job queue
-    /// and flips `producer_done_flag` on completion.
+    /// and flips `producer_done_flag` on completion. Every successful enqueue
+    /// id is recorded in `enqueued_ids` so cancellation cleanup can scope its
+    /// sweep to jobs produced by this run.
     fn spawn_enqueuer<P>(
         &self,
         mut items: mpsc::Receiver<WorkItem<P>>,
         producer_done_flag: Arc<AtomicBool>,
+        enqueued_ids: Arc<Mutex<HashSet<Uuid>>>,
         reporter: Arc<dyn ProgressReporter>,
         result_tx: mpsc::Sender<JobResult>,
     ) -> JoinHandle<()>
@@ -189,7 +199,11 @@ impl WorkerPool {
                     None => None,
                 };
                 match queue.enqueue(item.job_type, item.priority, json_payload) {
-                    Ok(_id) => {
+                    Ok(id) => {
+                        enqueued_ids
+                            .lock()
+                            .expect("enqueued_ids mutex poisoned")
+                            .insert(id);
                         reporter.on_jobs_extended(1);
                     }
                     Err(e) => {
@@ -316,18 +330,35 @@ impl WorkerPool {
     }
 }
 
-/// Return the ids of all jobs still in `Pending` state. Used after streaming
-/// cancellation to cancel anything that was enqueued but never claimed.
-fn collect_pending_job_ids(queue: &Arc<crate::queue::JobQueue>) -> Vec<Uuid> {
+/// Return job ids we enqueued in this `process_stream` run that are still in
+/// `Pending` state. Used after streaming cancellation to cancel anything we
+/// enqueued but no worker ever claimed. Scoping the sweep to ids we produced
+/// avoids over-cancelling unrelated Pending rows that may exist in a
+/// long-lived SQLite store (e.g. left behind by a prior crash).
+fn collect_unstarted_enqueued_ids(
+    queue: &Arc<crate::queue::JobQueue>,
+    enqueued_ids: &Arc<Mutex<HashSet<Uuid>>>,
+) -> Vec<Uuid> {
     let mut filters = voom_domain::storage::JobFilters::default();
     filters.status = Some(voom_domain::job::JobStatus::Pending);
-    match queue.list_jobs(&filters) {
-        Ok(jobs) => jobs.into_iter().map(|j| j.id).collect(),
+    let pending = match queue.list_jobs(&filters) {
+        Ok(jobs) => jobs,
         Err(e) => {
             tracing::warn!(error = %e, "failed to enumerate pending jobs for cancellation");
-            Vec::new()
+            return Vec::new();
         }
-    }
+    };
+    let ours = enqueued_ids.lock().expect("enqueued_ids mutex poisoned");
+    pending
+        .into_iter()
+        .filter_map(|j| {
+            if ours.contains(&j.id) {
+                Some(j.id)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -497,6 +528,9 @@ mod tests {
     #[tokio::test]
     async fn process_stream_fail_fast() {
         let (pool, _queue) = fresh_pool();
+        // Clone the cancellation token before moving the pool into the spawned
+        // task so we can assert post-run that fail-fast actually cancelled.
+        let pool_token = pool.token.clone();
         let (tx, rx) = mpsc::channel::<WorkItem<()>>(8);
         let gate = Arc::new(Notify::new());
 
@@ -534,10 +568,16 @@ mod tests {
         let results = handle.await.unwrap();
 
         assert!(results.iter().any(|r| !r.is_success()));
+        // Fail-fast must actually fire: the pool's cancellation token has to
+        // be set. Without this assertion, the test would still pass even if
+        // fail-fast didn't trigger.
+        assert!(pool_token.is_cancelled(), "fail-fast must cancel the pool");
+        // With max_workers = 2, at most two jobs should complete before the
+        // failing one trips cancellation. Allow a small race tolerance.
         let successes = results.iter().filter(|r| r.is_success()).count();
         assert!(
-            successes < 5,
-            "should not have run all five jobs to completion"
+            successes <= 2 + 1,
+            "fail-fast should have stopped after a couple of jobs, saw {successes}"
         );
     }
 
