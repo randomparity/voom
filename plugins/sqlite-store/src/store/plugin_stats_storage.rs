@@ -64,9 +64,80 @@ impl PluginStatsStorage for SqliteStore {
         Ok(())
     }
 
-    fn rollup_plugin_stats(&self, _filter: &PluginStatsFilter) -> Result<Vec<PluginStatsRollup>> {
-        // Implemented in Task 5.
-        Ok(Vec::new())
+    fn rollup_plugin_stats(&self, filter: &PluginStatsFilter) -> Result<Vec<PluginStatsRollup>> {
+        let conn = self.conn()?;
+        let since = filter.since.as_ref().map(iso);
+        // Pull rows that match the filter; we compute percentiles in Rust.
+        let sql = "SELECT plugin_id, duration_ms, outcome
+                   FROM plugin_stats
+                   WHERE (?1 IS NULL OR plugin_id = ?1)
+                     AND (?2 IS NULL OR started_at >= ?2)
+                   ORDER BY plugin_id ASC, duration_ms ASC";
+
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(storage_err("failed to prepare rollup query"))?;
+        let mut rows = stmt
+            .query(params![filter.plugin, since])
+            .map_err(storage_err("failed to run rollup query"))?;
+
+        #[derive(Default)]
+        struct Bucket {
+            durs: Vec<u64>,
+            ok: u64,
+            skipped: u64,
+            err: u64,
+            panic: u64,
+            total_ms: u64,
+        }
+        use std::collections::BTreeMap;
+        let mut buckets: BTreeMap<String, Bucket> = BTreeMap::new();
+        while let Some(row) = rows
+            .next()
+            .map_err(storage_err("failed to read rollup row"))?
+        {
+            let plugin: String = row.get(0).map_err(storage_err("plugin_id col"))?;
+            let dur: i64 = row.get(1).map_err(storage_err("duration_ms col"))?;
+            let outcome: String = row.get(2).map_err(storage_err("outcome col"))?;
+            let dur_u = u64::try_from(dur).unwrap_or(0);
+            let entry = buckets.entry(plugin).or_default();
+            entry.durs.push(dur_u);
+            entry.total_ms = entry.total_ms.saturating_add(dur_u);
+            match outcome.as_str() {
+                "ok" => entry.ok += 1,
+                "skipped" => entry.skipped += 1,
+                "err" => entry.err += 1,
+                "panic" => entry.panic += 1,
+                _ => {}
+            }
+        }
+
+        use voom_domain::plugin_stats::nearest_rank_percentile;
+
+        let mut out: Vec<PluginStatsRollup> = buckets
+            .into_iter()
+            .map(|(plugin_id, b)| {
+                // b.durs already sorted ASC by SQL ORDER BY
+                PluginStatsRollup {
+                    plugin_id,
+                    invocation_count: b.durs.len() as u64,
+                    ok_count: b.ok,
+                    skipped_count: b.skipped,
+                    err_count: b.err,
+                    panic_count: b.panic,
+                    p50_ms: nearest_rank_percentile(&b.durs, 50),
+                    p95_ms: nearest_rank_percentile(&b.durs, 95),
+                    p99_ms: nearest_rank_percentile(&b.durs, 99),
+                    total_ms: b.total_ms,
+                }
+            })
+            .collect();
+
+        out.sort_by(|a, b| b.p95_ms.cmp(&a.p95_ms));
+        if let Some(top) = filter.top {
+            out.truncate(top);
+        }
+        Ok(out)
     }
 
     fn prune_old_plugin_stats(&self, _policy: RetentionPolicy) -> Result<PruneReport> {
@@ -153,5 +224,118 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM plugin_stats", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 100);
+    }
+
+    #[test]
+    fn rollup_groups_by_plugin_and_computes_percentiles() {
+        let s = store();
+        // 100 rows for "discovery" with durations 1..=100
+        let batch: Vec<_> = (1..=100u64)
+            .map(|d| rec("discovery", d, PluginInvocationOutcome::Ok))
+            .collect();
+        s.insert_plugin_stats_batch(&batch).unwrap();
+        // 10 rows for "ffprobe-introspector" with mixed outcomes
+        let mut batch2 = Vec::new();
+        for _i in 0..8 {
+            batch2.push(rec("ffprobe-introspector", 10, PluginInvocationOutcome::Ok));
+        }
+        batch2.push(rec(
+            "ffprobe-introspector",
+            20,
+            PluginInvocationOutcome::Err {
+                category: "io".into(),
+            },
+        ));
+        batch2.push(rec(
+            "ffprobe-introspector",
+            30,
+            PluginInvocationOutcome::Panic,
+        ));
+        s.insert_plugin_stats_batch(&batch2).unwrap();
+
+        let mut rollup = s
+            .rollup_plugin_stats(&PluginStatsFilter::default())
+            .unwrap();
+        rollup.sort_by(|a, b| a.plugin_id.cmp(&b.plugin_id));
+        assert_eq!(rollup.len(), 2);
+
+        let disc = rollup.iter().find(|r| r.plugin_id == "discovery").unwrap();
+        assert_eq!(disc.invocation_count, 100);
+        assert_eq!(disc.ok_count, 100);
+        // Nearest-rank percentile on durations 1..=100
+        assert_eq!(disc.p50_ms, 50);
+        assert_eq!(disc.p95_ms, 95);
+        assert_eq!(disc.p99_ms, 99);
+
+        let ffp = rollup
+            .iter()
+            .find(|r| r.plugin_id == "ffprobe-introspector")
+            .unwrap();
+        assert_eq!(ffp.invocation_count, 10);
+        assert_eq!(ffp.ok_count, 8);
+        assert_eq!(ffp.err_count, 1);
+        assert_eq!(ffp.panic_count, 1);
+    }
+
+    #[test]
+    fn rollup_filter_by_plugin() {
+        let s = store();
+        s.insert_plugin_stat(&rec("a", 1, PluginInvocationOutcome::Ok))
+            .unwrap();
+        s.insert_plugin_stat(&rec("b", 2, PluginInvocationOutcome::Ok))
+            .unwrap();
+        let filter = PluginStatsFilter {
+            plugin: Some("a".into()),
+            ..Default::default()
+        };
+        let rollup = s.rollup_plugin_stats(&filter).unwrap();
+        assert_eq!(rollup.len(), 1);
+        assert_eq!(rollup[0].plugin_id, "a");
+    }
+
+    #[test]
+    fn rollup_filter_by_since() {
+        let s = store();
+        let old = PluginStatRecord {
+            plugin_id: "a".into(),
+            event_type: "x".into(),
+            started_at: Utc::now() - chrono::Duration::hours(2),
+            duration_ms: 1,
+            outcome: PluginInvocationOutcome::Ok,
+        };
+        let new = PluginStatRecord {
+            plugin_id: "a".into(),
+            event_type: "x".into(),
+            started_at: Utc::now(),
+            duration_ms: 2,
+            outcome: PluginInvocationOutcome::Ok,
+        };
+        s.insert_plugin_stat(&old).unwrap();
+        s.insert_plugin_stat(&new).unwrap();
+        let filter = PluginStatsFilter {
+            since: Some(Utc::now() - chrono::Duration::hours(1)),
+            ..Default::default()
+        };
+        let rollup = s.rollup_plugin_stats(&filter).unwrap();
+        assert_eq!(rollup[0].invocation_count, 1);
+        assert_eq!(rollup[0].p50_ms, 2);
+    }
+
+    #[test]
+    fn rollup_top_n_sorts_by_p95_descending() {
+        let s = store();
+        for i in 0..20 {
+            s.insert_plugin_stat(&rec("fast", 1, PluginInvocationOutcome::Ok))
+                .unwrap();
+            s.insert_plugin_stat(&rec("slow", 100 + i, PluginInvocationOutcome::Ok))
+                .unwrap();
+        }
+        let filter = PluginStatsFilter {
+            top: Some(1),
+            ..Default::default()
+        };
+        let rollup = s.rollup_plugin_stats(&filter).unwrap();
+        assert_eq!(rollup.len(), 1);
+        assert_eq!(rollup[0].plugin_id, "slow");
     }
 }
