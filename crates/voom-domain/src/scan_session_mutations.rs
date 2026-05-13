@@ -25,6 +25,7 @@ pub enum MutationKind {
 }
 
 /// One filesystem mutation performed by VOOM during an active scan session.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoomOriginatedMutation {
     pub session: ScanSessionId,

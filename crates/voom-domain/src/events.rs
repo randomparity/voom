@@ -69,7 +69,7 @@ impl Event {
     // Use these instead of string literals in Plugin::handles() implementations
     // to get compile-time typo protection.
     pub const FILE_DISCOVERED: &str = "file.discovered";
-    pub const ROOT_WALK_COMPLETED: &str = "root.walk_completed";
+    pub const ROOT_WALK_COMPLETED: &str = "root.walk.completed";
     pub const FILE_INTROSPECTED: &str = "file.introspected";
     pub const FILE_INTROSPECTION_FAILED: &str = "file.introspection_failed";
     pub const METADATA_ENRICHED: &str = "metadata.enriched";
@@ -118,7 +118,12 @@ impl Event {
                 format!("path={} size={}", e.path.display(), e.size)
             }
             Event::RootWalkCompleted(e) => {
-                format!("root={} duration_ms={}", e.root.display(), e.duration_ms)
+                format!(
+                    "session={} root={} duration_ms={}",
+                    e.session,
+                    e.root.display(),
+                    e.duration_ms
+                )
             }
             Event::FileIntrospected(e) => {
                 format!(
@@ -418,6 +423,7 @@ impl FileDiscoveredEvent {
 
 /// Payload of [`Event::RootWalkCompleted`]. Emitted exactly once per root
 /// by streaming discovery.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RootWalkCompletedEvent {
     pub root: PathBuf,
