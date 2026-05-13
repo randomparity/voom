@@ -1258,8 +1258,12 @@ fn mark_missing_in_finish_tx(
     // and rename sources count as VOOM-touched. These must NOT be marked
     // missing even if discovery did not observe them (phase-4 scanner
     // exclusion deliberately hides them mid-walk).
-    let voom_paths: std::collections::HashSet<String> = {
-        let mut set = std::collections::HashSet::new();
+    // Read the mutation set via the held tx — calling `is_voom_originated()`
+    // (or any other trait method) would acquire a second pool connection and
+    // block against the IMMEDIATE write lock this tx already holds. The bulk
+    // select inside the tx is cheap and avoids that deadlock entirely.
+    let voom_paths: HashSet<String> = {
+        let mut set = HashSet::new();
         let mut stmt = tx
             .prepare(
                 "SELECT path, original_path FROM scan_session_mutations \
@@ -4176,7 +4180,6 @@ mod tests {
     #[test]
     fn finish_scan_session_skips_voom_originated_paths() {
         use crate::store::scan_session_mutations_storage::ScanSessionMutationStorage;
-        use std::path::PathBuf;
         use voom_domain::scan_session_mutations::{MutationKind, VoomOriginatedMutation};
 
         let store = test_store();
@@ -4205,7 +4208,7 @@ mod tests {
         let finish = store.finish_scan_session(session).unwrap();
         assert_eq!(
             finish.missing, 0,
-            "VOOM-renamed source must not be marked missing"
+            "VOOM rename source (/m/foo.mkv) must not be marked missing"
         );
 
         // The source row should still exist as active (it has not been moved
@@ -4228,7 +4231,6 @@ mod tests {
     #[test]
     fn finish_scan_session_skips_voom_overwritten_paths() {
         use crate::store::scan_session_mutations_storage::ScanSessionMutationStorage;
-        use std::path::PathBuf;
         use voom_domain::scan_session_mutations::{MutationKind, VoomOriginatedMutation};
 
         let store = test_store();
@@ -4254,5 +4256,55 @@ mod tests {
             finish.missing, 0,
             "VOOM-overwritten path must not be marked missing"
         );
+    }
+
+    #[test]
+    fn finish_scan_session_skips_voom_originated_destination_path() {
+        use crate::store::scan_session_mutations_storage::ScanSessionMutationStorage;
+        use voom_domain::scan_session_mutations::{MutationKind, VoomOriginatedMutation};
+
+        let store = test_store();
+        let roots = vec![PathBuf::from("/m")];
+
+        // Seed BOTH paths as pre-existing active files. The destination is
+        // about to be overwritten by VOOM, but it exists in the files table
+        // from a prior scan.
+        store.upsert_file(&active_file("/m/foo.mkv")).unwrap();
+        store.upsert_file(&active_file("/m/foo.mp4")).unwrap();
+
+        let session = store.begin_scan_session(&roots).unwrap();
+
+        // VOOM renames foo.mkv onto foo.mp4 (clobbering). Record it.
+        store
+            .record_voom_mutation(&VoomOriginatedMutation::new(
+                session,
+                PathBuf::from("/m/foo.mp4"),
+                Some(PathBuf::from("/m/foo.mkv")),
+                MutationKind::Rename,
+            ))
+            .unwrap();
+
+        // Scanner saw neither path because both are excluded by Task 6's
+        // scanner-side exclusion. No ingest happens.
+
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(
+            finish.missing, 0,
+            "VOOM rename source (/m/foo.mkv) AND destination (/m/foo.mp4) \
+             must both be skipped from the missing pass"
+        );
+
+        // Both rows remain active.
+        let conn = store.conn().unwrap();
+        for path in ["/m/foo.mkv", "/m/foo.mp4"] {
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM files WHERE path = ?1",
+                    params![path],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "active", "row at {path} must remain active");
+        }
     }
 }
