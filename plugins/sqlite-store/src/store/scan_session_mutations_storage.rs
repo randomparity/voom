@@ -136,6 +136,25 @@ impl voom_domain::storage::ScanSessionMutationStorage for SqliteStore {
     }
 }
 
+impl SqliteStore {
+    /// Load every VOOM-originated path for `session` in a single transaction.
+    ///
+    /// Used by the discovery pipeline to build a [`voom_discovery::SessionMutationSnapshot`]
+    /// before the walker begins. The two-row decomposition means each touched path
+    /// (both source and destination of a rename) already has its own row, so no
+    /// secondary iteration over `original` fields is needed.
+    pub fn load_session_mutation_snapshot(
+        &self,
+        session: voom_domain::transition::ScanSessionId,
+    ) -> voom_domain::errors::Result<voom_discovery::SessionMutationSnapshot> {
+        use voom_domain::storage::ScanSessionMutationStorage as _;
+        let mutations = self.voom_mutations_for_session(session)?;
+        let paths: std::collections::HashSet<std::path::PathBuf> =
+            mutations.into_iter().map(|m| m.path).collect();
+        Ok(voom_discovery::SessionMutationSnapshot::new(paths))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

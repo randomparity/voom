@@ -13,7 +13,7 @@ use voom_domain::errors::{Result, VoomError};
 use voom_domain::events::FileDiscoveredEvent;
 use voom_domain::temp_file::is_voom_temp;
 
-use crate::ScanOptions;
+use crate::{ScanOptions, SessionMutationSnapshot};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DiscoveryWalkError {
@@ -178,9 +178,11 @@ fn hash_file_full(file: &mut fs::File) -> Result<String> {
 ///
 /// Returns collected `(path, size)` pairs, orphaned temp count, and walk errors.
 ///
-/// Reports progress via `on_progress`.
+/// Reports progress via `on_progress`. Paths present in `snapshot` are excluded
+/// from the result; the check is infallible (no I/O during the walk).
 fn walk_media_files(
     options: &ScanOptions,
+    snapshot: Option<&SessionMutationSnapshot>,
 ) -> (Vec<(PathBuf, u64)>, usize, Vec<DiscoveryWalkError>) {
     let walker = if options.recursive {
         WalkDir::new(&options.root).follow_links(false)
@@ -218,6 +220,15 @@ fn walk_media_files(
                 );
                 orphaned_temp_count += 1;
                 continue;
+            }
+            if let Some(snap) = snapshot {
+                if snap.contains(entry.path()) {
+                    tracing::debug!(
+                        path = %entry.path().display(),
+                        "skipping voom-originated mutation path"
+                    );
+                    continue;
+                }
             }
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
             let path = entry.into_path();
@@ -276,7 +287,15 @@ pub fn scan_directory_streaming(options: &ScanOptions, on_event: EventSink) -> R
         )));
     }
 
-    let (media_paths, _orphaned, walk_errors) = walk_media_files(options);
+    // Load the mutation snapshot before the walk. An error here is fail-closed:
+    // the scan aborts rather than risk re-discovering VOOM-originated paths.
+    let snapshot = if let Some(loader) = options.session_mutations.as_ref() {
+        Some(loader()?)
+    } else {
+        None
+    };
+
+    let (media_paths, _orphaned, walk_errors) = walk_media_files(options, snapshot.as_ref());
     report_walk_errors(options, &walk_errors);
 
     tracing::info!(
@@ -563,6 +582,7 @@ mod tests {
             on_progress: None,
             on_error: None,
             fingerprint_lookup: None,
+            session_mutations: None,
         };
         let events = scan_directory(&options).unwrap();
         // Should only find the file under "real/", not under "link/"
