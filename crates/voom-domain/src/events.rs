@@ -13,6 +13,11 @@ use crate::plan::{ActionResult, ExecutionDetail, Plan};
 #[allow(clippy::large_enum_variant)] // Plan embeds MediaFile — boxing would add indirection on every dispatch
 pub enum Event {
     FileDiscovered(FileDiscoveredEvent),
+    /// Emitted by streaming discovery once per root when that root's
+    /// filesystem walk has completed. Carries the session id and elapsed
+    /// walk duration. Consumers (the streaming process pipeline) use this
+    /// to unlock the per-root execution gate.
+    RootWalkCompleted(RootWalkCompletedEvent),
     FileIntrospected(FileIntrospectedEvent),
     FileIntrospectionFailed(FileIntrospectionFailedEvent),
     /// Emitted by WASM metadata plugins. Consumed by the sqlite-store plugin
@@ -64,6 +69,7 @@ impl Event {
     // Use these instead of string literals in Plugin::handles() implementations
     // to get compile-time typo protection.
     pub const FILE_DISCOVERED: &str = "file.discovered";
+    pub const ROOT_WALK_COMPLETED: &str = "root.walk_completed";
     pub const FILE_INTROSPECTED: &str = "file.introspected";
     pub const FILE_INTROSPECTION_FAILED: &str = "file.introspection_failed";
     pub const METADATA_ENRICHED: &str = "metadata.enriched";
@@ -110,6 +116,9 @@ impl Event {
         match self {
             Event::FileDiscovered(e) => {
                 format!("path={} size={}", e.path.display(), e.size)
+            }
+            Event::RootWalkCompleted(e) => {
+                format!("root={} duration_ms={}", e.root.display(), e.duration_ms)
             }
             Event::FileIntrospected(e) => {
                 format!(
@@ -236,6 +245,7 @@ impl Event {
     pub fn event_type(&self) -> &str {
         match self {
             Event::FileDiscovered(_) => Self::FILE_DISCOVERED,
+            Event::RootWalkCompleted(_) => Self::ROOT_WALK_COMPLETED,
             Event::FileIntrospected(_) => Self::FILE_INTROSPECTED,
             Event::FileIntrospectionFailed(_) => Self::FILE_INTROSPECTION_FAILED,
             Event::MetadataEnriched(_) => Self::METADATA_ENRICHED,
@@ -402,6 +412,26 @@ impl FileDiscoveredEvent {
             path,
             size,
             content_hash,
+        }
+    }
+}
+
+/// Payload of [`Event::RootWalkCompleted`]. Emitted exactly once per root
+/// by streaming discovery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RootWalkCompletedEvent {
+    pub root: PathBuf,
+    pub session: crate::transition::ScanSessionId,
+    pub duration_ms: u64,
+}
+
+impl RootWalkCompletedEvent {
+    #[must_use]
+    pub fn new(root: PathBuf, session: crate::transition::ScanSessionId, duration_ms: u64) -> Self {
+        Self {
+            root,
+            session,
+            duration_ms,
         }
     }
 }
