@@ -15,7 +15,10 @@ use super::SqliteStore;
 use crate::store::{other_storage_err, storage_err};
 
 /// Storage trait surface for VOOM-originated mutations.
-pub trait ScanSessionMutationStorage {
+// Used by Task 4 (finish_scan_session) and later by executor/pipeline consumers
+// via a deliberate `pub use` in lib.rs. Suppressed until that wiring lands.
+#[allow(dead_code)]
+pub(crate) trait ScanSessionMutationStorage {
     fn record_voom_mutation(&self, m: &VoomOriginatedMutation) -> Result<()>;
     fn is_voom_originated(&self, session: ScanSessionId, path: &Path) -> Result<bool>;
     fn voom_mutations_for_session(
@@ -27,6 +30,9 @@ pub trait ScanSessionMutationStorage {
 /// Explicit, non-serde string mapping for `MutationKind` storage.
 /// Keep in sync with `MutationKind`'s `#[serde(rename_all = "snake_case")]` —
 /// any future variant must appear in both `kind_as_str` and `kind_from_str`.
+// Called from the ScanSessionMutationStorage impl; suppress until the trait
+// impl is reached through live code (Task 4 wiring).
+#[allow(dead_code)]
 fn kind_as_str(k: MutationKind) -> &'static str {
     match k {
         MutationKind::Overwrite => "overwrite",
@@ -36,6 +42,7 @@ fn kind_as_str(k: MutationKind) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn kind_from_str(s: &str) -> Result<MutationKind> {
     match s {
         "overwrite" => Ok(MutationKind::Overwrite),
@@ -216,5 +223,63 @@ mod tests {
         let s = store();
         let session = ScanSessionId::new();
         assert!(s.voom_mutations_for_session(session).unwrap().is_empty());
+    }
+
+    #[test]
+    fn round_trips_container_conversion_kind() {
+        let s = store();
+        let session = ScanSessionId::new();
+        let m = VoomOriginatedMutation::new(
+            session,
+            "/m/foo.mp4".into(),
+            Some("/m/foo.mkv".into()),
+            MutationKind::ContainerConversion,
+        );
+        s.record_voom_mutation(&m).unwrap();
+        let all = s.voom_mutations_for_session(session).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].kind, MutationKind::ContainerConversion);
+    }
+
+    #[test]
+    fn round_trips_new_output_kind() {
+        let s = store();
+        let session = ScanSessionId::new();
+        let m = VoomOriginatedMutation::new(
+            session,
+            "/m/forced.srt".into(),
+            None,
+            MutationKind::NewOutput,
+        );
+        s.record_voom_mutation(&m).unwrap();
+        let all = s.voom_mutations_for_session(session).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].kind, MutationKind::NewOutput);
+    }
+
+    #[test]
+    fn voom_mutations_for_session_errors_on_unknown_kind_in_row() {
+        let s = store();
+        let session = ScanSessionId::new();
+        // Insert a row directly with a kind value that does not match any
+        // MutationKind variant. This simulates corruption or a future-rolled-back
+        // variant on disk.
+        let conn = s.conn().expect("conn");
+        conn.execute(
+            "INSERT INTO scan_session_mutations \
+             (session_id, path, original_path, kind, recorded_at) \
+             VALUES (?1, ?2, NULL, 'definitely_not_a_real_kind', 0)",
+            rusqlite::params![session.to_string(), "/m/foo.mkv"],
+        )
+        .expect("seed corrupt row");
+
+        let err = s
+            .voom_mutations_for_session(session)
+            .expect_err("unknown kind must surface as error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("definitely_not_a_real_kind") || msg.contains("MutationKind"),
+            "error message should mention the offending value or variant; got: {msg}"
+        );
     }
 }
