@@ -140,14 +140,78 @@ impl PluginStatsStorage for SqliteStore {
         Ok(out)
     }
 
-    fn prune_old_plugin_stats(&self, _policy: RetentionPolicy) -> Result<PruneReport> {
-        // Implemented in Task 6.
-        Ok(PruneReport::default())
+    fn prune_old_plugin_stats(&self, policy: RetentionPolicy) -> Result<PruneReport> {
+        if policy.is_disabled() {
+            let conn = self.conn()?;
+            let kept: u64 = conn
+                .query_row("SELECT COUNT(*) FROM plugin_stats", [], |row| row.get(0))
+                .map_err(storage_err("failed to count plugin_stats"))?;
+            return Ok(PruneReport { deleted: 0, kept });
+        }
+
+        let conn = self.conn()?;
+        let cutoff = policy.cutoff_str();
+        let keep_last = policy.keep_last_i64();
+
+        let deleted = conn
+            .execute(
+                "WITH ranked AS (
+                    SELECT rowid,
+                           ROW_NUMBER() OVER (ORDER BY started_at DESC, rowid DESC) AS rn,
+                           started_at
+                    FROM plugin_stats
+                )
+                DELETE FROM plugin_stats
+                WHERE rowid IN (
+                    SELECT rowid FROM ranked
+                    WHERE (?1 IS NOT NULL AND started_at < ?1)
+                       OR (?2 IS NOT NULL AND rn > ?2)
+                )",
+                params![cutoff, keep_last],
+            )
+            .map_err(storage_err("failed to prune plugin_stats"))? as u64;
+
+        let kept: u64 = conn
+            .query_row("SELECT COUNT(*) FROM plugin_stats", [], |row| row.get(0))
+            .map_err(storage_err("failed to count remaining plugin_stats"))?;
+        Ok(PruneReport { deleted, kept })
     }
 
-    fn count_old_plugin_stats(&self, _policy: RetentionPolicy) -> Result<PruneReport> {
-        // Implemented in Task 6.
-        Ok(PruneReport::default())
+    fn count_old_plugin_stats(&self, policy: RetentionPolicy) -> Result<PruneReport> {
+        if policy.is_disabled() {
+            let conn = self.conn()?;
+            let kept: u64 = conn
+                .query_row("SELECT COUNT(*) FROM plugin_stats", [], |row| row.get(0))
+                .map_err(storage_err("failed to count plugin_stats"))?;
+            return Ok(PruneReport { deleted: 0, kept });
+        }
+
+        let conn = self.conn()?;
+        let cutoff = policy.cutoff_str();
+        let keep_last = policy.keep_last_i64();
+
+        let deleted: u64 = conn
+            .query_row(
+                "WITH ranked AS (
+                    SELECT rowid,
+                           ROW_NUMBER() OVER (ORDER BY started_at DESC, rowid DESC) AS rn,
+                           started_at
+                    FROM plugin_stats
+                )
+                SELECT COUNT(*) FROM ranked
+                WHERE (?1 IS NOT NULL AND started_at < ?1)
+                   OR (?2 IS NOT NULL AND rn > ?2)",
+                params![cutoff, keep_last],
+                |row| row.get(0),
+            )
+            .map_err(storage_err("failed to count old plugin_stats"))?;
+        let total: u64 = conn
+            .query_row("SELECT COUNT(*) FROM plugin_stats", [], |row| row.get(0))
+            .map_err(storage_err("failed to count plugin_stats"))?;
+        Ok(PruneReport {
+            deleted,
+            kept: total.saturating_sub(deleted),
+        })
     }
 }
 
@@ -337,5 +401,90 @@ mod tests {
         let rollup = s.rollup_plugin_stats(&filter).unwrap();
         assert_eq!(rollup.len(), 1);
         assert_eq!(rollup[0].plugin_id, "slow");
+    }
+
+    #[test]
+    fn prune_with_max_age_deletes_old_rows() {
+        let s = store();
+        let old = PluginStatRecord {
+            plugin_id: "a".into(),
+            event_type: "x".into(),
+            started_at: Utc::now() - chrono::Duration::days(60),
+            duration_ms: 1,
+            outcome: PluginInvocationOutcome::Ok,
+        };
+        let recent = PluginStatRecord {
+            plugin_id: "a".into(),
+            event_type: "x".into(),
+            started_at: Utc::now(),
+            duration_ms: 2,
+            outcome: PluginInvocationOutcome::Ok,
+        };
+        s.insert_plugin_stat(&old).unwrap();
+        s.insert_plugin_stat(&recent).unwrap();
+
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(30)),
+            keep_last: None,
+        };
+        let report = s.prune_old_plugin_stats(policy).unwrap();
+        assert_eq!(report.deleted, 1);
+        assert_eq!(report.kept, 1);
+    }
+
+    #[test]
+    fn prune_with_keep_last_deletes_excess_rows() {
+        let s = store();
+        for i in 0..10 {
+            s.insert_plugin_stat(&rec("a", i, PluginInvocationOutcome::Ok))
+                .unwrap();
+        }
+        let policy = RetentionPolicy {
+            max_age: None,
+            keep_last: Some(3),
+        };
+        let report = s.prune_old_plugin_stats(policy).unwrap();
+        assert_eq!(report.deleted, 7);
+        assert_eq!(report.kept, 3);
+    }
+
+    #[test]
+    fn count_old_matches_actual_prune() {
+        let s = store();
+        for _ in 0..5 {
+            let old = PluginStatRecord {
+                plugin_id: "a".into(),
+                event_type: "x".into(),
+                started_at: Utc::now() - chrono::Duration::days(60),
+                duration_ms: 1,
+                outcome: PluginInvocationOutcome::Ok,
+            };
+            s.insert_plugin_stat(&old).unwrap();
+        }
+        for _ in 0..3 {
+            s.insert_plugin_stat(&rec("a", 1, PluginInvocationOutcome::Ok))
+                .unwrap();
+        }
+        let policy = RetentionPolicy {
+            max_age: Some(chrono::Duration::days(30)),
+            keep_last: None,
+        };
+        let count = s.count_old_plugin_stats(policy).unwrap();
+        assert_eq!(count.deleted, 5);
+        assert_eq!(count.kept, 3);
+        let prune = s.prune_old_plugin_stats(policy).unwrap();
+        assert_eq!(prune.deleted, count.deleted);
+        assert_eq!(prune.kept, count.kept);
+    }
+
+    #[test]
+    fn disabled_policy_is_noop() {
+        let s = store();
+        s.insert_plugin_stat(&rec("a", 1, PluginInvocationOutcome::Ok))
+            .unwrap();
+        let policy = RetentionPolicy::default();
+        let report = s.prune_old_plugin_stats(policy).unwrap();
+        assert_eq!(report.deleted, 0);
+        assert_eq!(report.kept, 1);
     }
 }
