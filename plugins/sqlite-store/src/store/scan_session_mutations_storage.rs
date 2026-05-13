@@ -14,7 +14,13 @@ use voom_domain::transition::ScanSessionId;
 use super::SqliteStore;
 use crate::store::{other_storage_err, storage_err};
 
-/// Storage trait surface for VOOM-originated mutations.
+/// Storage trait for recording and querying VOOM-originated filesystem mutations.
+///
+/// Called by executor plugins (`ffmpeg-executor`, `mkvtoolnix-executor`) to mark
+/// each file they write so that `finish_scan_session` and the scanner's
+/// reconciliation pass can distinguish VOOM's own writes from external changes.
+/// All records are scoped to a `ScanSessionId`; queries from other sessions
+/// see no rows.
 pub trait ScanSessionMutationStorage {
     fn record_voom_mutation(&self, m: &VoomOriginatedMutation) -> Result<()>;
     fn is_voom_originated(&self, session: ScanSessionId, path: &Path) -> Result<bool>;
