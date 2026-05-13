@@ -556,9 +556,10 @@ fn migrate_scan_session_mutations(conn: &Connection) -> rusqlite::Result<()> {
         return Ok(());
     }
     // Repair: an earlier rev of this branch shipped an `original_path`
-    // column. Drop and recreate so the runtime model and the schema agree.
-    // No production users exist yet; dev DBs that picked up the obsolete
-    // shape get rebuilt here.
+    // column. Detect that shape by column name and rebuild the table.
+    // The check is presence-only, which is sufficient because no production
+    // users exist yet — dev DBs that picked up the obsolete shape get
+    // rebuilt here, and the obsolete rows are discarded.
     let has_original_path: bool = conn.query_row(
         "SELECT COUNT(*) > 0 FROM pragma_table_info('scan_session_mutations') \
          WHERE name = 'original_path'",
@@ -567,7 +568,8 @@ fn migrate_scan_session_mutations(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     if has_original_path {
         conn.execute_batch(
-            "DROP TABLE scan_session_mutations;
+            "BEGIN;
+            DROP TABLE scan_session_mutations;
             CREATE TABLE scan_session_mutations (
                 session_id  TEXT NOT NULL,
                 path        TEXT NOT NULL,
@@ -576,7 +578,8 @@ fn migrate_scan_session_mutations(conn: &Connection) -> rusqlite::Result<()> {
                 PRIMARY KEY (session_id, path)
             );
             CREATE INDEX IF NOT EXISTS idx_scan_session_mutations_session
-                ON scan_session_mutations(session_id);",
+                ON scan_session_mutations(session_id);
+            COMMIT;",
         )?;
     }
     Ok(())

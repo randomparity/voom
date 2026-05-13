@@ -74,7 +74,7 @@ impl ScanSessionMutationStorage for SqliteStore {
         let kind = kind_as_str(m.kind);
 
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage_err("begin tx for record_voom_mutation"))?;
 
         // One row per touched path. Same-destination re-entry is harmless because
@@ -269,12 +269,15 @@ mod tests {
             MutationKind::ContainerConversion,
         );
         s.record_voom_mutation(&m).unwrap();
-        let all = s.voom_mutations_for_session(session).unwrap();
+        let mut all = s.voom_mutations_for_session(session).unwrap();
         // source + destination each get their own row
         assert_eq!(all.len(), 2);
         for row in &all {
             assert_eq!(row.kind, MutationKind::ContainerConversion);
         }
+        all.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(all[0].path, std::path::PathBuf::from("/m/foo.mkv"));
+        assert_eq!(all[1].path, std::path::PathBuf::from("/m/foo.mp4"));
     }
 
     #[test]
