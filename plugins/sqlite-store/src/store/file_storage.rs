@@ -1254,6 +1254,33 @@ fn mark_missing_in_finish_tx(
     roots: &[PathBuf],
     now: &str,
 ) -> Result<u32> {
+    // Paths VOOM itself mutated during this session — both rename destinations
+    // and rename sources count as VOOM-touched. These must NOT be marked
+    // missing even if discovery did not observe them (phase-4 scanner
+    // exclusion deliberately hides them mid-walk).
+    let voom_paths: std::collections::HashSet<String> = {
+        let mut set = std::collections::HashSet::new();
+        let mut stmt = tx
+            .prepare(
+                "SELECT path, original_path FROM scan_session_mutations \
+                 WHERE session_id = ?1",
+            )
+            .map_err(storage_err("failed to prepare voom-mutations select"))?;
+        let rows = stmt
+            .query_map(params![session_str], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(storage_err("failed to query voom-mutations"))?;
+        for row in rows {
+            let (path, original) = row.map_err(storage_err("failed to read voom-mutation row"))?;
+            set.insert(path);
+            if let Some(orig) = original {
+                set.insert(orig);
+            }
+        }
+        set
+    };
+
     let candidates: Vec<(String, String)> = {
         let mut stmt = tx
             .prepare(
@@ -1274,6 +1301,9 @@ fn mark_missing_in_finish_tx(
     for (id, path) in candidates {
         if !is_under_any(Path::new(&path), roots) {
             continue;
+        }
+        if voom_paths.contains(&path) {
+            continue; // VOOM-originated; do not mark missing
         }
         tx.execute(
             "UPDATE files SET status = 'missing', missing_since = ?1, updated_at = ?1 \
@@ -4140,6 +4170,89 @@ mod tests {
         assert_eq!(
             before, after,
             "heartbeat must NOT bump non-in_progress sessions"
+        );
+    }
+
+    #[test]
+    fn finish_scan_session_skips_voom_originated_paths() {
+        use crate::store::scan_session_mutations_storage::ScanSessionMutationStorage;
+        use std::path::PathBuf;
+        use voom_domain::scan_session_mutations::{MutationKind, VoomOriginatedMutation};
+
+        let store = test_store();
+        let roots = vec![PathBuf::from("/m")];
+
+        // Seed an existing active file. This is the rename SOURCE.
+        let f = active_file("/m/foo.mkv");
+        store.upsert_file(&f).unwrap();
+
+        let session = store.begin_scan_session(&roots).unwrap();
+
+        // VOOM renames /m/foo.mkv -> /m/foo.mp4 during the session. Record it.
+        store
+            .record_voom_mutation(&VoomOriginatedMutation::new(
+                session,
+                PathBuf::from("/m/foo.mp4"),
+                Some(PathBuf::from("/m/foo.mkv")),
+                MutationKind::Rename,
+            ))
+            .unwrap();
+
+        // Scanner did NOT see the new path because phase-4 scanner exclusion
+        // (Task 6, future) skips paths in scan_session_mutations. So no ingest
+        // happens for /m/foo.mp4 — this is the worst case for the missing pass.
+
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(
+            finish.missing, 0,
+            "VOOM-renamed source must not be marked missing"
+        );
+
+        // The source row should still exist as active (it has not been moved
+        // because move detection requires a matching ingested 'new' row,
+        // which we deliberately omitted).
+        let conn = store.conn().unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM files WHERE path = ?1",
+                params!["/m/foo.mkv"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "active",
+            "source row remains active because VOOM owns the rename"
+        );
+    }
+
+    #[test]
+    fn finish_scan_session_skips_voom_overwritten_paths() {
+        use crate::store::scan_session_mutations_storage::ScanSessionMutationStorage;
+        use std::path::PathBuf;
+        use voom_domain::scan_session_mutations::{MutationKind, VoomOriginatedMutation};
+
+        let store = test_store();
+        let roots = vec![PathBuf::from("/m")];
+        let f = active_file("/m/foo.mkv");
+        store.upsert_file(&f).unwrap();
+
+        let session = store.begin_scan_session(&roots).unwrap();
+
+        // VOOM overwrites /m/foo.mkv in place. Record it.
+        store
+            .record_voom_mutation(&VoomOriginatedMutation::new(
+                session,
+                PathBuf::from("/m/foo.mkv"),
+                None,
+                MutationKind::Overwrite,
+            ))
+            .unwrap();
+
+        // Scanner did not see the path (phase-4 scanner exclusion).
+        let finish = store.finish_scan_session(session).unwrap();
+        assert_eq!(
+            finish.missing, 0,
+            "VOOM-overwritten path must not be marked missing"
         );
     }
 }
