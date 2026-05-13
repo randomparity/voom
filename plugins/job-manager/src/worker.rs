@@ -327,6 +327,12 @@ impl WorkerPool {
         &self.config
     }
 
+    /// Read-only view of the pool's underlying job queue.
+    #[must_use]
+    pub fn queue(&self) -> &Arc<crate::queue::JobQueue> {
+        &self.queue
+    }
+
     pub fn cancel(&self) {
         self.token.cancel();
     }

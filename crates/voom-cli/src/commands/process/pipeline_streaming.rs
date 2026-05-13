@@ -538,4 +538,191 @@ mod tests {
         assert_eq!(outcome.enqueued, 1);
         assert_eq!(outcome.skipped_bad, 1);
     }
+
+    #[tokio::test]
+    async fn streaming_enqueues_during_discovery() {
+        let tmp = TempDir::new().unwrap();
+        for i in 0..20 {
+            write_fixture(tmp.path(), &format!("f{i:02}.mkv"), b"x");
+        }
+
+        let token = CancellationToken::new();
+        let (pool, store, kernel) = make_pool(token.clone());
+        let args = make_test_args(vec![tmp.path().to_path_buf()]);
+
+        let invocations = Arc::new(AtomicU64::new(0));
+        let invocations_clone = invocations.clone();
+
+        let outcome = run_streaming_pipeline(
+            &args,
+            &args.paths,
+            kernel,
+            store,
+            pool,
+            Arc::new(NoopReporter),
+            JobErrorStrategy::Continue,
+            HashSet::new(),
+            move |_job| {
+                let c = invocations_clone.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    Ok(None)
+                }
+            },
+            true,
+            true,
+            token,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.discovered, 20);
+        assert_eq!(outcome.enqueued, 20);
+        assert!(invocations.load(Ordering::SeqCst) >= 20);
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_discovery_leaves_no_pending_jobs() {
+        let tmp = TempDir::new().unwrap();
+        for i in 0..50 {
+            write_fixture(tmp.path(), &format!("f{i:02}.mkv"), b"x");
+        }
+        let token = CancellationToken::new();
+        let (pool, store, kernel) = make_pool(token.clone());
+        let args = make_test_args(vec![tmp.path().to_path_buf()]);
+
+        let token_for_cancel = token.clone();
+        let processor = move |_job: voom_domain::job::Job| {
+            let token_for_cancel = token_for_cancel.clone();
+            async move {
+                token_for_cancel.cancel();
+                Err::<Option<serde_json::Value>, String>("cancelled mid-run".into())
+            }
+        };
+
+        let pool_clone = pool.clone();
+        let _outcome = run_streaming_pipeline(
+            &args,
+            &args.paths,
+            kernel,
+            store,
+            pool,
+            Arc::new(NoopReporter),
+            JobErrorStrategy::Continue,
+            HashSet::new(),
+            processor,
+            true,
+            true,
+            token,
+        )
+        .await
+        .unwrap();
+
+        let mut filters = voom_domain::storage::JobFilters::default();
+        filters.status = Some(voom_domain::job::JobStatus::Pending);
+        let pending = pool_clone.queue().list_jobs(&filters).unwrap();
+        assert!(
+            pending.is_empty(),
+            "no jobs should remain in Pending after cancel, got {}",
+            pending.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_fast_with_pending_streamed_jobs() {
+        let tmp = TempDir::new().unwrap();
+        for i in 0..10 {
+            write_fixture(tmp.path(), &format!("f{i:02}.mkv"), b"x");
+        }
+        let token = CancellationToken::new();
+        let (pool, store, kernel) = make_pool(token.clone());
+        let args = make_test_args(vec![tmp.path().to_path_buf()]);
+
+        let invocations = Arc::new(AtomicU64::new(0));
+        let invocations_clone = invocations.clone();
+        let processor = move |_job: voom_domain::job::Job| {
+            let c = invocations_clone.clone();
+            async move {
+                let n = c.fetch_add(1, Ordering::SeqCst);
+                if n == 2 {
+                    Err::<Option<serde_json::Value>, String>("boom".into())
+                } else {
+                    Ok(None)
+                }
+            }
+        };
+
+        let outcome = run_streaming_pipeline(
+            &args,
+            &args.paths,
+            kernel,
+            store,
+            pool,
+            Arc::new(NoopReporter),
+            JobErrorStrategy::Fail,
+            HashSet::new(),
+            processor,
+            true,
+            true,
+            token,
+        )
+        .await
+        .unwrap();
+
+        let failures = outcome
+            .job_results
+            .iter()
+            .filter(|r| !r.is_success())
+            .count();
+        let successes = outcome
+            .job_results
+            .iter()
+            .filter(|r| r.is_success())
+            .count();
+        assert!(failures >= 1, "expected at least one failure, got 0");
+        assert!(
+            successes <= 4,
+            "fail-fast should stop short of all 10 files, got {successes} successes"
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_buffering_under_large_input() {
+        let tmp = TempDir::new().unwrap();
+        for i in 0..200 {
+            write_fixture(tmp.path(), &format!("f{i:03}.mkv"), b"x");
+        }
+        let token = CancellationToken::new();
+        let (pool, store, kernel) = make_pool(token.clone());
+        let args = make_test_args(vec![tmp.path().to_path_buf()]);
+
+        let outcome = run_streaming_pipeline(
+            &args,
+            &args.paths,
+            kernel,
+            store,
+            pool,
+            Arc::new(NoopReporter),
+            JobErrorStrategy::Continue,
+            HashSet::new(),
+            |_job| async {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                Ok(None)
+            },
+            true,
+            true,
+            token,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.enqueued, 200);
+        let successes = outcome
+            .job_results
+            .iter()
+            .filter(|r| r.is_success())
+            .count();
+        assert_eq!(successes, 200, "expected all 200 jobs to succeed");
+    }
 }
