@@ -1,6 +1,7 @@
 mod audio_language;
 mod dispatch;
 mod pipeline;
+mod pipeline_streaming;
 mod plan_outcome;
 mod safeguards;
 mod transitions;
@@ -15,7 +16,6 @@ use parking_lot::Mutex;
 
 use tokio_util::sync::CancellationToken;
 
-use dispatch::dispatch_and_log;
 use pipeline::process_single_file;
 
 use crate::app;
@@ -23,8 +23,7 @@ use crate::cli::{ErrorHandling, ProcessArgs};
 use crate::config;
 use crate::paths::resolve_paths;
 use crate::policy_map::PolicyResolver;
-use crate::progress::{BatchProgress, DiscoveryProgress};
-use voom_domain::bad_file::BadFileSource;
+use crate::progress::BatchProgress;
 use voom_domain::events::{
     Event, IntrospectSessionCompletedEvent, JobCompletedEvent, JobProgressEvent, JobStartedEvent,
 };
@@ -179,6 +178,19 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
             Err(e) => tracing::warn!(error = %e, "crash recovery check failed"),
         }
 
+        // Pre-load the bad-file set so the streaming ingest stage can filter
+        // inline without per-file DB lookups.
+        let bad_files: std::collections::HashSet<std::path::PathBuf> = if args.force_rescan {
+            std::collections::HashSet::new()
+        } else {
+            store
+                .list_bad_files(&voom_domain::storage::BadFileFilters::default())
+                .context("failed to list bad files")?
+                .into_iter()
+                .map(|bf| bf.path)
+                .collect()
+        };
+
         if token.is_cancelled() {
             if !plan_only && !quiet {
                 eprintln!("{}", style("Interrupted before discovery.").yellow());
@@ -186,52 +198,20 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
             return Ok(());
         }
 
-        let mut events = discover_files(&paths, &args, &kernel, quiet, store.clone())?;
-        if events.is_empty() {
-            if plan_only {
-                println!("[]");
-            } else if !quiet {
-                eprintln!("{}", style("No media files found.").yellow());
-            }
-            return Ok(());
-        }
-
-        // Filter out known-bad files unless --force-rescan is set
-        if !args.force_rescan {
-            filter_bad_files(&mut events, &store, plan_only, quiet)?;
-        }
-
-        if events.is_empty() {
-            if plan_only {
-                println!("[]");
-            } else if !quiet {
-                eprintln!("{}", style("No processable files found.").yellow());
-            }
-            return Ok(());
-        }
-
-        let file_count = events.len();
-        if !plan_only && !quiet {
-            eprintln!("Found {} media files.", style(file_count).bold());
-        }
-
         let on_error = match args.on_error {
             ErrorHandling::Fail => JobErrorStrategy::Fail,
             ErrorHandling::Continue => JobErrorStrategy::Continue,
         };
 
-        if token.is_cancelled() {
-            if !quiet {
-                eprintln!("{}", style("Interrupted before processing.").yellow());
-            }
-            return Ok(());
-        }
-
         let (pool, effective_workers) = create_worker_pool(job_queue, &args, token.clone());
+        let pool = Arc::new(pool);
 
-        let reporter = build_reporter(&events, effective_workers, plan_only, quiet, kernel.clone());
+        // Build reporter with an empty event list; the pipeline calls
+        // reporter.seed_events(&events) before on_batch_start once discovery
+        // finishes.
+        let reporter: Arc<dyn ProgressReporter> =
+            build_reporter(&[], effective_workers, plan_only, quiet, kernel.clone());
 
-        let items = build_work_items(&events, args.priority_by_date);
         let all_phase_names = resolver.all_phase_names();
         let resolver = Arc::new(resolver);
         let flag_size_increase = args.flag_size_increase;
@@ -247,64 +227,106 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         let ffprobe_path: Option<String> = config.ffprobe_path().map(String::from);
         let ffprobe_path = Arc::new(ffprobe_path);
         let animation_detection_mode = config.animation_detection_mode();
-        let counters_for_summary = counters.clone();
-        let kernel_for_completion = kernel.clone();
-        let store_for_summary = store.clone();
-        let _results = pool
-            .process_batch(
-                items,
-                move |job| {
-                    let resolver = resolver.clone();
-                    let kernel = kernel.clone();
-                    let store = store.clone();
-                    let token = token_for_workers.clone();
-                    let ffprobe_path = ffprobe_path.clone();
-                    let capabilities = capabilities.clone();
-                    let plan_limiter = plan_limiter.clone();
-                    let estimate_model = estimate_model.clone();
-                    let counters = counters.clone();
-                    async move {
-                        let ctx = ProcessContext {
-                            resolver: &resolver,
-                            kernel,
-                            store,
-                            dry_run,
-                            plan_only,
-                            estimate_mode,
-                            flag_size_increase,
-                            flag_duration_shrink,
-                            force_rescan,
-                            token: &token,
-                            ffprobe_path: ffprobe_path.as_deref(),
-                            animation_detection_mode,
-                            capabilities: &capabilities,
-                            plan_limiter,
-                            confirm_savings,
-                            estimate_model,
-                            counters: &counters,
-                        };
-                        process_single_file(job, &ctx).await
-                    }
-                },
-                on_error,
-                reporter.clone(),
-            )
-            .await;
+        let kernel_for_workers = kernel.clone();
+        let store_for_workers = store.clone();
+        let capabilities_for_workers = capabilities.clone();
+        let plan_limiter_for_workers = plan_limiter.clone();
+        let counters_for_workers = counters.clone();
+
+        let processor = move |job: voom_domain::job::Job| {
+            let resolver = resolver.clone();
+            let kernel = kernel_for_workers.clone();
+            let store = store_for_workers.clone();
+            let token = token_for_workers.clone();
+            let ffprobe_path = ffprobe_path.clone();
+            let capabilities = capabilities_for_workers.clone();
+            let plan_limiter = plan_limiter_for_workers.clone();
+            let estimate_model = estimate_model.clone();
+            let counters = counters_for_workers.clone();
+            async move {
+                let ctx = ProcessContext {
+                    resolver: &resolver,
+                    kernel,
+                    store,
+                    dry_run,
+                    plan_only,
+                    estimate_mode,
+                    flag_size_increase,
+                    flag_duration_shrink,
+                    force_rescan,
+                    token: &token,
+                    ffprobe_path: ffprobe_path.as_deref(),
+                    animation_detection_mode,
+                    capabilities: &capabilities,
+                    plan_limiter,
+                    confirm_savings,
+                    estimate_model,
+                    counters: &counters,
+                };
+                process_single_file(job, &ctx).await
+            }
+        };
+
+        let outcome = pipeline_streaming::run_streaming_pipeline(
+            &args,
+            &paths,
+            kernel.clone(),
+            store.clone(),
+            pool.clone(),
+            reporter.clone(),
+            on_error,
+            bad_files,
+            processor,
+            quiet,
+            plan_only,
+            token.clone(),
+        )
+        .await?;
+
+        if outcome.discovery_errors > 0 {
+            tracing::warn!(
+                count = outcome.discovery_errors,
+                "discovery reported errors during streaming pipeline"
+            );
+        }
+
+        if outcome.discovered == 0 {
+            if token.is_cancelled() {
+                if !plan_only && !quiet {
+                    eprintln!("{}", style("Interrupted before processing.").yellow());
+                }
+            } else if plan_only {
+                println!("[]");
+            } else if !quiet {
+                eprintln!("{}", style("No media files found.").yellow());
+            }
+            return Ok(());
+        }
+
+        if outcome.skipped_bad > 0 && !plan_only && !quiet {
+            eprintln!(
+                "Skipping {} known-bad files (use {} to re-attempt).",
+                style(outcome.skipped_bad).yellow(),
+                style("--force-rescan").bold()
+            );
+        }
+
+        let file_count = outcome.enqueued as usize;
 
         if !token.is_cancelled() {
-            kernel_for_completion.dispatch(Event::IntrospectSessionCompleted(
+            kernel.dispatch(Event::IntrospectSessionCompleted(
                 IntrospectSessionCompletedEvent::new(pool.completed_count()),
             ));
         }
 
         print_run_results(&RunResultsContext {
-            counters: &counters_for_summary,
-            store: store_for_summary.as_ref(),
+            counters: &counters,
+            store: store.as_ref(),
             plan_only,
             estimate_mode,
             quiet,
             cancelled: token.is_cancelled(),
-            pool: &pool,
+            pool: pool.as_ref(),
             file_count,
             effective_workers,
             dry_run,
@@ -321,33 +343,6 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     );
 
     primary_result
-}
-
-/// Remove known-bad files from the event list, logging how many were skipped.
-fn filter_bad_files(
-    events: &mut Vec<voom_domain::events::FileDiscoveredEvent>,
-    store: &Arc<dyn voom_domain::storage::StorageTrait>,
-    plan_only: bool,
-    quiet: bool,
-) -> Result<()> {
-    let bad_files = store
-        .list_bad_files(&voom_domain::storage::BadFileFilters::default())
-        .context("failed to list bad files")?;
-    if bad_files.is_empty() {
-        return Ok(());
-    }
-    let bad_paths: std::collections::HashSet<_> = bad_files.iter().map(|bf| &bf.path).collect();
-    let before = events.len();
-    events.retain(|e| !bad_paths.contains(&e.path));
-    let skipped = before - events.len();
-    if skipped > 0 && !plan_only && !quiet {
-        eprintln!(
-            "Skipping {} known-bad files (use {} to re-attempt).",
-            style(skipped).yellow(),
-            style("--force-rescan").bold()
-        );
-    }
-    Ok(())
 }
 
 /// Build the progress reporter stack for the processing batch.
@@ -599,117 +594,6 @@ fn print_run_header(policy_name: &str, path_display: &str, dry_run: bool, sessio
     );
 }
 
-/// Walk the filesystem and discover media files, dispatching events through the kernel.
-///
-/// Creates a standalone `DiscoveryPlugin` for direct API access (scan options,
-/// progress callbacks) that the event-bus path does not support. `FileDiscovered`
-/// events are dispatched to the kernel so that subscribers react:
-/// - sqlite-store records each file in `discovered_files`
-/// - ffprobe-introspector enqueues `JobType::Introspect` jobs
-///
-/// Introspection is still driven directly by `process_single_file` for
-/// deterministic progress reporting.
-fn discover_files(
-    paths: &[std::path::PathBuf],
-    args: &ProcessArgs,
-    kernel: &voom_kernel::Kernel,
-    quiet: bool,
-    store: Arc<dyn voom_domain::storage::StorageTrait>,
-) -> Result<Vec<voom_domain::events::FileDiscoveredEvent>> {
-    let discovery = voom_discovery::DiscoveryPlugin::new();
-    let hash_files = !args.no_backup;
-
-    let progress = if quiet {
-        DiscoveryProgress::hidden()
-    } else {
-        DiscoveryProgress::new()
-    };
-
-    let discovery_errors: Arc<Mutex<Vec<(std::path::PathBuf, u64, String)>>> =
-        Arc::new(Mutex::new(Vec::new()));
-
-    let mut all_events: Vec<voom_domain::events::FileDiscoveredEvent> = Vec::new();
-
-    // Cumulative counters so the progress bar shows totals across all
-    // directories instead of resetting per directory.
-    let cumulative_discovered = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let processing_base = Arc::new(std::sync::atomic::AtomicU64::new(0));
-
-    for path in paths {
-        // Reset bar to spinner so stale position/length from the previous
-        // directory's processing phase doesn't bleed into this discovery.
-        progress.reset_to_spinner();
-
-        let mut options = voom_discovery::ScanOptions::new(path.clone());
-        options.hash_files = hash_files;
-        options.workers = args.workers;
-        options.fingerprint_lookup = Some(crate::introspect::fingerprint_lookup(store.clone()));
-
-        let progress_clone = progress.clone();
-        let cum_disc = cumulative_discovered.clone();
-        let proc_base = processing_base.clone();
-        let pre_scan_discovered = cumulative_discovered.load(std::sync::atomic::Ordering::Relaxed);
-
-        options.on_progress = Some(Box::new(move |p| match p {
-            voom_discovery::ScanProgress::Discovered { count: _, path } => {
-                let cumulative = cum_disc.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                let cumulative = usize::try_from(cumulative).unwrap_or(usize::MAX);
-                progress_clone.on_discovered(cumulative, &path);
-            }
-            voom_discovery::ScanProgress::Processing {
-                current,
-                total,
-                path,
-            } => {
-                let base = proc_base.load(std::sync::atomic::Ordering::Relaxed);
-                let base = usize::try_from(base).unwrap_or(usize::MAX);
-                let action = if hash_files { "Hashing" } else { "Scanning" };
-                progress_clone.on_processing(base + current, base + total, &path, action);
-            }
-            voom_discovery::ScanProgress::OrphanedTempFiles { .. } => {}
-            voom_discovery::ScanProgress::HashReused { .. } => {}
-        }));
-
-        let errors_clone = discovery_errors.clone();
-        options.on_error = Some(Box::new(move |path, size, error| {
-            tracing::warn!(path = %path.display(), error = %error, "discovery error");
-            errors_clone.lock().push((path, size, error));
-        }));
-
-        let events = discovery.scan(&options).context("filesystem scan failed")?;
-
-        let dir_discovered =
-            cumulative_discovered.load(std::sync::atomic::Ordering::Relaxed) - pre_scan_discovered;
-        processing_base.fetch_add(dir_discovered, std::sync::atomic::Ordering::Relaxed);
-
-        all_events.extend(events);
-    }
-
-    progress.finish();
-
-    let mut seen = std::collections::HashSet::new();
-    all_events.retain(|e| seen.insert(e.path.clone()));
-
-    for event in &all_events {
-        dispatch_and_log(kernel, Event::FileDiscovered(event.clone()));
-    }
-
-    for (path, size, error) in discovery_errors.lock().drain(..) {
-        crate::introspect::dispatch_failure(
-            kernel,
-            path,
-            size,
-            None,
-            &error,
-            BadFileSource::Discovery,
-        );
-    }
-
-    Ok(all_events)
-}
-
-use crate::introspect::DiscoveredFilePayload;
-
 /// Compute job priority based on file modification date.
 ///
 /// More recently modified files get higher priority (lower number).
@@ -717,7 +601,7 @@ use crate::introspect::DiscoveredFilePayload;
 /// - Modified within 30 days: 50
 /// - Modified within 1 year: 100
 /// - Older or metadata unavailable: 200
-fn compute_file_date_priority(path: &std::path::Path) -> i32 {
+pub(super) fn compute_file_date_priority(path: &std::path::Path) -> i32 {
     const SECS_PER_DAY: u64 = 86_400;
     let Ok(metadata) = std::fs::metadata(path) else {
         return 200;
@@ -738,32 +622,6 @@ fn compute_file_date_priority(path: &std::path::Path) -> i32 {
     } else {
         200
     }
-}
-
-/// Build work items from discovery events for the worker pool.
-fn build_work_items(
-    events: &[voom_domain::events::FileDiscoveredEvent],
-    priority_by_date: bool,
-) -> Vec<voom_job_manager::worker::WorkItem<DiscoveredFilePayload>> {
-    events
-        .iter()
-        .map(|evt| {
-            let priority = if priority_by_date {
-                compute_file_date_priority(&evt.path)
-            } else {
-                100
-            };
-            voom_job_manager::worker::WorkItem::new(
-                voom_domain::job::JobType::Process,
-                priority,
-                Some(DiscoveredFilePayload {
-                    path: evt.path.to_string_lossy().into_owned(),
-                    size: evt.size,
-                    content_hash: evt.content_hash.clone(),
-                }),
-            )
-        })
-        .collect()
 }
 
 /// Set up the worker pool using the provided job queue.
@@ -1022,6 +880,7 @@ mod tests {
     use voom_domain::media::MediaFile;
     use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings};
 
+    use super::dispatch::dispatch_and_log;
     use super::pipeline::execute_single_plan;
     use super::plan_outcome::PlanOutcome;
     use super::safeguards::{check_disk_space, check_duration_shrink, check_size_increase};

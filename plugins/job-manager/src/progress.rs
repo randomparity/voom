@@ -25,6 +25,15 @@ pub trait ProgressReporter: Send + Sync {
 
     /// Called when all jobs in a batch are done.
     fn on_batch_complete(&self, completed: u64, failed: u64);
+
+    /// Called when more jobs become known to the pool. Used by the streaming
+    /// pool to grow the total before `on_batch_start` is issued. Default no-op.
+    fn on_jobs_extended(&self, _additional: usize) {}
+
+    /// Called once, before `on_batch_start`, when the full list of files the
+    /// reporter will see is finally known. Used by `BatchProgress` to build
+    /// size-based ETA state. Default no-op.
+    fn seed_events(&self, _events: &[voom_domain::events::FileDiscoveredEvent]) {}
 }
 
 /// Combines multiple reporters, delegating each callback to all of them.
@@ -67,6 +76,18 @@ impl ProgressReporter for CompositeReporter {
     fn on_batch_complete(&self, completed: u64, failed: u64) {
         for r in &self.reporters {
             r.on_batch_complete(completed, failed);
+        }
+    }
+
+    fn on_jobs_extended(&self, additional: usize) {
+        for r in &self.reporters {
+            r.on_jobs_extended(additional);
+        }
+    }
+
+    fn seed_events(&self, events: &[voom_domain::events::FileDiscoveredEvent]) {
+        for r in &self.reporters {
+            r.seed_events(events);
         }
     }
 }
@@ -271,5 +292,63 @@ mod tests {
             assert_eq!(r.job_completes.load(Ordering::SeqCst), 1);
             assert_eq!(r.batch_completes.load(Ordering::SeqCst), 1);
         }
+    }
+}
+
+#[cfg(test)]
+mod progress_reporter_streaming_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct CountingReporter {
+        extended: AtomicU64,
+        seeded: AtomicU64,
+    }
+
+    impl CountingReporter {
+        fn new() -> Self {
+            Self {
+                extended: AtomicU64::new(0),
+                seeded: AtomicU64::new(0),
+            }
+        }
+    }
+
+    impl ProgressReporter for CountingReporter {
+        fn on_batch_start(&self, _total: usize) {}
+        fn on_job_start(&self, _job: &Job) {}
+        fn on_job_progress(&self, _id: Uuid, _progress: f64, _msg: Option<&str>) {}
+        fn on_job_complete(&self, _id: Uuid, _success: bool, _error: Option<&str>) {}
+        fn on_batch_complete(&self, _completed: u64, _failed: u64) {}
+
+        fn on_jobs_extended(&self, additional: usize) {
+            self.extended.fetch_add(additional as u64, Ordering::SeqCst);
+        }
+
+        fn seed_events(&self, events: &[voom_domain::events::FileDiscoveredEvent]) {
+            self.seeded.fetch_add(events.len() as u64, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn noop_reporter_accepts_new_streaming_methods() {
+        let r = NoopReporter;
+        r.on_jobs_extended(5);
+        r.seed_events(&[]);
+    }
+
+    #[test]
+    fn composite_forwards_streaming_methods_to_children() {
+        let a = Arc::new(CountingReporter::new());
+        let b = Arc::new(CountingReporter::new());
+        let composite = CompositeReporter::new(vec![
+            a.clone() as Arc<dyn ProgressReporter>,
+            b.clone() as Arc<dyn ProgressReporter>,
+        ]);
+        composite.on_jobs_extended(3);
+        composite.seed_events(&[]);
+        assert_eq!(a.extended.load(Ordering::SeqCst), 3);
+        assert_eq!(b.extended.load(Ordering::SeqCst), 3);
     }
 }

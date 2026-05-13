@@ -47,8 +47,12 @@ impl FileStorage for SqliteStore {
 
         let effective_id = existing_id.clone().unwrap_or_else(|| file.id.to_string());
 
+        // BEGIN IMMEDIATE so the writer lock is acquired up front, before any
+        // other writer can slip in between BEGIN and the first write. Without
+        // this, deferred transactions can fail with SQLITE_BUSY mid-transaction
+        // under heavy parallel load (multiple probe workers + ingest + heartbeat).
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage_err("failed to begin transaction"))?;
 
         // Delete old tracks before upserting
@@ -390,7 +394,7 @@ impl FileStorage for SqliteStore {
         let id_str = transition.file_id.to_string();
         let mut conn = self.conn()?;
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage_err("failed to begin post-execution transaction"))?;
 
         if let Some(new_path) = new_path {
@@ -515,7 +519,7 @@ impl FileStorage for SqliteStore {
         let id = voom_domain::transition::ScanSessionId::new();
 
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage_err("failed to begin scan_session transaction"))?;
 
         // Inspect existing in_progress sessions. Auto-cancel only those whose
@@ -600,11 +604,16 @@ impl FileStorage for SqliteStore {
         let filename = filename_string(&file.path);
 
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage_err("failed to begin ingest transaction"))?;
 
         validate_session_in_progress_in_tx(&tx, &session_str)?;
-        bump_session_heartbeat_in_tx(&tx, &session_str, &now)?;
+        // Heartbeat is bumped out-of-band by the periodic heartbeat task spawned
+        // inside `with_scan_session` (see scan/pipeline.rs:716). Keeping an
+        // additional UPDATE inside every ingest transaction multiplied SQLite
+        // write contention under heavy load (many probe writers + many ingest
+        // transactions + the periodic heartbeat) and tripped `busy_timeout` on
+        // corpus tests that include slow-to-probe corrupt files.
 
         let ctx = IngestCtx {
             now: &now,
@@ -690,7 +699,7 @@ impl FileStorage for SqliteStore {
         let session_str = session.to_string();
 
         let tx = conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage_err("failed to begin finish_scan_session tx"))?;
 
         let row: Option<(String, String, String)> = tx
@@ -824,21 +833,6 @@ fn validate_session_in_progress_in_tx(
             message: format!("unknown scan session {session_str}"),
         }),
     }
-}
-
-/// Bump the `last_heartbeat_at` of the given scan session inside the caller's
-/// transaction.
-fn bump_session_heartbeat_in_tx(
-    tx: &rusqlite::Transaction<'_>,
-    session_str: &str,
-    now: &str,
-) -> Result<()> {
-    tx.execute(
-        "UPDATE scan_sessions SET last_heartbeat_at = ?1 WHERE id = ?2",
-        params![now, session_str],
-    )
-    .map_err(storage_err("failed to bump scan session heartbeat"))?;
-    Ok(())
 }
 
 /// Existing-file lookup result: `(id, expected_hash, size, last_seen_session_id)`.
@@ -3500,7 +3494,13 @@ mod tests {
     }
 
     #[test]
-    fn ingest_bumps_heartbeat() {
+    fn ingest_does_not_bump_heartbeat_inline() {
+        // Contract: `ingest_discovered_file` does NOT keep the session
+        // heartbeat fresh on its own. Callers (the streaming CLI pipeline,
+        // see `scan/pipeline.rs::spawn_heartbeat_task`) are responsible for
+        // calling `heartbeat_scan_session` periodically. This separation
+        // avoids an extra write inside every per-file ingest transaction,
+        // which was a hot path for SQLite writer contention under load.
         use std::path::PathBuf;
         use voom_domain::transition::DiscoveredFile;
 
@@ -3522,7 +3522,7 @@ mod tests {
         let df = DiscoveredFile::new(PathBuf::from("/m/a.mkv"), 100, "h-a".to_string());
         store.ingest_discovered_file(session, &df).unwrap();
 
-        let after: String = store
+        let after_ingest: String = store
             .conn()
             .unwrap()
             .query_row(
@@ -3532,9 +3532,26 @@ mod tests {
             )
             .unwrap();
 
+        assert_eq!(
+            after_ingest, before,
+            "ingest must NOT bump heartbeat inline; before={before} after={after_ingest}"
+        );
+
+        // A subsequent explicit heartbeat call DOES advance it — that's the
+        // mechanism the streaming pipeline uses.
+        store.heartbeat_scan_session(session).unwrap();
+        let after_explicit: String = store
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT last_heartbeat_at FROM scan_sessions WHERE id = ?1",
+                params![session.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert!(
-            after > before,
-            "heartbeat must advance after ingest; before={before} after={after}"
+            after_explicit > before,
+            "heartbeat_scan_session must advance the heartbeat; before={before} after={after_explicit}"
         );
     }
 

@@ -1019,10 +1019,15 @@ fn migrate_from_path_column(
 
 /// Configure `SQLite` connection for optimal performance.
 pub fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
+    // busy_timeout = 15000ms gives slow ffprobe-followed-by-write transactions
+    // enough headroom under heavy parallel load (e.g. corrupt-corpus tests with
+    // many probe workers + a streaming ingest task + the periodic heartbeat).
+    // 5s was too tight; 15s comfortably covers worst-case writer queueing
+    // without masking real deadlocks.
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA foreign_keys = ON;
-         PRAGMA busy_timeout = 5000;
+         PRAGMA busy_timeout = 15000;
          PRAGMA synchronous = NORMAL;
          PRAGMA cache_size = -8000;",
     )

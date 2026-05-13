@@ -88,18 +88,6 @@ pub struct DiscoveryProgress {
 }
 
 impl DiscoveryProgress {
-    /// Create a new discovery-phase progress indicator.
-    pub fn new() -> Self {
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(spinner_style());
-        pb.enable_steady_tick(TICK_INTERVAL);
-        Self {
-            pb,
-            start: Instant::now(),
-            transitioned: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
     /// Create a hidden (no-op) progress indicator for quiet/scripted mode.
     pub fn hidden() -> Self {
         Self {
@@ -278,8 +266,10 @@ impl BatchProgress {
 
     /// Create a hidden (no-op) progress bar for quiet/scripted mode.
     pub fn hidden(files: &[FileDiscoveredEvent], workers: usize) -> Self {
+        let overall = ProgressBar::hidden();
+        overall.set_length(files.len() as u64);
         Self {
-            overall: ProgressBar::hidden(),
+            overall,
             state: Mutex::new(BatchEtaState::new(files, workers)),
         }
     }
@@ -336,6 +326,24 @@ impl ProgressReporter for BatchProgress {
 
     fn on_batch_complete(&self, _completed: u64, _failed: u64) {
         self.overall.finish_and_clear();
+    }
+
+    fn on_jobs_extended(&self, additional: usize) {
+        let new_len = self.overall.length().unwrap_or(0) + additional as u64;
+        self.overall.set_length(new_len);
+    }
+
+    fn seed_events(&self, events: &[voom_domain::events::FileDiscoveredEvent]) {
+        // Streaming mode: the pipeline calls this once, right before
+        // `on_batch_start`, with the full list of files that will be processed.
+        // Replace the internal ETA state with one seeded from those events so
+        // size-based ETA estimates work normally during the determinate phase.
+        let workers = {
+            let state = self.state.lock();
+            state.effective_workers
+        };
+        let new_state = BatchEtaState::new(events, workers);
+        *self.state.lock() = new_state;
     }
 }
 
@@ -824,5 +832,42 @@ mod tests {
 
         let estimate = state.estimate();
         assert!(estimate.eta.unwrap_or_default() < Duration::from_secs(15));
+    }
+
+    #[test]
+    fn batch_progress_seed_events_rebuilds_eta_state() {
+        use std::path::PathBuf;
+        use voom_domain::events::FileDiscoveredEvent;
+
+        // Start with zero events (the streaming-mode default).
+        let bp = BatchProgress::hidden(&[], 2);
+
+        // Seed three events after the fact.
+        let events: Vec<FileDiscoveredEvent> = (0..3)
+            .map(|i| {
+                FileDiscoveredEvent::new(
+                    PathBuf::from(format!("/tmp/f{i}.mkv")),
+                    1024 * (i + 1),
+                    None,
+                )
+            })
+            .collect();
+        bp.seed_events(&events);
+
+        // After seeding, the state must contain three queued weights.
+        let state = bp.state.lock();
+        assert_eq!(state.queued_weights.len(), 3);
+        assert_eq!(state.effective_workers, 2);
+    }
+
+    #[test]
+    fn batch_progress_on_jobs_extended_extends_total() {
+        let bp = BatchProgress::hidden(&[], 1);
+        // Length starts at zero in streaming mode.
+        assert_eq!(bp.overall.length(), Some(0));
+        bp.on_jobs_extended(5);
+        assert_eq!(bp.overall.length(), Some(5));
+        bp.on_jobs_extended(3);
+        assert_eq!(bp.overall.length(), Some(8));
     }
 }
