@@ -83,7 +83,7 @@ pub(crate) async fn run_streaming_pipeline<F, Fut>(
     paths: &[PathBuf],
     kernel: Arc<voom_kernel::Kernel>,
     store: Arc<dyn StorageTrait>,
-    pool: &WorkerPool,
+    pool: Arc<WorkerPool>,
     reporter: Arc<dyn ProgressReporter>,
     on_error: JobErrorStrategy,
     bad_files: HashSet<PathBuf>,
@@ -152,21 +152,45 @@ where
     // stage via `pipeline_cancel` — discovery cancels the token if its scan
     // errors, ingest observes the token in its receive select, and the pool's
     // workers observe their own copy via `WorkerPool::new`'s `token`.
-    let pool_future = pool.process_stream(
-        rx_items,
-        execution_gate,
-        processor,
-        on_error,
-        reporter.clone(),
-    );
-    let (disc_join, ingest_join, job_results) =
-        tokio::join!(discovery_handle, ingest_handle, pool_future);
+    //
+    // We wrap the pool future in its own `tokio::spawn` so all three stages
+    // are `JoinHandle`s. If we used `tokio::join!` directly with a bare
+    // future, a panic in the pool future would resolve `join!` only after
+    // the two `JoinHandle`s also resolved — dropping a `JoinHandle` only
+    // detaches the task, it does NOT abort it. Discovery and ingest could
+    // keep running indefinitely with `pipeline_cancel` never tripped. By
+    // serializing the awaits and cancelling on the first failure we mirror
+    // the structure used in `scan/pipeline.rs`.
+    let pool_reporter = reporter.clone();
+    let pool_handle: JoinHandle<Vec<JobResult>> = tokio::spawn(async move {
+        pool.process_stream(rx_items, execution_gate, processor, on_error, pool_reporter)
+            .await
+    });
 
-    // Propagate errors in source order: discovery → ingest. If either fails
-    // it has already cancelled `pipeline_cancel` and the ingest stage will
-    // have dropped `tx_items`, draining the pool to a clean stop.
+    // Await each handle in source order. After each await, if the result
+    // indicates failure (join error OR the task's own Err), cancel the
+    // child token so sibling stages observe the failure rather than
+    // continuing on the finish path.
+    let disc_join = discovery_handle.await;
+    if disc_join.as_ref().map_or(true, |r| r.is_err()) {
+        pipeline_cancel.cancel();
+    }
+
+    let ingest_join = ingest_handle.await;
+    if ingest_join.as_ref().map_or(true, |r| r.is_err()) {
+        pipeline_cancel.cancel();
+    }
+
+    let pool_join = pool_handle.await;
+    // No further stages remain to cancel; the pool's own `JoinError` is
+    // surfaced below via `.context()?`.
+
+    // Propagate errors in source order: discovery → ingest → pool. The
+    // `??` idiom: outer `?` propagates the JoinError (after .context()),
+    // inner `?` propagates the task's own Err.
     disc_join.context("discovery task join failed")??;
     ingest_join.context("ingest task join failed")??;
+    let job_results = pool_join.context("pool task join failed")?;
 
     let events_for_eta = Arc::try_unwrap(events_for_eta)
         .map(parking_lot::Mutex::into_inner)
@@ -248,9 +272,12 @@ fn spawn_discovery_stage(
         };
         let result = run_scan();
 
-        // Cancel BEFORE dropping tx_disc so the ingest stage's post-recv
-        // cancellation check sees the token as cancelled. Mirrors the
-        // pattern used by scan/pipeline.rs.
+        // Cancel BEFORE dropping tx_disc on error. When tx_disc is dropped,
+        // ingest's tokio::select! arm `ev = rx_disc.recv()` resolves to None,
+        // breaking the ingest loop. By cancelling first, ingest's gate-fire
+        // check at end of loop (`if !token.is_cancelled() { ... }`) observes
+        // the cancellation and skips seeding the reporter / opening the
+        // gate.
         if result.is_err() {
             token.cancel();
         }
@@ -334,11 +361,16 @@ fn spawn_ingest_stage(
         // its body with `execution_gate.notified()`) has reached the await
         // point. `notify_one` is not a workable alternative because `Notify`
         // stores at most one permit regardless of how many calls are made.
-        let events = events_for_eta.lock().clone();
-        reporter.seed_events(&events);
-        reporter.on_batch_start(events.len());
-
+        //
+        // Skip seeding the reporter and opening the gate entirely when
+        // cancelled. The partial event set collected so far is meaningless
+        // — `BatchProgress` would render a misleading total and never tick
+        // because no workers will run.
         if !token.is_cancelled() {
+            let events = events_for_eta.lock().clone();
+            reporter.seed_events(&events);
+            reporter.on_batch_start(events.len());
+
             // Sleep briefly so worker tasks reach their first `.notified()`
             // point. In production discovery takes orders of magnitude
             // longer than 10ms, so this is essentially free in the common
@@ -396,7 +428,11 @@ mod tests {
 
     fn make_pool(
         token: CancellationToken,
-    ) -> (WorkerPool, Arc<dyn StorageTrait>, Arc<voom_kernel::Kernel>) {
+    ) -> (
+        Arc<WorkerPool>,
+        Arc<dyn StorageTrait>,
+        Arc<voom_kernel::Kernel>,
+    ) {
         let store: Arc<dyn StorageTrait> =
             Arc::new(voom_domain::test_support::InMemoryStore::new());
         let job_store: Arc<dyn voom_domain::storage::JobStorage> =
@@ -405,7 +441,7 @@ mod tests {
         let mut config = WorkerPoolConfig::default();
         config.max_workers = 2;
         config.worker_prefix = "test".into();
-        let pool = WorkerPool::new(queue, config, token);
+        let pool = Arc::new(WorkerPool::new(queue, config, token));
         let kernel = Arc::new(voom_kernel::Kernel::new());
         (pool, store, kernel)
     }
@@ -429,7 +465,7 @@ mod tests {
             &args.paths,
             kernel,
             store,
-            &pool,
+            pool,
             Arc::new(NoopReporter),
             JobErrorStrategy::Continue,
             HashSet::new(),
@@ -471,7 +507,7 @@ mod tests {
             &args.paths,
             kernel,
             store,
-            &pool,
+            pool,
             Arc::new(NoopReporter),
             JobErrorStrategy::Continue,
             bad,
