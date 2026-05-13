@@ -7,6 +7,7 @@ pub mod host;
 pub mod loader;
 pub mod manifest;
 pub mod registry;
+pub mod stats_sink;
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
