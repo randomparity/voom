@@ -56,8 +56,8 @@ pub fn on_event(
             host.log("error", &format!("failed to deserialize event: {e}"));
         })
         .ok()?;
-    let file = match &event {
-        Event::FileIntrospected(e) => &e.file,
+    let (file, scan_session) = match &event {
+        Event::FileIntrospected(e) => (&e.file, e.scan_session),
         _ => return None,
     };
 
@@ -143,7 +143,7 @@ pub fn on_event(
         return None;
     }
 
-    build_result(file, &detections, host)
+    build_result(file, &detections, host, scan_session)
 }
 
 /// Runtime-resolved detection parameters (avoids too-many-arguments).
@@ -451,19 +451,22 @@ fn build_result(
     file: &MediaFile,
     detections: &[TrackDetection],
     host: &dyn HostFunctions,
+    scan_session: Option<voom_plugin_sdk::ScanSessionId>,
 ) -> Option<OnEventResult> {
     let metadata = serde_json::json!({
         "source": "audio-language-detector",
         "detections": detections,
     });
 
-    let enriched_event = Event::MetadataEnriched(
-        MetadataEnrichedEvent::new(
-            file.path.clone(),
-            "audio-language-detector".to_string(),
-            metadata,
-        ),
+    let mut enriched = MetadataEnrichedEvent::new(
+        file.path.clone(),
+        "audio-language-detector".to_string(),
+        metadata,
     );
+    if let Some(s) = scan_session {
+        enriched = enriched.with_scan_session(s);
+    }
+    let enriched_event = Event::MetadataEnriched(enriched);
 
     let produced_payload = serialize_event(&enriched_event)
         .map_err(|e| {

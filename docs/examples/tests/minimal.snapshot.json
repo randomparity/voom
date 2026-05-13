@@ -63,6 +63,7 @@
     "policy_hash": "9d3c3237247aa3d5",
     "policy_name": "minimal",
     "safeguard_violations": [],
+    "scan_session": null,
     "session_id": null,
     "skip_reason": null,
     "warnings": []

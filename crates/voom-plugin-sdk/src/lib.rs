@@ -90,6 +90,7 @@ pub use voom_domain::events::{
 };
 pub use voom_domain::media::{Container, MediaFile, Track, TrackType};
 pub use voom_domain::plan::{ActionResult, PhaseOutcome, PhaseResult, Plan, PlannedAction};
+pub use voom_domain::transition::ScanSessionId;
 
 // ── Full domain re-exports (for plugins that need deeper access) ────
 // Available under `voom_plugin_sdk::domain` for explicit opt-in.
@@ -103,4 +104,5 @@ pub mod domain {
     };
     pub use voom_domain::media::{Container, MediaFile, Track, TrackType};
     pub use voom_domain::plan::{ActionResult, PhaseOutcome, PhaseResult, Plan, PlannedAction};
+    pub use voom_domain::transition::ScanSessionId;
 }

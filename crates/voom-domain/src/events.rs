@@ -13,6 +13,11 @@ use crate::plan::{ActionResult, ExecutionDetail, Plan};
 #[allow(clippy::large_enum_variant)] // Plan embeds MediaFile — boxing would add indirection on every dispatch
 pub enum Event {
     FileDiscovered(FileDiscoveredEvent),
+    /// Emitted by streaming discovery once per root when that root's
+    /// filesystem walk has completed. Carries the session id and elapsed
+    /// walk duration. Consumers (the streaming process pipeline) use this
+    /// to unlock the per-root execution gate.
+    RootWalkCompleted(RootWalkCompletedEvent),
     FileIntrospected(FileIntrospectedEvent),
     FileIntrospectionFailed(FileIntrospectionFailedEvent),
     /// Emitted by WASM metadata plugins. Consumed by the sqlite-store plugin
@@ -64,6 +69,7 @@ impl Event {
     // Use these instead of string literals in Plugin::handles() implementations
     // to get compile-time typo protection.
     pub const FILE_DISCOVERED: &str = "file.discovered";
+    pub const ROOT_WALK_COMPLETED: &str = "root.walk.completed";
     pub const FILE_INTROSPECTED: &str = "file.introspected";
     pub const FILE_INTROSPECTION_FAILED: &str = "file.introspection_failed";
     pub const METADATA_ENRICHED: &str = "metadata.enriched";
@@ -110,6 +116,14 @@ impl Event {
         match self {
             Event::FileDiscovered(e) => {
                 format!("path={} size={}", e.path.display(), e.size)
+            }
+            Event::RootWalkCompleted(e) => {
+                format!(
+                    "session={} root={} duration_ms={}",
+                    e.session,
+                    e.root.display(),
+                    e.duration_ms
+                )
             }
             Event::FileIntrospected(e) => {
                 format!(
@@ -236,6 +250,7 @@ impl Event {
     pub fn event_type(&self) -> &str {
         match self {
             Event::FileDiscovered(_) => Self::FILE_DISCOVERED,
+            Event::RootWalkCompleted(_) => Self::ROOT_WALK_COMPLETED,
             Event::FileIntrospected(_) => Self::FILE_INTROSPECTED,
             Event::FileIntrospectionFailed(_) => Self::FILE_INTROSPECTION_FAILED,
             Event::MetadataEnriched(_) => Self::METADATA_ENRICHED,
@@ -406,16 +421,55 @@ impl FileDiscoveredEvent {
     }
 }
 
+/// Payload of [`Event::RootWalkCompleted`]. Emitted exactly once per root
+/// by streaming discovery.
+#[non_exhaustive]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RootWalkCompletedEvent {
+    pub root: PathBuf,
+    pub session: crate::transition::ScanSessionId,
+    pub duration_ms: u64,
+}
+
+impl RootWalkCompletedEvent {
+    #[must_use]
+    pub fn new(root: PathBuf, session: crate::transition::ScanSessionId, duration_ms: u64) -> Self {
+        Self {
+            root,
+            session,
+            duration_ms,
+        }
+    }
+}
+
 #[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileIntrospectedEvent {
     pub file: MediaFile,
+    /// Scan session this introspection was produced within. Downstream
+    /// metadata enrichers (radarr, sonarr, whisper, etc.) must forward this
+    /// onto any `MetadataEnriched` events they emit so the chain reaches the
+    /// executor's fail-closed mutation recording. `None` when introspection
+    /// happens outside a scan session (e.g. `voom inspect`).
+    #[serde(default)]
+    pub scan_session: Option<crate::transition::ScanSessionId>,
 }
 
 impl FileIntrospectedEvent {
     #[must_use]
     pub fn new(file: MediaFile) -> Self {
-        Self { file }
+        Self {
+            file,
+            scan_session: None,
+        }
+    }
+
+    /// Attach a scan session ID to this event. Forwarded to downstream
+    /// metadata enrichers so the session chain of custody is preserved.
+    #[must_use]
+    pub fn with_scan_session(mut self, session: crate::transition::ScanSessionId) -> Self {
+        self.scan_session = Some(session);
+        self
     }
 }
 
@@ -454,6 +508,14 @@ pub struct MetadataEnrichedEvent {
     pub path: PathBuf,
     pub source: String,
     pub metadata: serde_json::Value,
+    /// Scan session this enrichment was produced within. Producers that
+    /// received their input event during an active scan session must
+    /// forward this field so downstream consumers (notably
+    /// subtitle-generator → SubtitleGenerated → executor rename) preserve
+    /// the chain of custody for VOOM-originated filesystem writes. None
+    /// when enrichment happens outside a scan session.
+    #[serde(default)]
+    pub scan_session: Option<crate::transition::ScanSessionId>,
 }
 
 impl MetadataEnrichedEvent {
@@ -463,7 +525,17 @@ impl MetadataEnrichedEvent {
             path,
             source,
             metadata,
+            scan_session: None,
         }
+    }
+
+    /// Attach a scan session ID to this event. Forwarded from whatever
+    /// upstream event (e.g., `FileIntrospected`) was being processed at the
+    /// time of enrichment.
+    #[must_use]
+    pub fn with_scan_session(mut self, scan_session: crate::transition::ScanSessionId) -> Self {
+        self.scan_session = Some(scan_session);
+        self
     }
 }
 
@@ -476,6 +548,12 @@ pub struct SubtitleGeneratedEvent {
     pub forced: bool,
     #[serde(default)]
     pub title: Option<String>,
+    /// Scan session this subtitle was produced within. Propagated by
+    /// producers (subtitle-generator plugins) so the downstream executor
+    /// that muxes the subtitle into its container records a VOOM mutation
+    /// for the rewrite. None when generation happens outside a scan session.
+    #[serde(default)]
+    pub scan_session: Option<crate::transition::ScanSessionId>,
 }
 
 impl SubtitleGeneratedEvent {
@@ -492,7 +570,18 @@ impl SubtitleGeneratedEvent {
             language: language.into(),
             forced,
             title: None,
+            scan_session: None,
         }
+    }
+
+    /// Attach a scan session ID to this event. Producers that emit
+    /// `SubtitleGenerated` from within an active scan session must call
+    /// this so downstream executors can record the rewrite as
+    /// VOOM-originated.
+    #[must_use]
+    pub fn with_scan_session(mut self, scan_session: crate::transition::ScanSessionId) -> Self {
+        self.scan_session = Some(scan_session);
+        self
     }
 }
 

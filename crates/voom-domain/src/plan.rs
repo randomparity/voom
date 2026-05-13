@@ -38,6 +38,13 @@ pub struct Plan {
     /// dispatching `PlanCreated`, used for session-level queries.
     #[serde(default)]
     pub session_id: Option<uuid::Uuid>,
+    /// Scan session this plan was evaluated within. When set, executors must
+    /// record a `VoomOriginatedMutation` for each filesystem write they
+    /// perform so reconciliation can distinguish VOOM's own writes from
+    /// external changes. None when the plan was produced outside a scan
+    /// session (dry-run, plan-only, estimate).
+    #[serde(default)]
+    pub scan_session: Option<crate::transition::ScanSessionId>,
 }
 
 impl Plan {
@@ -86,6 +93,7 @@ impl Plan {
             evaluated_at: Utc::now(),
             executor_hint: None,
             session_id: None,
+            scan_session: None,
         }
     }
 
@@ -144,6 +152,34 @@ impl Plan {
     #[must_use]
     pub fn with_session_id(mut self, session_id: Uuid) -> Self {
         self.session_id = Some(session_id);
+        self
+    }
+
+    /// Attach a scan session ID to this plan.
+    ///
+    /// Set by the streaming pipeline when an active scan session exists.
+    /// Executors read this and, if set, record a `VoomOriginatedMutation`
+    /// for each visible filesystem write so that `finish_scan_session` and
+    /// the discovery scanner can distinguish VOOM's own writes from external
+    /// changes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    /// use voom_domain::media::MediaFile;
+    /// use voom_domain::plan::Plan;
+    /// use voom_domain::transition::ScanSessionId;
+    ///
+    /// let file = MediaFile::new(PathBuf::from("/movies/test.mkv"));
+    /// let session = ScanSessionId::new();
+    /// let plan = Plan::new(file, "my-policy", "normalize").with_scan_session(session);
+    ///
+    /// assert_eq!(plan.scan_session, Some(session));
+    /// ```
+    #[must_use]
+    pub fn with_scan_session(mut self, scan_session: crate::transition::ScanSessionId) -> Self {
+        self.scan_session = Some(scan_session);
         self
     }
 }
@@ -1337,6 +1373,7 @@ mod tests {
             evaluated_at: Utc::now(),
             executor_hint: None,
             session_id: None,
+            scan_session: None,
         }
     }
 
@@ -1801,5 +1838,47 @@ mod tests {
         let json = r#"{"phase_name":"normalize","outcome":"Completed","actions":[],"file_modified":false,"skip_reason":null,"duration_ms":0}"#;
         let pr: PhaseResult = serde_json::from_str(json).unwrap();
         assert!(pr.temp_path.is_none());
+    }
+
+    #[test]
+    fn new_plan_has_no_scan_session() {
+        use crate::media::MediaFile;
+        let file = MediaFile::new(std::path::PathBuf::from("/m/foo.mkv"));
+        let plan = Plan::new(file, "policy", "phase");
+        assert!(plan.scan_session.is_none());
+    }
+
+    #[test]
+    fn with_scan_session_attaches_id() {
+        use crate::media::MediaFile;
+        use crate::transition::ScanSessionId;
+        let file = MediaFile::new(std::path::PathBuf::from("/m/foo.mkv"));
+        let id = ScanSessionId::new();
+        let plan = Plan::new(file, "policy", "phase").with_scan_session(id);
+        assert_eq!(plan.scan_session, Some(id));
+    }
+
+    #[test]
+    fn scan_session_serializes_round_trip() {
+        use crate::media::MediaFile;
+        use crate::transition::ScanSessionId;
+        let file = MediaFile::new(std::path::PathBuf::from("/m/foo.mkv"));
+        let id = ScanSessionId::new();
+        let plan = Plan::new(file, "policy", "phase").with_scan_session(id);
+
+        let json = serde_json::to_string(&plan).unwrap();
+        let restored: Plan = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.scan_session, Some(id));
+
+        // Round-trip when no scan_session is set — `#[serde(default)]` must
+        // restore it as None.
+        let no_session = Plan::new(
+            MediaFile::new(std::path::PathBuf::from("/m/bar.mkv")),
+            "policy",
+            "phase",
+        );
+        let json = serde_json::to_string(&no_session).unwrap();
+        let restored: Plan = serde_json::from_str(&json).unwrap();
+        assert!(restored.scan_session.is_none());
     }
 }

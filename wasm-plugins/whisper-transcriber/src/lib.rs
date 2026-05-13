@@ -31,7 +31,7 @@
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
     deserialize_event, load_plugin_config, serialize_event, Capability, Event, HostFunctions,
-    MediaFile, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
+    MediaFile, MetadataEnrichedEvent, OnEventResult, PluginInfoData, ScanSessionId,
 };
 
 pub fn get_info() -> PluginInfoData {
@@ -65,8 +65,8 @@ pub fn on_event(
             host.log("error", &format!("failed to deserialize event: {e}"));
         })
         .ok()?;
-    let file = match &event {
-        Event::FileIntrospected(e) => &e.file,
+    let (file, scan_session) = match &event {
+        Event::FileIntrospected(e) => (&e.file, e.scan_session),
         _ => return None,
     };
 
@@ -93,7 +93,7 @@ pub fn on_event(
     match host.get_plugin_data(&cache_key) {
         Ok(Some(cached)) => {
             host.log("debug", "using cached transcript");
-            return build_result(file, &cached, host);
+            return build_result(file, &cached, host, scan_session);
         }
         Ok(None) => {}
         Err(e) => host.log("error", &format!("failed to read transcript cache: {e}")),
@@ -197,7 +197,7 @@ pub fn on_event(
     // Cache the result.
     let _ = host.set_plugin_data(&cache_key, &whisper_output.stdout);
 
-    build_result(file, &whisper_output.stdout, host)
+    build_result(file, &whisper_output.stdout, host, scan_session)
 }
 
 /// Returns true when the transcript contains segments in more than one language.
@@ -222,6 +222,7 @@ fn build_result(
     file: &MediaFile,
     transcript_data: &[u8],
     host: &dyn HostFunctions,
+    scan_session: Option<ScanSessionId>,
 ) -> Option<OnEventResult> {
     let transcript_json: serde_json::Value = serde_json::from_slice(transcript_data)
         .map_err(|e| {
@@ -235,11 +236,15 @@ fn build_result(
         "multi_language_detected": detect_multi_language(&transcript_json),
     });
 
-    let enriched_event = Event::MetadataEnriched(MetadataEnrichedEvent::new(
+    let mut enriched = MetadataEnrichedEvent::new(
         file.path.clone(),
         "whisper-transcriber".to_string(),
         metadata,
-    ));
+    );
+    if let Some(s) = scan_session {
+        enriched = enriched.with_scan_session(s);
+    }
+    let enriched_event = Event::MetadataEnriched(enriched);
 
     let produced_payload = serialize_event(&enriched_event)
         .map_err(|e| {

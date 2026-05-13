@@ -3,6 +3,7 @@ mod dispatch;
 mod pipeline;
 mod pipeline_streaming;
 mod plan_outcome;
+mod root_gate;
 mod safeguards;
 mod transitions;
 
@@ -198,6 +199,10 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
             return Ok(());
         }
 
+        let scan_session = store
+            .begin_scan_session(&paths)
+            .context("failed to begin scan session")?;
+
         let on_error = match args.on_error {
             ErrorHandling::Fail => JobErrorStrategy::Fail,
             ErrorHandling::Continue => JobErrorStrategy::Continue,
@@ -233,6 +238,23 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         let plan_limiter_for_workers = plan_limiter.clone();
         let counters_for_workers = counters.clone();
 
+        let heartbeat_store = store.clone();
+        let heartbeat_token = token.clone();
+        let heartbeat_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            interval.tick().await; // skip the first immediate tick
+            loop {
+                tokio::select! {
+                    () = heartbeat_token.cancelled() => break,
+                    _ = interval.tick() => {
+                        if let Err(e) = heartbeat_store.heartbeat_scan_session(scan_session) {
+                            tracing::warn!(error = %e, "scan session heartbeat failed");
+                        }
+                    }
+                }
+            }
+        });
+
         let processor = move |job: voom_domain::job::Job| {
             let resolver = resolver.clone();
             let kernel = kernel_for_workers.clone();
@@ -262,12 +284,13 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
                     confirm_savings,
                     estimate_model,
                     counters: &counters,
+                    scan_session,
                 };
                 process_single_file(job, &ctx).await
             }
         };
 
-        let outcome = pipeline_streaming::run_streaming_pipeline(
+        let outcome = match pipeline_streaming::run_streaming_pipeline(
             &args,
             &paths,
             kernel.clone(),
@@ -280,8 +303,34 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
             quiet,
             plan_only,
             token.clone(),
+            scan_session,
         )
-        .await?;
+        .await
+        {
+            Ok(o) => o,
+            Err(e) => {
+                heartbeat_handle.abort();
+                if let Err(cancel_err) = store.cancel_scan_session(scan_session) {
+                    tracing::warn!(error = %cancel_err, "failed to cancel scan session on error");
+                }
+                return Err(e);
+            }
+        };
+
+        heartbeat_handle.abort();
+
+        // Cancel rather than finish on success: finish_scan_session computes
+        // missing files as the set difference between the files table and
+        // files registered via ingest_discovered_file(session, df), but the
+        // streaming pipeline does not call that — it emits FileDiscovered
+        // events to the bus where sqlite-store uses upsert_discovered_file
+        // (no session registration). Calling finish here would mark every
+        // pre-existing file missing. The fail-closed safety properties this
+        // session enables (record_voom_mutation, SessionMutationSnapshot)
+        // do not depend on finish.
+        if let Err(e) = store.cancel_scan_session(scan_session) {
+            tracing::warn!(error = %e, "failed to cancel scan session");
+        }
 
         if outcome.discovery_errors > 0 {
             tracing::warn!(
@@ -722,6 +771,7 @@ pub(super) struct ProcessContext<'a> {
     pub(super) confirm_savings: Option<u64>,
     pub(super) estimate_model: Arc<voom_domain::EstimateModel>,
     pub(super) counters: &'a RunCounters,
+    pub(super) scan_session: voom_domain::transition::ScanSessionId,
 }
 
 /// Print a summary when interrupted by CTRL-C.
@@ -1020,6 +1070,7 @@ mod tests {
         counters: RunCounters,
         token: CancellationToken,
         resolver: PolicyResolver,
+        pub(super) scan_session: voom_domain::transition::ScanSessionId,
         // Held for lifetime; the resolver borrows `dir.path()`.
         dir: tempfile::TempDir,
     }
@@ -1045,6 +1096,7 @@ mod tests {
                 counters: RunCounters::new(),
                 token: CancellationToken::new(),
                 resolver,
+                scan_session: voom_domain::transition::ScanSessionId::new(),
                 dir,
             }
         }
@@ -1093,6 +1145,7 @@ mod tests {
                 confirm_savings: None,
                 estimate_model: Arc::new(voom_domain::EstimateModel::default()),
                 counters: &self.counters,
+                scan_session: self.scan_session,
             }
         }
 

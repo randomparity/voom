@@ -1,6 +1,8 @@
 //! Filesystem discovery plugin: parallel directory walking with content hashing.
 
 pub mod scanner;
+#[cfg(feature = "test-hooks")]
+pub mod test_hooks;
 
 pub use scanner::EventSink;
 pub use scanner::hash_file;
@@ -32,6 +34,48 @@ pub enum ScanProgress {
     /// Orphaned voom temp files were found and skipped.
     OrphanedTempFiles { count: usize },
 }
+
+/// Set of paths the active scan session has marked as VOOM-originated mutations.
+///
+/// Loaded as a single snapshot before the walker begins so lookup is infallible
+/// during the walk. Paths in the snapshot are stored in the form produced by
+/// [`normalize_path`] (NFC + canonicalized), so the walker performs the same
+/// normalization on each entry before checking the snapshot.
+#[derive(Debug, Default, Clone)]
+pub struct SessionMutationSnapshot {
+    paths: std::collections::HashSet<std::path::PathBuf>,
+}
+
+impl SessionMutationSnapshot {
+    #[must_use]
+    pub fn new(paths: impl IntoIterator<Item = std::path::PathBuf>) -> Self {
+        Self {
+            paths: paths.into_iter().collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn contains(&self, path: &std::path::Path) -> bool {
+        self.paths.contains(path)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+}
+
+/// Factory that loads a fresh [`SessionMutationSnapshot`] before each walk.
+///
+/// Called once at the start of `scan_directory_streaming`. An `Err` result
+/// causes the scan to abort (fail-closed).
+pub type MutationSnapshotLoader =
+    std::sync::Arc<dyn Fn() -> voom_domain::errors::Result<SessionMutationSnapshot> + Send + Sync>;
 
 /// Callback for files that fail during discovery (path, size, error message).
 type ErrorCallback = Box<dyn Fn(std::path::PathBuf, u64, String) + Send + Sync>;
@@ -67,6 +111,12 @@ pub struct ScanOptions {
     ///
     /// Has no effect when `hash_files` is `false`.
     pub fingerprint_lookup: Option<FingerprintLookup>,
+    /// Optional loader for the session mutation snapshot.
+    ///
+    /// When set, called once before the walk begins. Returns the set of paths
+    /// that VOOM has already mutated this session; these paths are excluded from
+    /// discovery. If the loader returns an error the scan aborts (fail-closed).
+    pub session_mutations: Option<MutationSnapshotLoader>,
 }
 
 impl ScanOptions {
@@ -80,6 +130,7 @@ impl ScanOptions {
             on_progress: None,
             on_error: None,
             fingerprint_lookup: None,
+            session_mutations: None,
         }
     }
 }
@@ -96,6 +147,10 @@ impl std::fmt::Debug for ScanOptions {
             .field(
                 "fingerprint_lookup",
                 &self.fingerprint_lookup.as_ref().map(|_| "..."),
+            )
+            .field(
+                "session_mutations",
+                &self.session_mutations.as_ref().map(|_| "..."),
             )
             .finish()
     }

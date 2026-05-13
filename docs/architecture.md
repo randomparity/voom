@@ -301,6 +301,45 @@ mark files missing.
 See `docs/superpowers/specs/2026-05-11-issue-359-scan-streaming-phase-2-design.md`
 for the full design.
 
+### Per-root execution gating (issue #361)
+
+The streaming process pipeline uses a `RootGate` and a per-root
+`HoldingBuffer<WorkItem>` to coordinate when each scanned root unlocks for
+mutating execution.
+
+- **Default behavior** (no `--execute-during-discovery` flag): every root
+  must finish its filesystem walk before any root unlocks. This preserves
+  the strict ordering of pre-issue-361 behavior. The `RootGate` and
+  `HoldingBuffer` are not constructed in this mode.
+- **Opt-in behavior** (`--execute-during-discovery` set): each root
+  unlocks independently when its walk completes. Items for closed roots
+  are held in the per-root `HoldingBuffer` and never enter the SQL `jobs`
+  queue or the worker channel until their root's gate opens. A dispatcher
+  task subscribes to `RootWalkCompleted` events, opens the gate for the
+  named root, and drains the buffer in original priority order.
+
+Three invariants make this safe across the inter-root window:
+
+1. **Fail-closed mutation recording.** Before any visible filesystem
+   write, executors call `record_voom_mutation`. If the storage write
+   fails, the rename is not performed and the job fails — never the
+   half-state "write happened but the record is missing."
+2. **Preloaded mutation snapshot.** Before each root's walk begins, the
+   pipeline loads a `SessionMutationSnapshot` from the active session's
+   `scan_session_mutations` rows. The walker checks paths against this
+   snapshot via an infallible `HashSet::contains`. If the snapshot
+   cannot be loaded, the scan aborts.
+3. **Gate at enqueue, not at claim.** SQL `jobs` rows are not created
+   for items held in the `HoldingBuffer`. Workers therefore only ever
+   see items that are already eligible to execute, eliminating the
+   head-of-line blocking failure mode where high-priority closed-root
+   items would otherwise occupy every worker slot.
+
+VOOM-originated mutations are tagged with the active scan session id
+(`scan_session_mutations` table) so the scanner skips them mid-walk and
+`finish_scan_session` does not misclassify them as missing or externally
+changed.
+
 ## Data Flow
 
 ```

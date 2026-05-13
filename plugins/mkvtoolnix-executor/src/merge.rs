@@ -7,7 +7,10 @@ use voom_domain::errors::{Result, VoomError};
 use voom_domain::plan::{
     ActionParams, ActionResult, ExecutionDetail, OperationType, PlannedAction,
 };
+use voom_domain::scan_session_mutations::record_mutation_for_pending_write;
+use voom_domain::storage::ScanSessionMutationStorage;
 use voom_domain::temp_file::temp_path_with_ext;
+use voom_domain::transition::ScanSessionId;
 use voom_process::run_with_timeout;
 
 /// Execute mkvmerge operations (remux, track removal, reorder).
@@ -18,7 +21,12 @@ use voom_process::run_with_timeout;
 /// 2. Write to a temp file (`.tmp.mkv`) in the same directory
 /// 3. On success, rename temp over the original (or to new extension if container changed)
 /// 4. On failure, clean up the temp file
-pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<Vec<ActionResult>> {
+pub fn execute_merge_actions(
+    path: &Path,
+    actions: &[&PlannedAction],
+    storage: Option<&dyn ScanSessionMutationStorage>,
+    scan_session: Option<ScanSessionId>,
+) -> Result<Vec<ActionResult>> {
     if actions.is_empty() {
         return Ok(Vec::new());
     }
@@ -58,6 +66,16 @@ pub fn execute_merge_actions(path: &Path, actions: &[&PlannedAction]) -> Result<
         // If there's a ConvertContainer action, the output stays as .mkv (already the temp name).
         // Otherwise, replace the original file.
         let final_path = determine_final_path(path, actions);
+
+        // Fail-closed: record the VOOM mutation BEFORE the rename. The helper is
+        // #[must_use]; the ? propagates the storage error and aborts the rename.
+        // The ffmpeg-executor crate carries a behavioral regression test
+        // (`rename_output_refuses_to_rename_when_storage_errors`); the mkvtoolnix
+        // surface is structurally identical, so we rely on the helper-level test
+        // (`helper_returns_err_when_session_active_and_storage_errors` in voom-domain)
+        // rather than a duplicate end-to-end test that would invoke mkvmerge in CI.
+        // Guard will clean up temp file on drop if this fails.
+        record_mutation_for_pending_write(storage, scan_session, path, &final_path)?;
 
         // Replace original with temp file
         fs::rename(&temp_path, &final_path).map_err(|e| VoomError::ToolExecution {

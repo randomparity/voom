@@ -5,6 +5,7 @@ pub mod propedit;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use voom_domain::capabilities::Capability;
@@ -14,6 +15,8 @@ use voom_domain::events::{
 };
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, ActionResult, OperationType, Plan, PlannedAction};
+use voom_domain::scan_session_mutations::record_mutation_for_pending_write;
+use voom_domain::storage::{ScanSessionMutationStorage, StorageTrait};
 use voom_domain::temp_file::temp_path_with_ext;
 use voom_domain::utils::language::is_valid_language;
 use voom_domain::utils::sanitize::validate_metadata_value;
@@ -51,6 +54,7 @@ const MKVTOOLNIX_FORMATS: &[&str] = &[
 pub struct MkvtoolnixExecutorPlugin {
     capabilities: Vec<Capability>,
     available: bool,
+    store: Option<Arc<dyn StorageTrait>>,
 }
 
 impl MkvtoolnixExecutorPlugin {
@@ -66,6 +70,7 @@ impl MkvtoolnixExecutorPlugin {
                 formats: vec!["mkv".into()],
             }],
             available: false,
+            store: None,
         }
     }
 
@@ -75,6 +80,21 @@ impl MkvtoolnixExecutorPlugin {
     pub fn with_available(mut self, available: bool) -> Self {
         self.available = available;
         self
+    }
+
+    /// Create with a storage handle for recording mutation events.
+    #[must_use]
+    pub fn with_store(mut self, store: Arc<dyn StorageTrait>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    /// Return a storage handle as a `ScanSessionMutationStorage` trait object, if available.
+    #[must_use]
+    fn mutation_storage(&self) -> Option<&dyn ScanSessionMutationStorage> {
+        self.store
+            .as_deref()
+            .map(|s| s as &dyn ScanSessionMutationStorage)
     }
 
     /// Check whether this plugin can handle all operations in the given plan.
@@ -131,7 +151,7 @@ impl MkvtoolnixExecutorPlugin {
                 .iter()
                 .filter(|a| a.operation == OperationType::MuxSubtitle)
             {
-                results.extend(self.execute_mux_subtitle(path, action)?);
+                results.extend(self.execute_mux_subtitle(plan, action)?);
             }
             return Ok(results);
         }
@@ -164,7 +184,12 @@ impl MkvtoolnixExecutorPlugin {
                     count = merge_actions.len(),
                     "running merge actions"
                 );
-                let merge_results = merge::execute_merge_actions(path, &merge_actions)?;
+                let merge_results = merge::execute_merge_actions(
+                    path,
+                    &merge_actions,
+                    self.mutation_storage(),
+                    plan.scan_session,
+                )?;
                 results.extend(merge_results);
             }
         } else {
@@ -176,7 +201,12 @@ impl MkvtoolnixExecutorPlugin {
                 count = merge_actions.len(),
                 "running merge actions (convert to MKV first)"
             );
-            let merge_results = merge::execute_merge_actions(path, &merge_actions)?;
+            let merge_results = merge::execute_merge_actions(
+                path,
+                &merge_actions,
+                self.mutation_storage(),
+                plan.scan_session,
+            )?;
             results.extend(merge_results);
 
             // After ConvertContainer, the file is now at the .mkv path
@@ -235,6 +265,9 @@ impl MkvtoolnixExecutorPlugin {
         let mut file = voom_domain::media::MediaFile::new(event.path.clone());
         file.container = Container::Mkv;
         let mut plan = Plan::new(file, "subtitle-mux", phase_name);
+        if let Some(session) = event.scan_session {
+            plan = plan.with_scan_session(session);
+        }
         plan.actions = vec![PlannedAction::file_op(
             OperationType::MuxSubtitle,
             ActionParams::MuxSubtitle {
@@ -265,9 +298,10 @@ impl MkvtoolnixExecutorPlugin {
     /// Execute a `MuxSubtitle` action by running mkvmerge.
     fn execute_mux_subtitle(
         &self,
-        path: &std::path::Path,
+        plan: &Plan,
         action: &PlannedAction,
     ) -> Result<Vec<ActionResult>> {
+        let path = &plan.file.path;
         let ActionParams::MuxSubtitle {
             subtitle_path,
             language,
@@ -316,6 +350,13 @@ impl MkvtoolnixExecutorPlugin {
 
         match output {
             Ok(o) if o.status.success() || o.status.code() == Some(1) => {
+                // Record the mutation before renaming; _guard cleans up temp on drop if this fails.
+                record_mutation_for_pending_write(
+                    self.mutation_storage(),
+                    plan.scan_session,
+                    path,
+                    path,
+                )?;
                 std::fs::rename(&tmp, path).map_err(|e| VoomError::ToolExecution {
                     tool: "mkvmerge".into(),
                     message: format!("failed to rename temp file: {e}"),
@@ -543,6 +584,63 @@ mod tests {
         ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_subtitle_generated_propagates_scan_session_to_synthesized_plan() {
+        use voom_domain::transition::ScanSessionId;
+
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
+        let session = ScanSessionId::new();
+        let event = Event::SubtitleGenerated(
+            voom_domain::events::SubtitleGeneratedEvent::new(
+                PathBuf::from("/media/movie.mkv"),
+                PathBuf::from("/media/movie.forced-eng.srt"),
+                "eng",
+                true,
+            )
+            .with_scan_session(session),
+        );
+
+        let result = plugin.on_event(&event).unwrap().expect("must claim event");
+        let plan_event = result
+            .produced_events
+            .iter()
+            .find_map(|e| match e {
+                Event::PlanCreated(pe) => Some(pe),
+                _ => None,
+            })
+            .expect("must emit PlanCreated");
+        assert_eq!(
+            plan_event.plan.scan_session,
+            Some(session),
+            "synthesized plan must carry the source event's scan_session"
+        );
+    }
+
+    #[test]
+    fn test_subtitle_generated_without_scan_session_plan_has_none() {
+        let plugin = MkvtoolnixExecutorPlugin::new().with_available(true);
+        let event = Event::SubtitleGenerated(voom_domain::events::SubtitleGeneratedEvent::new(
+            PathBuf::from("/media/movie.mkv"),
+            PathBuf::from("/media/movie.forced-eng.srt"),
+            "eng",
+            false,
+        ));
+
+        let result = plugin.on_event(&event).unwrap().expect("must claim event");
+        let plan_event = result
+            .produced_events
+            .iter()
+            .find_map(|e| match e {
+                Event::PlanCreated(pe) => Some(pe),
+                _ => None,
+            })
+            .expect("must emit PlanCreated");
+        assert_eq!(
+            plan_event.plan.scan_session, None,
+            "synthesized plan must have no scan_session when event has none"
+        );
     }
 
     #[test]

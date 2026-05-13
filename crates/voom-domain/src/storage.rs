@@ -751,6 +751,36 @@ pub trait EstimateStorage: Send + Sync {
     ) -> Result<Vec<CostModelSample>>;
 }
 
+/// Storage trait for recording and querying VOOM-originated filesystem mutations.
+///
+/// Called by executor plugins (`ffmpeg-executor`, `mkvtoolnix-executor`) to mark
+/// each file they write so that `finish_scan_session` and the scanner's
+/// reconciliation pass can distinguish VOOM's own writes from external changes.
+/// All records are scoped to a `ScanSessionId`; queries from other sessions
+/// see no rows.
+pub trait ScanSessionMutationStorage: Send + Sync {
+    fn record_voom_mutation(
+        &self,
+        m: &crate::scan_session_mutations::VoomOriginatedMutation,
+    ) -> crate::errors::Result<()>;
+
+    fn is_voom_originated(
+        &self,
+        session: crate::transition::ScanSessionId,
+        path: &std::path::Path,
+    ) -> crate::errors::Result<bool>;
+
+    /// Returns one record per VOOM-touched path in the session. Rename pairs
+    /// are decomposed at the storage boundary, so callers see two separate
+    /// records (one for the source path, one for the destination) rather than
+    /// a single record with an `original` field. This makes the on-disk model
+    /// safe against same-destination re-entrant writes.
+    fn voom_mutations_for_session(
+        &self,
+        session: crate::transition::ScanSessionId,
+    ) -> crate::errors::Result<Vec<crate::scan_session_mutations::VoomOriginatedMutation>>;
+}
+
 /// Composed storage interface encompassing all sub-traits.
 ///
 /// All methods are synchronous (blocking) since rusqlite is synchronous.
@@ -774,6 +804,7 @@ pub trait StorageTrait:
     + VerificationStorage
     + TranscodeOutcomeStorage
     + EstimateStorage
+    + ScanSessionMutationStorage
 {
 }
 
@@ -793,6 +824,7 @@ impl<T> StorageTrait for T where
         + VerificationStorage
         + TranscodeOutcomeStorage
         + EstimateStorage
+        + ScanSessionMutationStorage
 {
 }
 

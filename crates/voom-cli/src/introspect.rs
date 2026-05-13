@@ -62,6 +62,7 @@ pub async fn introspect_file(
     kernel: &std::sync::Arc<voom_kernel::Kernel>,
     ffprobe_path: Option<&str>,
     animation_mode: voom_ffprobe_introspector::parser::AnimationDetectionMode,
+    scan_session: Option<voom_domain::transition::ScanSessionId>,
 ) -> std::result::Result<voom_domain::media::MediaFile, VoomError> {
     introspect_file_inner(
         path,
@@ -71,6 +72,7 @@ pub async fn introspect_file(
         ffprobe_path,
         animation_mode,
         true,
+        scan_session,
     )
     .await
 }
@@ -94,10 +96,16 @@ pub async fn introspect_file_no_dispatch(
         ffprobe_path,
         animation_mode,
         false,
+        None,
     )
     .await
 }
 
+// `dispatch_event` and `scan_session` are both needed to implement the two
+// public entry-points (`introspect_file` / `introspect_file_no_dispatch`)
+// without duplicating the body; the arg count is a code-organisation
+// artefact rather than an API smell.
+#[allow(clippy::too_many_arguments)]
 async fn introspect_file_inner(
     path: std::path::PathBuf,
     file_size: u64,
@@ -106,6 +114,7 @@ async fn introspect_file_inner(
     ffprobe_path: Option<&str>,
     animation_mode: voom_ffprobe_introspector::parser::AnimationDetectionMode,
     dispatch_event: bool,
+    scan_session: Option<voom_domain::transition::ScanSessionId>,
 ) -> std::result::Result<voom_domain::media::MediaFile, VoomError> {
     let mut introspector = voom_ffprobe_introspector::FfprobeIntrospectorPlugin::new();
     if let Some(fp) = ffprobe_path {
@@ -124,9 +133,12 @@ async fn introspect_file_inner(
         let result = introspector.introspect(&path, file_size, content_hash.as_deref());
         if dispatch_event {
             if let Ok(ref intro_event) = result {
-                kernel_clone.dispatch(Event::FileIntrospected(
-                    voom_domain::events::FileIntrospectedEvent::new(intro_event.file.clone()),
-                ));
+                let mut event =
+                    voom_domain::events::FileIntrospectedEvent::new(intro_event.file.clone());
+                if let Some(s) = scan_session {
+                    event = event.with_scan_session(s);
+                }
+                kernel_clone.dispatch(Event::FileIntrospected(event));
             }
         }
         result

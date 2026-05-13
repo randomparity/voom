@@ -11,6 +11,7 @@ pub mod job;
 pub mod media;
 pub mod plan;
 pub mod safeguard;
+pub mod scan_session_mutations;
 pub mod snapshot;
 pub mod stats;
 pub mod storage;

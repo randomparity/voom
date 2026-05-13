@@ -110,11 +110,15 @@ pub fn on_event(
                 "has_hdr": has_hdr,
             });
 
-            let enriched_event = Event::MetadataEnriched(MetadataEnrichedEvent::new(
+            let mut enriched = MetadataEnrichedEvent::new(
                 file.path.clone(),
                 "example-metadata".to_string(),
                 metadata,
-            ));
+            );
+            if let Some(s) = introspected.scan_session {
+                enriched = enriched.with_scan_session(s);
+            }
+            let enriched_event = Event::MetadataEnriched(enriched);
 
             let produced_payload = serialize_event(&enriched_event).map_err(|e| {
                 host.log("error", &format!("failed to serialize event: {e}"));

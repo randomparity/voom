@@ -79,6 +79,7 @@ pub(super) async fn process_single_file(
             &ctx.kernel,
             ctx.ffprobe_path,
             ctx.animation_detection_mode,
+            Some(ctx.scan_session),
         )
         .await
         .map_err(|e| format!("introspect {}: {e}", payload.path))?;
@@ -252,7 +253,9 @@ async fn process_single_file_execute(
         ) else {
             continue;
         };
-        let mut plan = plan.with_session_id(ctx.counters.session_id);
+        let mut plan = plan
+            .with_session_id(ctx.counters.session_id)
+            .with_scan_session(ctx.scan_session);
 
         plans_evaluated += 1;
 

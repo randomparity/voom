@@ -310,6 +310,17 @@ CREATE TABLE IF NOT EXISTS cost_model_samples (
 
 CREATE INDEX IF NOT EXISTS idx_cost_model_samples_key_completed
     ON cost_model_samples(phase_name, codec, preset, backend, completed_at DESC);
+
+CREATE TABLE IF NOT EXISTS scan_session_mutations (
+    session_id  TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    recorded_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scan_session_mutations_session
+    ON scan_session_mutations(session_id);
 ";
 
 /// Initialize the database schema.
@@ -350,6 +361,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "estimate_runs",
         "estimate_files",
         "cost_model_samples",
+        "scan_session_mutations",
     ];
     let has_column = |table: &str, column: &str| -> rusqlite::Result<bool> {
         assert!(KNOWN_TABLES.contains(&table), "unknown table: {table}");
@@ -374,6 +386,7 @@ pub(crate) fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     migrate_execution_capture_columns(conn, &has_column)?;
     migrate_from_path_column(conn, &has_column)?;
     migrate_cover_art_track_types(conn)?;
+    migrate_scan_session_mutations(conn)?;
 
     Ok(())
 }
@@ -519,6 +532,54 @@ fn migrate_scan_sessions(
         conn.execute_batch(
             "ALTER TABLE scan_sessions ADD COLUMN last_heartbeat_at TEXT \
                  NOT NULL DEFAULT '1970-01-01T00:00:00Z';",
+        )?;
+    }
+    Ok(())
+}
+
+/// Phase 4 of process streaming: track VOOM-originated filesystem mutations
+/// per scan session so reconciliation does not treat them as missing or
+/// externally changed, and so the scanner can skip them mid-walk.
+fn migrate_scan_session_mutations(conn: &Connection) -> rusqlite::Result<()> {
+    if !table_exists(conn, "scan_session_mutations")? {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS scan_session_mutations (
+                session_id  TEXT NOT NULL,
+                path        TEXT NOT NULL,
+                kind        TEXT NOT NULL,
+                recorded_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_scan_session_mutations_session
+                ON scan_session_mutations(session_id);",
+        )?;
+        return Ok(());
+    }
+    // Repair: an earlier rev of this branch shipped an `original_path`
+    // column. Detect that shape by column name and rebuild the table.
+    // The check is presence-only, which is sufficient because no production
+    // users exist yet — dev DBs that picked up the obsolete shape get
+    // rebuilt here, and the obsolete rows are discarded.
+    let has_original_path: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('scan_session_mutations') \
+         WHERE name = 'original_path'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_original_path {
+        conn.execute_batch(
+            "BEGIN;
+            DROP TABLE scan_session_mutations;
+            CREATE TABLE scan_session_mutations (
+                session_id  TEXT NOT NULL,
+                path        TEXT NOT NULL,
+                kind        TEXT NOT NULL,
+                recorded_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_scan_session_mutations_session
+                ON scan_session_mutations(session_id);
+            COMMIT;",
         )?;
     }
     Ok(())

@@ -23,7 +23,8 @@ use voom_domain::events::{
 };
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
-use voom_domain::storage::StorageTrait;
+use voom_domain::scan_session_mutations::record_mutation_for_pending_write;
+use voom_domain::storage::{ScanSessionMutationStorage, StorageTrait};
 use voom_domain::temp_file::temp_path;
 use voom_domain::utils::language::is_valid_language;
 use voom_domain::utils::sanitize::validate_metadata_value;
@@ -154,6 +155,14 @@ impl FfmpegExecutorPlugin {
     pub fn with_store(mut self, store: Arc<dyn StorageTrait>) -> Self {
         self.store = Some(store);
         self
+    }
+
+    /// Return a storage handle as a `ScanSessionMutationStorage` trait object, if available.
+    #[must_use]
+    fn mutation_storage(&self) -> Option<&dyn ScanSessionMutationStorage> {
+        self.store
+            .as_deref()
+            .map(|s| s as &dyn ScanSessionMutationStorage)
     }
 
     /// Check whether this plugin can handle the given plan.
@@ -322,12 +331,13 @@ impl FfmpegExecutorPlugin {
                 .iter()
                 .filter(|a| a.operation == OperationType::MuxSubtitle)
             {
-                results.extend(self.execute_mux_subtitle(&plan.file.path, action)?);
+                results.extend(self.execute_mux_subtitle(plan, action)?);
             }
             return Ok(results);
         }
 
-        let execution = executor::execute_plan_with_outcomes(plan, &self.hw_accel)?;
+        let execution =
+            executor::execute_plan_with_outcomes(plan, &self.hw_accel, self.mutation_storage())?;
         if let Some(store) = &self.store {
             for outcome in &execution.transcode_outcomes {
                 store.insert_transcode_outcome(outcome)?;
@@ -355,9 +365,10 @@ impl FfmpegExecutorPlugin {
     /// Execute a `MuxSubtitle` action by running ffmpeg.
     fn execute_mux_subtitle(
         &self,
-        path: &std::path::Path,
+        plan: &Plan,
         action: &PlannedAction,
     ) -> Result<Vec<voom_domain::plan::ActionResult>> {
+        let path = &plan.file.path;
         let ActionParams::MuxSubtitle {
             subtitle_path,
             language,
@@ -402,6 +413,15 @@ impl FfmpegExecutorPlugin {
 
         match output {
             Ok(o) if o.status.success() => {
+                record_mutation_for_pending_write(
+                    self.mutation_storage(),
+                    plan.scan_session,
+                    path,
+                    path,
+                )
+                .inspect_err(|_| {
+                    let _ = std::fs::remove_file(&temp_path);
+                })?;
                 std::fs::rename(&temp_path, path).map_err(|e| {
                     let _ = std::fs::remove_file(&temp_path);
                     plugin_err(format!("failed to rename temp file: {e}"))
@@ -488,6 +508,9 @@ impl FfmpegExecutorPlugin {
         let mut file = voom_domain::media::MediaFile::new(event.path.clone());
         file.container = container;
         let mut plan = Plan::new(file, "subtitle-mux", phase_name);
+        if let Some(session) = event.scan_session {
+            plan = plan.with_scan_session(session);
+        }
         plan.actions = vec![PlannedAction::file_op(
             OperationType::MuxSubtitle,
             ActionParams::MuxSubtitle {
@@ -753,6 +776,63 @@ mod tests {
         ));
         let result = plugin.on_event(&event).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_subtitle_generated_propagates_scan_session_to_synthesized_plan() {
+        use voom_domain::transition::ScanSessionId;
+
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
+        let session = ScanSessionId::new();
+        let event = Event::SubtitleGenerated(
+            voom_domain::events::SubtitleGeneratedEvent::new(
+                PathBuf::from("/media/movie.mp4"),
+                PathBuf::from("/media/movie.forced-eng.srt"),
+                "eng",
+                true,
+            )
+            .with_scan_session(session),
+        );
+
+        let result = plugin.on_event(&event).unwrap().expect("must claim event");
+        let plan_event = result
+            .produced_events
+            .iter()
+            .find_map(|e| match e {
+                Event::PlanCreated(pe) => Some(pe),
+                _ => None,
+            })
+            .expect("must emit PlanCreated");
+        assert_eq!(
+            plan_event.plan.scan_session,
+            Some(session),
+            "synthesized plan must carry the source event's scan_session"
+        );
+    }
+
+    #[test]
+    fn test_subtitle_generated_without_scan_session_plan_has_none() {
+        let plugin = FfmpegExecutorPlugin::new().with_available(true);
+        let event = Event::SubtitleGenerated(voom_domain::events::SubtitleGeneratedEvent::new(
+            PathBuf::from("/media/movie.mp4"),
+            PathBuf::from("/media/movie.forced-eng.srt"),
+            "eng",
+            false,
+        ));
+
+        let result = plugin.on_event(&event).unwrap().expect("must claim event");
+        let plan_event = result
+            .produced_events
+            .iter()
+            .find_map(|e| match e {
+                Event::PlanCreated(pe) => Some(pe),
+                _ => None,
+            })
+            .expect("must emit PlanCreated");
+        assert_eq!(
+            plan_event.plan.scan_session, None,
+            "synthesized plan must have no scan_session when event has none"
+        );
     }
 
     // ── can_handle: positive cases ──────────────────────────────
