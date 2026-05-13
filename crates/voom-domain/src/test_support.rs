@@ -28,8 +28,8 @@ use crate::storage::{
     BadFileFilters, BadFileStorage, CostModelSampleFilters, EstimateStorage, FileFilters,
     FileStorage, FileTransitionStorage, HealthCheckFilters, HealthCheckRecord, HealthCheckStorage,
     JobFilters, JobStorage, MaintenanceStorage, PageStats, PendingOperation, PendingOpsStorage,
-    PlanStorage, PlanSummary, PluginDataStorage, ScanSessionMutationStorage, SnapshotStorage,
-    TranscodeOutcomeFilters, TranscodeOutcomeStorage,
+    PlanStorage, PlanSummary, PluginDataStorage, PluginStatsStorage, PruneReport, RetentionPolicy,
+    ScanSessionMutationStorage, SnapshotStorage, TranscodeOutcomeFilters, TranscodeOutcomeStorage,
 };
 use crate::transcode::TranscodeOutcome;
 use crate::transition::{
@@ -149,6 +149,7 @@ pub struct InMemoryStore {
     mutations: Mutex<
         HashMap<(crate::transition::ScanSessionId, std::path::PathBuf), VoomOriginatedMutation>,
     >,
+    plugin_stats: Mutex<Vec<crate::plugin_stats::PluginStatRecord>>,
 }
 
 impl InMemoryStore {
@@ -170,6 +171,7 @@ impl InMemoryStore {
             new_in_session: Default::default(),
             file_session_affinity: Default::default(),
             mutations: Default::default(),
+            plugin_stats: Mutex::new(Vec::new()),
         }
     }
 
@@ -1966,6 +1968,134 @@ mod transcode_outcome_storage_tests {
             .expect("some outcome");
 
         assert_eq!(latest.id, Uuid::from_u128(2));
+    }
+}
+
+impl PluginStatsStorage for InMemoryStore {
+    fn insert_plugin_stat(&self, record: &crate::plugin_stats::PluginStatRecord) -> Result<()> {
+        self.plugin_stats.lock().push(record.clone());
+        Ok(())
+    }
+
+    fn insert_plugin_stats_batch(
+        &self,
+        records: &[crate::plugin_stats::PluginStatRecord],
+    ) -> Result<()> {
+        let mut guard = self.plugin_stats.lock();
+        guard.extend_from_slice(records);
+        Ok(())
+    }
+
+    fn rollup_plugin_stats(
+        &self,
+        filter: &crate::plugin_stats::PluginStatsFilter,
+    ) -> Result<Vec<crate::plugin_stats::PluginStatsRollup>> {
+        let guard = self.plugin_stats.lock();
+        let mut by_plugin: std::collections::BTreeMap<
+            String,
+            Vec<&crate::plugin_stats::PluginStatRecord>,
+        > = std::collections::BTreeMap::new();
+        for r in guard.iter() {
+            if let Some(p) = &filter.plugin {
+                if &r.plugin_id != p {
+                    continue;
+                }
+            }
+            if let Some(since) = filter.since {
+                if r.started_at < since {
+                    continue;
+                }
+            }
+            by_plugin.entry(r.plugin_id.clone()).or_default().push(r);
+        }
+        let mut out = Vec::new();
+        for (plugin_id, mut rows) in by_plugin {
+            rows.sort_by_key(|r| r.duration_ms);
+            let mut rollup = crate::plugin_stats::PluginStatsRollup {
+                plugin_id,
+                invocation_count: rows.len() as u64,
+                ..Default::default()
+            };
+            for r in &rows {
+                match &r.outcome {
+                    crate::plugin_stats::PluginInvocationOutcome::Ok => rollup.ok_count += 1,
+                    crate::plugin_stats::PluginInvocationOutcome::Skipped => {
+                        rollup.skipped_count += 1;
+                    }
+                    crate::plugin_stats::PluginInvocationOutcome::Err { .. } => {
+                        rollup.err_count += 1;
+                    }
+                    crate::plugin_stats::PluginInvocationOutcome::Panic => {
+                        rollup.panic_count += 1;
+                    }
+                }
+                rollup.total_ms = rollup.total_ms.saturating_add(r.duration_ms);
+            }
+            if !rows.is_empty() {
+                let durs: Vec<u64> = rows.iter().map(|r| r.duration_ms).collect();
+                // `durs` is sorted ASC because `rows` was sorted by duration_ms above.
+                rollup.p50_ms = crate::plugin_stats::nearest_rank_percentile(&durs, 50);
+                rollup.p95_ms = crate::plugin_stats::nearest_rank_percentile(&durs, 95);
+                rollup.p99_ms = crate::plugin_stats::nearest_rank_percentile(&durs, 99);
+            }
+            out.push(rollup);
+        }
+        out.sort_by(|a, b| b.p95_ms.cmp(&a.p95_ms));
+        if let Some(top) = filter.top {
+            out.truncate(top);
+        }
+        Ok(out)
+    }
+
+    fn prune_old_plugin_stats(&self, policy: RetentionPolicy) -> Result<PruneReport> {
+        if policy.is_disabled() {
+            let kept = self.plugin_stats.lock().len() as u64;
+            return Ok(PruneReport { deleted: 0, kept });
+        }
+        let cutoff = policy.max_age.map(|d| chrono::Utc::now() - d);
+        let keep_last = policy.keep_last.map(|n| n as usize);
+        let mut guard = self.plugin_stats.lock();
+        guard.sort_by_key(|r| std::cmp::Reverse(r.started_at));
+        let before = guard.len();
+        let mut kept_rows = Vec::new();
+        for (idx, row) in guard.drain(..).enumerate() {
+            let too_old = cutoff.is_some_and(|c| row.started_at < c);
+            let over_cap = keep_last.is_some_and(|k| idx >= k);
+            if !(too_old || over_cap) {
+                kept_rows.push(row);
+            }
+        }
+        *guard = kept_rows;
+        let after = guard.len();
+        Ok(PruneReport {
+            deleted: (before - after) as u64,
+            kept: after as u64,
+        })
+    }
+
+    fn count_old_plugin_stats(&self, policy: RetentionPolicy) -> Result<PruneReport> {
+        if policy.is_disabled() {
+            let kept = self.plugin_stats.lock().len() as u64;
+            return Ok(PruneReport { deleted: 0, kept });
+        }
+        let guard = self.plugin_stats.lock();
+        let cutoff = policy.max_age.map(|d| chrono::Utc::now() - d);
+        let keep_last = policy.keep_last.map(|n| n as usize);
+        let mut sorted: Vec<_> = guard.iter().collect();
+        sorted.sort_by_key(|r| std::cmp::Reverse(r.started_at));
+        let mut deleted = 0u64;
+        for (idx, row) in sorted.iter().enumerate() {
+            let too_old = cutoff.is_some_and(|c| row.started_at < c);
+            let over_cap = keep_last.is_some_and(|k| idx >= k);
+            if too_old || over_cap {
+                deleted += 1;
+            }
+        }
+        let total = guard.len() as u64;
+        Ok(PruneReport {
+            deleted,
+            kept: total.saturating_sub(deleted),
+        })
     }
 }
 

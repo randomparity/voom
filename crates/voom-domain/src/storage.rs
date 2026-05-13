@@ -751,6 +751,39 @@ pub trait EstimateStorage: Send + Sync {
     ) -> Result<Vec<CostModelSample>>;
 }
 
+/// Per-plugin invocation statistics (issue #92).
+///
+/// # Errors
+/// Methods return `VoomError::Storage` on database failures.
+pub trait PluginStatsStorage: Send + Sync {
+    /// Insert a single invocation record. Called from the event bus
+    /// dispatcher (indirectly via `StatsSink`). Must be tolerant of
+    /// high write rates.
+    fn insert_plugin_stat(&self, record: &crate::plugin_stats::PluginStatRecord) -> Result<()>;
+
+    /// Insert a batch of invocation records in a single transaction.
+    /// Used by `SqliteStatsSink` for amortized write cost.
+    fn insert_plugin_stats_batch(
+        &self,
+        records: &[crate::plugin_stats::PluginStatRecord],
+    ) -> Result<()>;
+
+    /// Aggregate counts and percentile latencies per plugin, optionally
+    /// filtered by `plugin`, `since`, and limited to the `top` slowest
+    /// (by p95).
+    fn rollup_plugin_stats(
+        &self,
+        filter: &crate::plugin_stats::PluginStatsFilter,
+    ) -> Result<Vec<crate::plugin_stats::PluginStatsRollup>>;
+
+    /// Delete invocation rows per retention `policy`.
+    fn prune_old_plugin_stats(&self, policy: RetentionPolicy) -> Result<PruneReport>;
+
+    /// Count rows that would be deleted by `prune_old_plugin_stats`,
+    /// without modifying the database.
+    fn count_old_plugin_stats(&self, policy: RetentionPolicy) -> Result<PruneReport>;
+}
+
 /// Storage trait for recording and querying VOOM-originated filesystem mutations.
 ///
 /// Called by executor plugins (`ffmpeg-executor`, `mkvtoolnix-executor`) to mark
@@ -805,6 +838,7 @@ pub trait StorageTrait:
     + TranscodeOutcomeStorage
     + EstimateStorage
     + ScanSessionMutationStorage
+    + PluginStatsStorage
 {
 }
 
@@ -825,6 +859,7 @@ impl<T> StorageTrait for T where
         + TranscodeOutcomeStorage
         + EstimateStorage
         + ScanSessionMutationStorage
+        + PluginStatsStorage
 {
 }
 
@@ -943,6 +978,12 @@ impl PlanSummary {
             result: None,
         }
     }
+}
+
+#[cfg(test)]
+mod plugin_stats_storage_compile_check {
+    use super::*;
+    fn _assert_object_safe(_x: &dyn PluginStatsStorage) {}
 }
 
 #[cfg(test)]
