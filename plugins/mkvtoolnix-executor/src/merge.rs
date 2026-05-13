@@ -67,7 +67,13 @@ pub fn execute_merge_actions(
         // Otherwise, replace the original file.
         let final_path = determine_final_path(path, actions);
 
-        // Record the mutation before renaming so the scanner can exclude this path.
+        // Fail-closed: record the VOOM mutation BEFORE the rename. The helper is
+        // #[must_use]; the ? propagates the storage error and aborts the rename.
+        // The ffmpeg-executor crate carries a behavioral regression test
+        // (`rename_output_refuses_to_rename_when_storage_errors`); the mkvtoolnix
+        // surface is structurally identical, so we rely on the helper-level test
+        // (`helper_returns_err_when_session_active_and_storage_errors` in voom-domain)
+        // rather than a duplicate end-to-end test that would invoke mkvmerge in CI.
         // Guard will clean up temp file on drop if this fails.
         record_mutation_for_pending_write(storage, scan_session, path, &final_path)?;
 

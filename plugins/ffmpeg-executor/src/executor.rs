@@ -1258,4 +1258,61 @@ mod tests {
         let outcome = &prepared.outcomes[0];
         assert_eq!(outcome.target_vmaf, Some(88));
     }
+
+    #[test]
+    fn rename_output_refuses_to_rename_when_storage_errors() {
+        use std::path::Path;
+
+        use voom_domain::errors::{StorageErrorKind, VoomError};
+        use voom_domain::scan_session_mutations::VoomOriginatedMutation;
+        use voom_domain::storage::ScanSessionMutationStorage;
+        use voom_domain::transition::ScanSessionId;
+
+        struct FailingStore;
+        impl ScanSessionMutationStorage for FailingStore {
+            fn record_voom_mutation(&self, _: &VoomOriginatedMutation) -> Result<()> {
+                Err(VoomError::Storage {
+                    kind: StorageErrorKind::Other,
+                    message: "injected failure".into(),
+                })
+            }
+            fn is_voom_originated(&self, _: ScanSessionId, _: &Path) -> Result<bool> {
+                Ok(false)
+            }
+            fn voom_mutations_for_session(
+                &self,
+                _: ScanSessionId,
+            ) -> Result<Vec<VoomOriginatedMutation>> {
+                Ok(Vec::new())
+            }
+        }
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let source_path = tmp.path().join("source.mkv");
+        let output_path = tmp.path().join("source.voom_tmp_xyz.mkv");
+
+        // Pre-populate both files with distinct bytes so we can detect any
+        // accidental rename.
+        fs::write(&source_path, b"ORIGINAL").unwrap();
+        fs::write(&output_path, b"TRANSCODED").unwrap();
+
+        let file = MediaFile::new(source_path.clone());
+        let plan =
+            Plan::new(file, "test-policy", "test-phase").with_scan_session(ScanSessionId::new());
+
+        let storage: &dyn ScanSessionMutationStorage = &FailingStore;
+        let result = rename_output(&plan, &output_path, "mkv", Some(storage));
+
+        assert!(
+            result.is_err(),
+            "rename_output must fail-closed when storage errors"
+        );
+        assert_eq!(
+            fs::read(&source_path).unwrap(),
+            b"ORIGINAL",
+            "source must be byte-identical — rename must not have happened"
+        );
+        // Output path may or may not be cleaned up by the executor's existing
+        // error-handling cleanup; either is fine as long as the source is intact.
+    }
 }

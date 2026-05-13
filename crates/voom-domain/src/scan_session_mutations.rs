@@ -190,4 +190,58 @@ mod tests {
         );
         assert_eq!(infer("/m/a.mkv", "/m/b.mkv"), MutationKind::Rename);
     }
+
+    #[test]
+    fn helper_returns_err_when_session_active_and_storage_errors() {
+        use std::path::Path;
+
+        use crate::errors::{StorageErrorKind, VoomError};
+        use crate::storage::ScanSessionMutationStorage;
+        use crate::transition::ScanSessionId;
+
+        struct AlwaysFailingStore;
+        impl ScanSessionMutationStorage for AlwaysFailingStore {
+            fn record_voom_mutation(
+                &self,
+                _: &VoomOriginatedMutation,
+            ) -> crate::errors::Result<()> {
+                Err(VoomError::Storage {
+                    kind: StorageErrorKind::Other,
+                    message: "injected failure".into(),
+                })
+            }
+            fn is_voom_originated(
+                &self,
+                _: ScanSessionId,
+                _: &Path,
+            ) -> crate::errors::Result<bool> {
+                Ok(false)
+            }
+            fn voom_mutations_for_session(
+                &self,
+                _: ScanSessionId,
+            ) -> crate::errors::Result<Vec<VoomOriginatedMutation>> {
+                Ok(Vec::new())
+            }
+        }
+
+        let store = AlwaysFailingStore;
+        let session = ScanSessionId::new();
+        let r = record_mutation_for_pending_write(
+            Some(&store),
+            Some(session),
+            Path::new("/m/foo.mkv"),
+            Path::new("/m/foo.mkv"),
+        );
+        let err = r.expect_err("must surface storage error so caller can abort");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("VOOM mutation") || msg.contains("scanner race"),
+            "error message must explain why caller should abort; got: {msg}"
+        );
+        assert!(
+            matches!(err, VoomError::ToolExecution { .. }),
+            "must wrap storage error as ToolExecution so callers can propagate via ?; got: {err:?}"
+        );
+    }
 }
