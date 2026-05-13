@@ -2,8 +2,9 @@
 //! `mpsc::Receiver`, enqueue them into the SQLite-backed `JobQueue`, and
 //! claim/process them concurrently while an `execution_gate` is held open.
 
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -22,6 +23,12 @@ use crate::worker::{
 /// the loop only sleeps when there is genuinely no pending work.
 const CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
+/// Run-scoped pending queue entries: `(priority, seq, id)` wrapped in
+/// `Reverse` so the max-heap yields the lowest priority (and then earliest
+/// `seq`) first — matching the SQLite store's
+/// `ORDER BY priority ASC, created_at ASC`.
+type PendingHeap = BinaryHeap<Reverse<(i32, u64, Uuid)>>;
+
 /// Arguments shared across all workers in a single `process_stream` invocation.
 ///
 /// Bundled into a struct to keep `spawn_worker`'s signature within the
@@ -33,6 +40,7 @@ struct WorkerSpawnArgs<F> {
     on_error: JobErrorStrategy,
     reporter: Arc<dyn ProgressReporter>,
     result_tx: mpsc::Sender<JobResult>,
+    pending_heap: Arc<Mutex<PendingHeap>>,
 }
 
 impl WorkerPool {
@@ -44,10 +52,12 @@ impl WorkerPool {
     /// 1. the receiver has been drained (producer dropped the `tx` end),
     /// 2. and every worker has finished its last in-flight job.
     ///
-    /// Workers claim work via [`crate::queue::JobQueue::claim`], which honors
-    /// the SQLite store's priority ordering (`ORDER BY priority ASC, created_at
-    /// ASC`). This is the same dispatch order used by `voom process` in batch
-    /// mode and by `--priority-by-date`.
+    /// Workers claim work from a run-scoped priority heap of ids enqueued by
+    /// this invocation, then call [`crate::queue::JobQueue::claim_by_id`] for
+    /// the specific row. The heap is ordered to match the SQLite store's
+    /// `ORDER BY priority ASC, created_at ASC`, so dispatch order matches the
+    /// batch path and `--priority-by-date`; the run-scoping prevents stale
+    /// Pending rows in the shared `jobs` table from leaking into the stream.
     ///
     /// Cancellation: the pool's internal token (passed via [`WorkerPool::new`])
     /// is the shared signal. When cancelled, the enqueuer stops draining the
@@ -90,6 +100,16 @@ impl WorkerPool {
         // rows that may already exist in a long-lived SQLite store.
         let enqueued_ids: Arc<Mutex<HashSet<Uuid>>> = Arc::new(Mutex::new(HashSet::new()));
 
+        // Run-scoped pending queue. The enqueuer pushes `(priority, seq, id)`
+        // for every successful enqueue; workers pop the best-priority entry
+        // and `claim_by_id` that specific row. Guarantees workers only see
+        // THIS pool's enqueued jobs (no spillover from stale Pending rows in
+        // the shared `jobs` table) AND preserves the SQLite store's
+        // `ORDER BY priority ASC, created_at ASC`. `seq` is a monotonic
+        // counter so equal-priority jobs come out in enqueue order.
+        let pending_heap: Arc<Mutex<PendingHeap>> = Arc::new(Mutex::new(BinaryHeap::new()));
+        let enqueue_seq = Arc::new(AtomicU64::new(0));
+
         let (result_tx, mut result_rx) = mpsc::channel::<JobResult>(effective_workers.max(1) * 4);
 
         // --- Enqueuer task --------------------------------------------------
@@ -97,6 +117,8 @@ impl WorkerPool {
             items,
             producer_done_flag.clone(),
             enqueued_ids.clone(),
+            pending_heap.clone(),
+            enqueue_seq.clone(),
             reporter.clone(),
             result_tx.clone(),
         );
@@ -111,6 +133,7 @@ impl WorkerPool {
                 on_error,
                 reporter: reporter.clone(),
                 result_tx: result_tx.clone(),
+                pending_heap: pending_heap.clone(),
             });
             worker_handles.push(handle);
         }
@@ -140,6 +163,9 @@ impl WorkerPool {
         // the SQLite store is long-lived and may legitimately hold Pending
         // rows from prior crashes or other code paths.
         if self.token.is_cancelled() {
+            // Drain the heap so no stale entries remain visible to any worker
+            // that might still be racing the cancellation signal.
+            pending_heap.lock().expect("pending_heap mutex").clear();
             let leftover = collect_unstarted_enqueued_ids(&self.queue, &enqueued_ids);
             cancel_unstarted_jobs(self.queue.clone(), leftover).await;
         }
@@ -155,12 +181,16 @@ impl WorkerPool {
     /// Spawn the single enqueuer task that drains `items` into the job queue
     /// and flips `producer_done_flag` on completion. Every successful enqueue
     /// id is recorded in `enqueued_ids` so cancellation cleanup can scope its
-    /// sweep to jobs produced by this run.
+    /// sweep to jobs produced by this run, and pushed onto `pending_heap` so
+    /// workers can pop the best-priority entry for `claim_by_id`.
+    #[allow(clippy::too_many_arguments)]
     fn spawn_enqueuer<P>(
         &self,
         mut items: mpsc::Receiver<WorkItem<P>>,
         producer_done_flag: Arc<AtomicBool>,
         enqueued_ids: Arc<Mutex<HashSet<Uuid>>>,
+        pending_heap: Arc<Mutex<PendingHeap>>,
+        enqueue_seq: Arc<AtomicU64>,
         reporter: Arc<dyn ProgressReporter>,
         result_tx: mpsc::Sender<JobResult>,
     ) -> JoinHandle<()>
@@ -182,6 +212,7 @@ impl WorkerPool {
                     break;
                 };
 
+                let priority = item.priority;
                 let json_payload = match item.payload.map(serde_json::to_value) {
                     Some(Ok(v)) => Some(v),
                     Some(Err(e)) => {
@@ -200,6 +231,11 @@ impl WorkerPool {
                 };
                 match queue.enqueue(item.job_type, item.priority, json_payload) {
                     Ok(id) => {
+                        let seq = enqueue_seq.fetch_add(1, Ordering::SeqCst);
+                        pending_heap
+                            .lock()
+                            .expect("pending_heap mutex poisoned")
+                            .push(Reverse((priority, seq, id)));
                         enqueued_ids
                             .lock()
                             .expect("enqueued_ids mutex poisoned")
@@ -239,6 +275,7 @@ impl WorkerPool {
             on_error,
             reporter,
             result_tx,
+            pending_heap,
         } = args;
         let queue = self.queue.clone();
         let token = self.token.clone();
@@ -266,23 +303,41 @@ impl WorkerPool {
                     return;
                 }
 
-                // Claim the next pending job via the queue, which honors the
-                // SQLite store's priority ordering. This is the same dispatch
-                // order used by the batch path and by `--priority-by-date`.
-                let claim_queue = queue.clone();
-                let wid = worker_id.clone();
-                let claim_result =
-                    tokio::task::spawn_blocking(move || claim_queue.claim(&wid)).await;
+                // Pop the best-priority entry that THIS pool enqueued. Using
+                // a run-scoped heap (instead of `queue.claim()`) ensures
+                // workers never observe stale Pending rows from prior runs
+                // or other code paths sharing the same SQLite store. The
+                // heap is ordered to match the store's priority + insert
+                // order, so dispatch order is unchanged.
+                let next_id_opt: Option<Uuid> = {
+                    let mut heap = pending_heap.lock().expect("pending_heap mutex");
+                    heap.pop().map(|Reverse((_, _, id))| id)
+                };
+
+                let claim_result = if let Some(id) = next_id_opt {
+                    let claim_queue = queue.clone();
+                    let wid = worker_id.clone();
+                    tokio::task::spawn_blocking(move || claim_queue.claim_by_id(&id, &wid)).await
+                } else {
+                    // Nothing in the heap right now. If the enqueuer has
+                    // finished and the heap is still empty, we're done.
+                    // Otherwise back off briefly and retry.
+                    if producer_done_flag.load(Ordering::SeqCst)
+                        && pending_heap.lock().expect("pending_heap mutex").is_empty()
+                    {
+                        return;
+                    }
+                    tokio::time::sleep(CLAIM_POLL_INTERVAL).await;
+                    continue;
+                };
 
                 let job = match claim_result {
                     Ok(Ok(Some(job))) => job,
                     Ok(Ok(None)) => {
-                        // No pending work right now. If the enqueuer is done,
-                        // we're finished; otherwise sleep briefly and retry.
-                        if producer_done_flag.load(Ordering::SeqCst) {
-                            return;
-                        }
-                        tokio::time::sleep(CLAIM_POLL_INTERVAL).await;
+                        // The job we popped was no longer claimable (e.g.
+                        // cancelled by another path). Loop to try the next
+                        // heap entry; if the heap drains and the producer is
+                        // done, the next iteration will exit cleanly.
                         continue;
                     }
                     Ok(Err(e)) => {
@@ -673,6 +728,73 @@ mod tests {
         let _ = handle.await.unwrap();
 
         assert_eq!(reporter.extended.load(Ordering::SeqCst), 6);
+    }
+
+    #[tokio::test]
+    async fn process_stream_ignores_unrelated_pending_jobs() {
+        let (pool, queue) = fresh_pool();
+        let (tx, rx) = mpsc::channel::<WorkItem<()>>(8);
+        let gate = Arc::new(Notify::new());
+
+        // Pre-seed an unrelated Pending job on the same queue (simulates a
+        // stale row from a prior run / other code path).
+        let alien_id = queue
+            .enqueue(
+                JobType::Process,
+                50,
+                Some(serde_json::json!({"alien": true})),
+            )
+            .expect("seed alien job");
+
+        // Now enqueue this run's jobs.
+        for _ in 0..3 {
+            tx.send(dummy_item()).await.unwrap();
+        }
+        drop(tx);
+
+        let invocations: Arc<Mutex<Vec<Uuid>>> = Arc::new(Mutex::new(Vec::new()));
+        let invocations_for_proc = invocations.clone();
+        let queue_for_assert = queue.clone();
+        let gate_for_task = gate.clone();
+        let handle = tokio::spawn(async move {
+            pool.process_stream(
+                rx,
+                gate_for_task,
+                move |job| {
+                    let invocations = invocations_for_proc.clone();
+                    async move {
+                        invocations.lock().expect("invocations mutex").push(job.id);
+                        Ok(None)
+                    }
+                },
+                JobErrorStrategy::Continue,
+                Arc::new(NoopReporter),
+            )
+            .await
+        });
+
+        // Wait for workers to register on gate.notified() before opening it
+        // (Notify::notify_waiters is edge-triggered).
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        gate.notify_waiters();
+        let results = handle.await.unwrap();
+
+        let seen = invocations.lock().expect("invocations mutex").clone();
+        assert_eq!(seen.len(), 3, "must NOT claim the alien pending job");
+        assert!(
+            !seen.contains(&alien_id),
+            "alien job leaked into the stream"
+        );
+        assert_eq!(results.iter().filter(|r| r.is_success()).count(), 3);
+
+        // Alien job remains Pending in the queue.
+        let mut filters = voom_domain::storage::JobFilters::default();
+        filters.status = Some(voom_domain::job::JobStatus::Pending);
+        let still_pending = queue_for_assert.list_jobs(&filters).unwrap();
+        assert!(
+            still_pending.iter().any(|j| j.id == alien_id),
+            "alien job should remain Pending after this run finishes"
+        );
     }
 
     /// Spec compliance: workers must dispatch jobs in SQLite priority order
