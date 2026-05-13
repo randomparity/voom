@@ -319,15 +319,29 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
 
         heartbeat_handle.abort();
 
-        if token.is_cancelled() {
-            if let Err(e) = store.cancel_scan_session(scan_session) {
-                tracing::warn!(error = %e, "failed to cancel scan session after cancellation");
-            }
-        } else {
-            match store.finish_scan_session(scan_session) {
-                Ok(summary) => tracing::info!(?summary, "scan session finished"),
-                Err(e) => tracing::warn!(error = %e, "failed to finish scan session"),
-            }
+        // Mark the session terminated. We intentionally use cancel rather than
+        // finish: finish_scan_session computes a "missing files" set as the
+        // difference between the files table and files ingested via
+        // ingest_discovered_file(session, ...) during the session. The streaming
+        // pipeline does not currently call ingest_discovered_file per file — it
+        // emits FileDiscovered events via the kernel bus, and sqlite-store's
+        // handler uses upsert_discovered_file which does NOT register the file
+        // against the active session. As a result, finish_scan_session would
+        // mark every pre-existing file as missing.
+        //
+        // The fail-closed safety properties this scan session enables
+        // (record_voom_mutation at the executor, SessionMutationSnapshot at
+        // the scanner) do not depend on finish_scan_session — they engage on
+        // session begin and during executor/scanner work. The "skip missing
+        // files" behavior of finish is left for a follow-up that wires
+        // ingest_discovered_file into the streaming FileDiscovered path.
+        //
+        // FOLLOWUP(#361): wire ingest_discovered_file into the streaming
+        // FileDiscovered handler (or thread an active session id into
+        // FileDiscoveredEvent and have sqlite-store dispatch on it), then
+        // reinstate finish_scan_session on the success path.
+        if let Err(e) = store.cancel_scan_session(scan_session) {
+            tracing::warn!(error = %e, "failed to cancel scan session");
         }
 
         if outcome.discovery_errors > 0 {
