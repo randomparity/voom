@@ -252,7 +252,9 @@ async fn process_single_file_execute(
         ) else {
             continue;
         };
-        let mut plan = plan.with_session_id(ctx.counters.session_id);
+        let mut plan = plan
+            .with_session_id(ctx.counters.session_id)
+            .with_scan_session(ctx.scan_session);
 
         plans_evaluated += 1;
 
