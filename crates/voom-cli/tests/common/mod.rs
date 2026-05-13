@@ -46,7 +46,7 @@ use voom_sqlite_store::store::SqliteStore;
 
 /// Default no-op policy used when the caller does not call `set_policy`.
 const DEFAULT_POLICY: &str = r#"policy "test" {
-    phase "noop" {
+    phase noop {
         keep audio
     }
 }
@@ -169,6 +169,19 @@ impl TestEnv {
         std::fs::create_dir_all(&primary_root).expect("create media root");
         std::fs::create_dir_all(&voom_config_dir).expect("create voom config dir");
 
+        // Canonicalize paths so they match what `resolve_paths` produces in
+        // process::run (which calls `Path::canonicalize` on all CLI args).
+        // On macOS `/var` is a symlink to `/private/var`; without this step,
+        // `RootWalkCompletedEvent.root` wouldn't match the path returned by
+        // `add_root` and timing assertions would always fail.
+        let data_dir = data_dir.canonicalize().expect("canonicalize data_dir");
+        let primary_root = primary_root
+            .canonicalize()
+            .expect("canonicalize primary_root");
+        let config_home = config_home
+            .canonicalize()
+            .expect("canonicalize config_home");
+
         // Write a config.toml that points data_dir to our tempdir.
         let config_toml = format!("data_dir = {:?}\n", data_dir.display().to_string());
         let config_toml_path = voom_config_dir.join("config.toml");
@@ -202,11 +215,21 @@ impl TestEnv {
     }
 
     /// Add a named subdirectory inside the tempdir as an additional scan root.
+    ///
+    /// Returns the **canonical** path (resolving symlinks) so that it matches
+    /// the paths stored in `RootWalkCompletedEvent.root` after `resolve_paths`
+    /// canonicalizes the CLI args in `process::run`. On macOS `/var` is a
+    /// symlink to `/private/var`; callers that use the returned path with
+    /// `root_walk_completed_at` or `delay_root` must see the same canonical
+    /// representation as the scanner.
     pub fn add_root(&mut self, name: &str) -> PathBuf {
         let path = self.tmp.path().join(name);
         std::fs::create_dir_all(&path).unwrap_or_else(|e| panic!("add_root {name}: {e}"));
-        self.roots.insert(name.to_string(), path.clone());
-        path
+        let canonical = path
+            .canonicalize()
+            .unwrap_or_else(|e| panic!("add_root {name}: canonicalize: {e}"));
+        self.roots.insert(name.to_string(), canonical.clone());
+        canonical
     }
 
     /// Return the primary scan root path.

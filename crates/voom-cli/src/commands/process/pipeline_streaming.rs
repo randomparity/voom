@@ -420,6 +420,7 @@ fn spawn_ingest_stage(
             let tx_items_d = tx_items.clone();
             let enqueued_d = enqueued.clone();
             let token_d = token.clone();
+            let kernel_d = kernel.clone();
             Some(tokio::spawn(async move {
                 let mut rx = rx;
                 loop {
@@ -430,6 +431,12 @@ fn spawn_ingest_stage(
                     };
                     let Some(evt) = msg else { break };
                     gate_d.open(&evt.root);
+                    // Dispatch to the event bus so plugins (sqlite-store) can
+                    // log the event and tests can observe it via the timeline.
+                    super::dispatch::dispatch_and_log(
+                        &kernel_d,
+                        Event::RootWalkCompleted(evt.clone()),
+                    );
                     let drained = holding_d.drain_root(&evt.root);
                     for item in drained {
                         if tx_items_d.send(item).await.is_err() {
