@@ -277,7 +277,8 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
             on_error,
             bad_files,
             processor,
-            dry_run,
+            quiet,
+            plan_only,
             token.clone(),
         )
         .await?;
@@ -290,7 +291,11 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         }
 
         if outcome.discovered == 0 {
-            if plan_only {
+            if token.is_cancelled() {
+                if !plan_only && !quiet {
+                    eprintln!("{}", style("Interrupted before processing.").yellow());
+                }
+            } else if plan_only {
                 println!("[]");
             } else if !quiet {
                 eprintln!("{}", style("No media files found.").yellow());
@@ -307,12 +312,9 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
         }
 
         let file_count = outcome.enqueued as usize;
-        if !plan_only && !quiet {
-            eprintln!("Found {} media files.", style(file_count).bold());
-        }
 
         if !token.is_cancelled() {
-            kernel.clone().dispatch(Event::IntrospectSessionCompleted(
+            kernel.dispatch(Event::IntrospectSessionCompleted(
                 IntrospectSessionCompletedEvent::new(pool.completed_count()),
             ));
         }

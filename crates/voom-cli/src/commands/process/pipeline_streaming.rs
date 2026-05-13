@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
+use console::style;
 use parking_lot::Mutex;
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
@@ -89,7 +90,8 @@ pub(crate) async fn run_streaming_pipeline<F, Fut>(
     on_error: JobErrorStrategy,
     bad_files: HashSet<PathBuf>,
     processor: F,
-    _dry_run: bool,
+    quiet: bool,
+    plan_only: bool,
     token: CancellationToken,
 ) -> Result<StreamingOutcome>
 where
@@ -144,6 +146,8 @@ where
         skipped_bad.clone(),
         events_for_eta.clone(),
         reporter.clone(),
+        quiet,
+        plan_only,
     );
 
     // Drive the pool future concurrently with discovery and ingest. Awaiting
@@ -304,6 +308,8 @@ fn spawn_ingest_stage(
     skipped_bad: Arc<AtomicU64>,
     events_for_eta: Arc<Mutex<Vec<FileDiscoveredEvent>>>,
     reporter: Arc<dyn ProgressReporter>,
+    quiet: bool,
+    plan_only: bool,
 ) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
         let mut seen: HashSet<PathBuf> = HashSet::new();
@@ -371,6 +377,13 @@ fn spawn_ingest_stage(
             let events = events_for_eta.lock().clone();
             reporter.seed_events(&events);
             reporter.on_batch_start(events.len());
+
+            // Print the "Found N media files." line BEFORE workers start so the
+            // user sees discovery's final count between the spinner and the
+            // per-file progress bar, matching the pre-streaming UX.
+            if !plan_only && !quiet && !token.is_cancelled() {
+                eprintln!("Found {} media files.", style(events.len()).bold());
+            }
 
             // Sleep briefly so worker tasks reach their first `.notified()`
             // point. In production discovery takes orders of magnitude
@@ -478,6 +491,7 @@ mod tests {
                 }
             },
             true,
+            true,
             token,
         )
         .await
@@ -513,6 +527,7 @@ mod tests {
             JobErrorStrategy::Continue,
             bad,
             |_job| async { Ok(None) },
+            true,
             true,
             token,
         )
