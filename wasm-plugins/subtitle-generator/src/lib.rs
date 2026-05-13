@@ -146,12 +146,16 @@ pub fn on_event(
         ),
     );
 
-    let subtitle_event = Event::SubtitleGenerated(SubtitleGeneratedEvent::new(
+    let mut sub_event = SubtitleGeneratedEvent::new(
         media_path.clone(),
         srt_path,
         subtitle_lang,
         true,
-    ));
+    );
+    if let Some(session) = enriched.scan_session {
+        sub_event = sub_event.with_scan_session(session);
+    }
+    let subtitle_event = Event::SubtitleGenerated(sub_event);
 
     let produced_payload = serialize_event(&subtitle_event)
         .map_err(|e| {
@@ -287,6 +291,15 @@ mod tests {
         primary_lang: &str,
         segments: serde_json::Value,
     ) -> Vec<u8> {
+        make_enriched_event_with_session(source, primary_lang, segments, None)
+    }
+
+    fn make_enriched_event_with_session(
+        source: &str,
+        primary_lang: &str,
+        segments: serde_json::Value,
+        session: Option<ScanSessionId>,
+    ) -> Vec<u8> {
         let metadata = serde_json::json!({
             "source": source,
             "transcript": {
@@ -294,11 +307,15 @@ mod tests {
                 "segments": segments,
             },
         });
-        let event = Event::MetadataEnriched(MetadataEnrichedEvent::new(
+        let mut enriched = MetadataEnrichedEvent::new(
             PathBuf::from("/media/movies/test.mkv"),
             source.to_string(),
             metadata,
-        ));
+        );
+        if let Some(s) = session {
+            enriched = enriched.with_scan_session(s);
+        }
+        let event = Event::MetadataEnriched(enriched);
         serialize_event(&event).unwrap()
     }
 
@@ -365,6 +382,58 @@ mod tests {
         assert!(content.contains("Hola amigos"));
         // Primary language segments should NOT appear
         assert!(!content.contains("Hello there"));
+    }
+
+    #[test]
+    fn subtitle_generator_forwards_scan_session_from_metadata_enriched() {
+        let host = MockHost::new();
+        let session = ScanSessionId::new();
+        let segments = serde_json::json!([
+            {
+                "start": 0.0, "end": 2.5,
+                "text": "Hello there", "language": "en"
+            },
+            {
+                "start": 5.0, "end": 8.0,
+                "text": "Bonjour le monde", "language": "fr"
+            },
+        ]);
+        let payload =
+            make_enriched_event_with_session("whisper-transcriber", "en", segments, Some(session));
+
+        let result = on_event("metadata.enriched", &payload, &host);
+        assert!(result.is_some());
+        let result = result.unwrap();
+        let produced: Event = deserialize_event(&result.produced_events[0].1).unwrap();
+        let Event::SubtitleGenerated(sub) = produced else {
+            panic!("expected SubtitleGenerated");
+        };
+        assert_eq!(sub.scan_session, Some(session));
+    }
+
+    #[test]
+    fn subtitle_generator_scan_session_none_when_not_set() {
+        let host = MockHost::new();
+        let segments = serde_json::json!([
+            {
+                "start": 0.0, "end": 2.5,
+                "text": "Hello there", "language": "en"
+            },
+            {
+                "start": 5.0, "end": 8.0,
+                "text": "Bonjour le monde", "language": "fr"
+            },
+        ]);
+        let payload = make_enriched_event("whisper-transcriber", "en", segments);
+
+        let result = on_event("metadata.enriched", &payload, &host);
+        assert!(result.is_some());
+        let result = result.unwrap();
+        let produced: Event = deserialize_event(&result.produced_events[0].1).unwrap();
+        let Event::SubtitleGenerated(sub) = produced else {
+            panic!("expected SubtitleGenerated");
+        };
+        assert_eq!(sub.scan_session, None);
     }
 
     #[test]

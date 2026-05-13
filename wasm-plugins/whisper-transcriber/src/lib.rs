@@ -235,6 +235,7 @@ fn build_result(
         "multi_language_detected": detect_multi_language(&transcript_json),
     });
 
+    // TODO(#361): forward scan_session once upstream events carry it
     let enriched_event = Event::MetadataEnriched(MetadataEnrichedEvent::new(
         file.path.clone(),
         "whisper-transcriber".to_string(),

@@ -457,6 +457,7 @@ fn build_result(
         "detections": detections,
     });
 
+    // TODO(#361): forward scan_session once upstream events carry it
     let enriched_event = Event::MetadataEnriched(
         MetadataEnrichedEvent::new(
             file.path.clone(),

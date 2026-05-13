@@ -106,6 +106,7 @@ pub fn on_event(
         metadata["original_language"] = serde_json::Value::String(lang.to_string());
     }
 
+    // TODO(#361): forward scan_session once upstream events carry it
     let enriched_event = Event::MetadataEnriched(
         MetadataEnrichedEvent::new(file.path.clone(), "radarr".to_string(), metadata),
     );

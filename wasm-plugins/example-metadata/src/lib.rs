@@ -110,6 +110,7 @@ pub fn on_event(
                 "has_hdr": has_hdr,
             });
 
+            // TODO(#361): forward scan_session once upstream events carry it
             let enriched_event = Event::MetadataEnriched(MetadataEnrichedEvent::new(
                 file.path.clone(),
                 "example-metadata".to_string(),

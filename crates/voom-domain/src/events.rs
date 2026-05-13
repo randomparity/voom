@@ -490,6 +490,14 @@ pub struct MetadataEnrichedEvent {
     pub path: PathBuf,
     pub source: String,
     pub metadata: serde_json::Value,
+    /// Scan session this enrichment was produced within. Producers that
+    /// received their input event during an active scan session must
+    /// forward this field so downstream consumers (notably
+    /// subtitle-generator → SubtitleGenerated → executor rename) preserve
+    /// the chain of custody for VOOM-originated filesystem writes. None
+    /// when enrichment happens outside a scan session.
+    #[serde(default)]
+    pub scan_session: Option<crate::transition::ScanSessionId>,
 }
 
 impl MetadataEnrichedEvent {
@@ -499,7 +507,17 @@ impl MetadataEnrichedEvent {
             path,
             source,
             metadata,
+            scan_session: None,
         }
+    }
+
+    /// Attach a scan session ID to this event. Forwarded from whatever
+    /// upstream event (e.g., `FileIntrospected`) was being processed at the
+    /// time of enrichment.
+    #[must_use]
+    pub fn with_scan_session(mut self, scan_session: crate::transition::ScanSessionId) -> Self {
+        self.scan_session = Some(scan_session);
+        self
     }
 }
 
