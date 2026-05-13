@@ -3,6 +3,7 @@ mod dispatch;
 mod pipeline;
 mod pipeline_streaming;
 mod plan_outcome;
+mod root_gate;
 mod safeguards;
 mod transitions;
 
