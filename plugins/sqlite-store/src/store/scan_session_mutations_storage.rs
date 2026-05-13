@@ -15,10 +15,7 @@ use super::SqliteStore;
 use crate::store::{other_storage_err, storage_err};
 
 /// Storage trait surface for VOOM-originated mutations.
-// Used by Task 4 (finish_scan_session) and later by executor/pipeline consumers
-// via a deliberate `pub use` in lib.rs. Suppressed until that wiring lands.
-#[allow(dead_code)]
-pub(crate) trait ScanSessionMutationStorage {
+pub trait ScanSessionMutationStorage {
     fn record_voom_mutation(&self, m: &VoomOriginatedMutation) -> Result<()>;
     fn is_voom_originated(&self, session: ScanSessionId, path: &Path) -> Result<bool>;
     /// Returns one record per VOOM-touched path in the session. Rename pairs
@@ -35,9 +32,6 @@ pub(crate) trait ScanSessionMutationStorage {
 /// Explicit, non-serde string mapping for `MutationKind` storage.
 /// Keep in sync with `MutationKind`'s `#[serde(rename_all = "snake_case")]` —
 /// any future variant must appear in both `kind_as_str` and `kind_from_str`.
-// Called from the ScanSessionMutationStorage impl; suppress until the trait
-// impl is reached through live code (Task 4 wiring).
-#[allow(dead_code)]
 fn kind_as_str(k: MutationKind) -> &'static str {
     match k {
         MutationKind::Overwrite => "overwrite",
@@ -47,7 +41,6 @@ fn kind_as_str(k: MutationKind) -> &'static str {
     }
 }
 
-#[allow(dead_code)]
 fn kind_from_str(s: &str) -> Result<MutationKind> {
     match s {
         "overwrite" => Ok(MutationKind::Overwrite),
