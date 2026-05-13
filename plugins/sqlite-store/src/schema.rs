@@ -312,11 +312,10 @@ CREATE INDEX IF NOT EXISTS idx_cost_model_samples_key_completed
     ON cost_model_samples(phase_name, codec, preset, backend, completed_at DESC);
 
 CREATE TABLE IF NOT EXISTS scan_session_mutations (
-    session_id    TEXT NOT NULL,
-    path          TEXT NOT NULL,
-    original_path TEXT,
-    kind          TEXT NOT NULL,
-    recorded_at   INTEGER NOT NULL,
+    session_id  TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    recorded_at INTEGER NOT NULL,
     PRIMARY KEY (session_id, path)
 );
 
@@ -545,11 +544,35 @@ fn migrate_scan_session_mutations(conn: &Connection) -> rusqlite::Result<()> {
     if !table_exists(conn, "scan_session_mutations")? {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS scan_session_mutations (
-                session_id    TEXT NOT NULL,
-                path          TEXT NOT NULL,
-                original_path TEXT,
-                kind          TEXT NOT NULL,
-                recorded_at   INTEGER NOT NULL,
+                session_id  TEXT NOT NULL,
+                path        TEXT NOT NULL,
+                kind        TEXT NOT NULL,
+                recorded_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, path)
+            );
+            CREATE INDEX IF NOT EXISTS idx_scan_session_mutations_session
+                ON scan_session_mutations(session_id);",
+        )?;
+        return Ok(());
+    }
+    // Repair: an earlier rev of this branch shipped an `original_path`
+    // column. Drop and recreate so the runtime model and the schema agree.
+    // No production users exist yet; dev DBs that picked up the obsolete
+    // shape get rebuilt here.
+    let has_original_path: bool = conn.query_row(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('scan_session_mutations') \
+         WHERE name = 'original_path'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_original_path {
+        conn.execute_batch(
+            "DROP TABLE scan_session_mutations;
+            CREATE TABLE scan_session_mutations (
+                session_id  TEXT NOT NULL,
+                path        TEXT NOT NULL,
+                kind        TEXT NOT NULL,
+                recorded_at INTEGER NOT NULL,
                 PRIMARY KEY (session_id, path)
             );
             CREATE INDEX IF NOT EXISTS idx_scan_session_mutations_session

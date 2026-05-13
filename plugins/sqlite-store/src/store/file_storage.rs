@@ -1262,25 +1262,23 @@ fn mark_missing_in_finish_tx(
     // (or any other trait method) would acquire a second pool connection and
     // block against the IMMEDIATE write lock this tx already holds. The bulk
     // select inside the tx is cheap and avoids that deadlock entirely.
+    // Each VOOM-touched path (rename source and destination alike) has its own
+    // row since R1 decomposed the schema. A plain SELECT path is sufficient;
+    // there is no `original_path` column to reconstruct.
     let voom_paths: HashSet<String> = {
         let mut set = HashSet::new();
         let mut stmt = tx
             .prepare(
-                "SELECT path, original_path FROM scan_session_mutations \
+                "SELECT path FROM scan_session_mutations \
                  WHERE session_id = ?1",
             )
             .map_err(storage_err("failed to prepare voom-mutations select"))?;
         let rows = stmt
-            .query_map(params![session_str], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-            })
+            .query_map(params![session_str], |row| row.get::<_, String>(0))
             .map_err(storage_err("failed to query voom-mutations"))?;
         for row in rows {
-            let (path, original) = row.map_err(storage_err("failed to read voom-mutation row"))?;
+            let path = row.map_err(storage_err("failed to read voom-mutation row"))?;
             set.insert(path);
-            if let Some(orig) = original {
-                set.insert(orig);
-            }
         }
         set
     };

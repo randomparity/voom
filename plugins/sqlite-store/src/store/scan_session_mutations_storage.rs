@@ -3,7 +3,7 @@
 //! These rows let the scanner and `finish_scan_session` distinguish VOOM's own
 //! filesystem writes from external changes.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::params;
 
@@ -21,6 +21,11 @@ use crate::store::{other_storage_err, storage_err};
 pub(crate) trait ScanSessionMutationStorage {
     fn record_voom_mutation(&self, m: &VoomOriginatedMutation) -> Result<()>;
     fn is_voom_originated(&self, session: ScanSessionId, path: &Path) -> Result<bool>;
+    /// Returns one record per VOOM-touched path in the session. Rename pairs
+    /// are decomposed at the storage boundary, so callers see two separate
+    /// records (one for the source path, one for the destination) rather than
+    /// a single record with an `original` field. This makes the on-disk model
+    /// safe against same-destination re-entrant writes.
     fn voom_mutations_for_session(
         &self,
         session: ScanSessionId,
@@ -58,26 +63,53 @@ fn kind_from_str(s: &str) -> Result<MutationKind> {
 
 impl ScanSessionMutationStorage for SqliteStore {
     fn record_voom_mutation(&self, m: &VoomOriginatedMutation) -> Result<()> {
-        let conn = self.conn()?;
-        let original = m.original.as_ref().map(|p| p.to_string_lossy().to_string());
-        let recorded_unix = m
-            .recorded_at
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(other_storage_err("recorded_at before UNIX_EPOCH"))?
-            .as_secs() as i64;
-        conn.execute(
+        let mut conn = self.conn()?;
+        let recorded_unix = i64::try_from(
+            m.recorded_at
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(other_storage_err("recorded_at before UNIX_EPOCH"))?
+                .as_secs(),
+        )
+        .map_err(other_storage_err("recorded_at exceeds i64"))?;
+        let kind = kind_as_str(m.kind);
+
+        let tx = conn
+            .transaction()
+            .map_err(storage_err("begin tx for record_voom_mutation"))?;
+
+        // One row per touched path. Same-destination re-entry is harmless because
+        // INSERT OR REPLACE keeps the row present in the skip set; the kind and
+        // recorded_at fields update but the path's protection is invariant.
+        tx.execute(
             "INSERT OR REPLACE INTO scan_session_mutations \
-             (session_id, path, original_path, kind, recorded_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+             (session_id, path, kind, recorded_at) \
+             VALUES (?1, ?2, ?3, ?4)",
             params![
                 m.session.to_string(),
                 m.path.to_string_lossy().to_string(),
-                original,
-                kind_as_str(m.kind),
+                kind,
                 recorded_unix,
             ],
         )
-        .map_err(storage_err("insert scan_session_mutation"))?;
+        .map_err(storage_err("insert destination row"))?;
+
+        if let Some(orig) = m.original.as_ref() {
+            tx.execute(
+                "INSERT OR REPLACE INTO scan_session_mutations \
+                 (session_id, path, kind, recorded_at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    m.session.to_string(),
+                    orig.to_string_lossy().to_string(),
+                    kind,
+                    recorded_unix,
+                ],
+            )
+            .map_err(storage_err("insert source row"))?;
+        }
+
+        tx.commit()
+            .map_err(storage_err("commit record_voom_mutation"))?;
         Ok(())
     }
 
@@ -101,32 +133,25 @@ impl ScanSessionMutationStorage for SqliteStore {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT path, original_path, kind, recorded_at \
+                "SELECT path, kind, recorded_at \
                  FROM scan_session_mutations WHERE session_id = ?1",
             )
             .map_err(storage_err("prepare scan_session_mutations select"))?;
         let rows = stmt
             .query_map(params![session.to_string()], |row| {
                 let path: String = row.get(0)?;
-                let original: Option<String> = row.get(1)?;
-                let kind: String = row.get(2)?;
-                let recorded_unix: i64 = row.get(3)?;
-                Ok((path, original, kind, recorded_unix))
+                let kind: String = row.get(1)?;
+                let recorded_unix: i64 = row.get(2)?;
+                Ok((path, kind, recorded_unix))
             })
             .map_err(storage_err("query scan_session_mutations"))?;
         let mut out = Vec::new();
         for row in rows {
-            let (path, original, kind, ts) =
-                row.map_err(storage_err("row scan_session_mutations"))?;
-            let secs = u64::try_from(ts).map_err(other_storage_err("negative recorded_at"))?;
-            let recorded_at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
-            let mut m = VoomOriginatedMutation::new(
-                session,
-                PathBuf::from(path),
-                original.map(PathBuf::from),
-                kind_from_str(&kind)?,
-            );
-            m.recorded_at = recorded_at;
+            let (path, kind, ts) = row.map_err(storage_err("row scan_session_mutations"))?;
+            let ts_u64 = u64::try_from(ts).map_err(other_storage_err("negative recorded_at"))?;
+            let mut m =
+                VoomOriginatedMutation::new(session, path.into(), None, kind_from_str(&kind)?);
+            m.recorded_at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(ts_u64);
             out.push(m);
         }
         Ok(out)
@@ -169,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn record_rename_round_trips_original() {
+    fn rename_records_both_source_and_destination() {
         let s = store();
         let session = ScanSessionId::new();
         let m = VoomOriginatedMutation::new(
@@ -179,11 +204,19 @@ mod tests {
             MutationKind::Rename,
         );
         s.record_voom_mutation(&m).unwrap();
-        let all = s.voom_mutations_for_session(session).unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].original.as_deref(), Some(Path::new("/m/foo.mkv")));
-        assert_eq!(all[0].kind, MutationKind::Rename);
-        assert_eq!(all[0].path, std::path::PathBuf::from("/m/foo.mp4"));
+
+        let mut all = s.voom_mutations_for_session(session).unwrap();
+        all.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(all.len(), 2, "rename must produce one row per touched path");
+        assert_eq!(all[0].path, std::path::PathBuf::from("/m/foo.mkv"));
+        assert_eq!(all[1].path, std::path::PathBuf::from("/m/foo.mp4"));
+        for m in &all {
+            assert_eq!(m.kind, MutationKind::Rename);
+            assert!(
+                m.original.is_none(),
+                "reconstructed records carry no original"
+            );
+        }
     }
 
     #[test]
@@ -237,8 +270,11 @@ mod tests {
         );
         s.record_voom_mutation(&m).unwrap();
         let all = s.voom_mutations_for_session(session).unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].kind, MutationKind::ContainerConversion);
+        // source + destination each get their own row
+        assert_eq!(all.len(), 2);
+        for row in &all {
+            assert_eq!(row.kind, MutationKind::ContainerConversion);
+        }
     }
 
     #[test]
@@ -267,8 +303,8 @@ mod tests {
         let conn = s.conn().expect("conn");
         conn.execute(
             "INSERT INTO scan_session_mutations \
-             (session_id, path, original_path, kind, recorded_at) \
-             VALUES (?1, ?2, NULL, 'definitely_not_a_real_kind', 0)",
+             (session_id, path, kind, recorded_at) \
+             VALUES (?1, ?2, 'definitely_not_a_real_kind', 0)",
             rusqlite::params![session.to_string(), "/m/foo.mkv"],
         )
         .expect("seed corrupt row");
@@ -280,6 +316,44 @@ mod tests {
         assert!(
             msg.contains("definitely_not_a_real_kind") || msg.contains("MutationKind"),
             "error message should mention the offending value or variant; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn reentrant_destination_write_keeps_earlier_source_protected() {
+        let s = store();
+        let session = ScanSessionId::new();
+
+        // First: VOOM renames A -> B.
+        s.record_voom_mutation(&VoomOriginatedMutation::new(
+            session,
+            "/m/B.mp4".into(),
+            Some("/m/A.mkv".into()),
+            MutationKind::Rename,
+        ))
+        .unwrap();
+
+        // Then: VOOM overwrites B again (e.g., post-rename muxer pass).
+        s.record_voom_mutation(&VoomOriginatedMutation::new(
+            session,
+            "/m/B.mp4".into(),
+            None,
+            MutationKind::Overwrite,
+        ))
+        .unwrap();
+
+        // Both A and B must still be in the protected set. With the old
+        // INSERT-OR-REPLACE-on-row schema, A would be evicted by the second
+        // write and finish_scan_session would mark A missing.
+        assert!(
+            s.is_voom_originated(session, std::path::Path::new("/m/A.mkv"))
+                .unwrap(),
+            "rename source must survive a later same-destination write"
+        );
+        assert!(
+            s.is_voom_originated(session, std::path::Path::new("/m/B.mp4"))
+                .unwrap(),
+            "destination must still be protected"
         );
     }
 }
