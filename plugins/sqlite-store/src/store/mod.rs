@@ -11,7 +11,7 @@ mod pending_ops_storage;
 mod plan_storage;
 mod plugin_data_storage;
 mod row_mappers;
-pub mod scan_session_mutations_storage;
+pub(crate) mod scan_session_mutations_storage;
 mod snapshot_storage;
 mod subtitle_storage;
 mod transcode_outcome_storage;

@@ -14,27 +14,6 @@ use voom_domain::transition::ScanSessionId;
 use super::SqliteStore;
 use crate::store::{other_storage_err, storage_err};
 
-/// Storage trait for recording and querying VOOM-originated filesystem mutations.
-///
-/// Called by executor plugins (`ffmpeg-executor`, `mkvtoolnix-executor`) to mark
-/// each file they write so that `finish_scan_session` and the scanner's
-/// reconciliation pass can distinguish VOOM's own writes from external changes.
-/// All records are scoped to a `ScanSessionId`; queries from other sessions
-/// see no rows.
-pub trait ScanSessionMutationStorage {
-    fn record_voom_mutation(&self, m: &VoomOriginatedMutation) -> Result<()>;
-    fn is_voom_originated(&self, session: ScanSessionId, path: &Path) -> Result<bool>;
-    /// Returns one record per VOOM-touched path in the session. Rename pairs
-    /// are decomposed at the storage boundary, so callers see two separate
-    /// records (one for the source path, one for the destination) rather than
-    /// a single record with an `original` field. This makes the on-disk model
-    /// safe against same-destination re-entrant writes.
-    fn voom_mutations_for_session(
-        &self,
-        session: ScanSessionId,
-    ) -> Result<Vec<VoomOriginatedMutation>>;
-}
-
 /// Explicit, non-serde string mapping for `MutationKind` storage.
 /// Keep in sync with `MutationKind`'s `#[serde(rename_all = "snake_case")]` —
 /// any future variant must appear in both `kind_as_str` and `kind_from_str`.
@@ -60,7 +39,7 @@ fn kind_from_str(s: &str) -> Result<MutationKind> {
     }
 }
 
-impl ScanSessionMutationStorage for SqliteStore {
+impl voom_domain::storage::ScanSessionMutationStorage for SqliteStore {
     fn record_voom_mutation(&self, m: &VoomOriginatedMutation) -> Result<()> {
         let mut conn = self.conn()?;
         let recorded_unix = i64::try_from(
@@ -164,7 +143,8 @@ mod tests {
     use voom_domain::scan_session_mutations::{MutationKind, VoomOriginatedMutation};
     use voom_domain::transition::ScanSessionId;
 
-    use super::ScanSessionMutationStorage;
+    use voom_domain::storage::ScanSessionMutationStorage;
+
     use crate::store::SqliteStore;
 
     fn store() -> SqliteStore {

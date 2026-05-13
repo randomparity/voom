@@ -4177,8 +4177,8 @@ mod tests {
 
     #[test]
     fn finish_scan_session_skips_voom_originated_paths() {
-        use crate::store::scan_session_mutations_storage::ScanSessionMutationStorage;
         use voom_domain::scan_session_mutations::{MutationKind, VoomOriginatedMutation};
+        use voom_domain::storage::ScanSessionMutationStorage;
 
         let store = test_store();
         let roots = vec![PathBuf::from("/m")];
@@ -4228,8 +4228,8 @@ mod tests {
 
     #[test]
     fn finish_scan_session_skips_voom_overwritten_paths() {
-        use crate::store::scan_session_mutations_storage::ScanSessionMutationStorage;
         use voom_domain::scan_session_mutations::{MutationKind, VoomOriginatedMutation};
+        use voom_domain::storage::ScanSessionMutationStorage;
 
         let store = test_store();
         let roots = vec![PathBuf::from("/m")];
@@ -4258,8 +4258,8 @@ mod tests {
 
     #[test]
     fn finish_scan_session_skips_voom_originated_destination_path() {
-        use crate::store::scan_session_mutations_storage::ScanSessionMutationStorage;
         use voom_domain::scan_session_mutations::{MutationKind, VoomOriginatedMutation};
+        use voom_domain::storage::ScanSessionMutationStorage;
 
         let store = test_store();
         let roots = vec![PathBuf::from("/m")];

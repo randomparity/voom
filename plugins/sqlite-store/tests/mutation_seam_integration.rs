@@ -1,17 +1,13 @@
-//! Verifies that the public `ScanSessionMutationStorage` trait is reachable
-//! from outside the crate and that the full session lifecycle correctly
-//! skips VOOM-touched paths at finish.
-//!
-//! This is a structural test for the public seam — if `voom-ffmpeg-executor`
-//! and `voom-mkvtoolnix-executor` can call `record_voom_mutation` exactly
-//! the way this file does, the production wiring will work.
+//! Verifies that the `ScanSessionMutationStorage` trait — defined in
+//! `voom-domain` and implemented by `SqliteStore` — is reachable through the
+//! domain trait surface that executor plugins use, and that the full session
+//! lifecycle correctly skips VOOM-touched paths at finish.
 
 use std::path::PathBuf;
 
 use voom_domain::media::MediaFile;
 use voom_domain::scan_session_mutations::{MutationKind, VoomOriginatedMutation};
-use voom_domain::storage::FileStorage;
-use voom_sqlite_store::ScanSessionMutationStorage;
+use voom_domain::storage::{FileStorage, ScanSessionMutationStorage};
 use voom_sqlite_store::store::SqliteStore;
 
 fn store() -> SqliteStore {

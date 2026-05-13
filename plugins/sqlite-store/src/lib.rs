@@ -3,8 +3,6 @@
 pub mod schema;
 pub mod store;
 
-pub use store::scan_session_mutations_storage::ScanSessionMutationStorage;
-
 use std::sync::Arc;
 
 use voom_domain::capabilities::Capability;

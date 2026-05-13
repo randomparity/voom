@@ -19,6 +19,7 @@ use crate::estimate::{CostModelSample, EstimateRun};
 use crate::job::{Job, JobStatus, JobUpdate};
 use crate::media::{Container, MediaFile, Track, TrackType};
 use crate::plan::Plan;
+use crate::scan_session_mutations::VoomOriginatedMutation;
 use crate::stats::{
     AudioStats, FileStats, JobAggregateStats, LibrarySnapshot, ProcessingAggregateStats,
     SnapshotTrigger, SubtitleStats, VideoStats,
@@ -27,8 +28,8 @@ use crate::storage::{
     BadFileFilters, BadFileStorage, CostModelSampleFilters, EstimateStorage, FileFilters,
     FileStorage, FileTransitionStorage, HealthCheckFilters, HealthCheckRecord, HealthCheckStorage,
     JobFilters, JobStorage, MaintenanceStorage, PageStats, PendingOperation, PendingOpsStorage,
-    PlanStorage, PlanSummary, PluginDataStorage, SnapshotStorage, TranscodeOutcomeFilters,
-    TranscodeOutcomeStorage,
+    PlanStorage, PlanSummary, PluginDataStorage, ScanSessionMutationStorage, SnapshotStorage,
+    TranscodeOutcomeFilters, TranscodeOutcomeStorage,
 };
 use crate::transcode::TranscodeOutcome;
 use crate::transition::{
@@ -144,6 +145,10 @@ pub struct InMemoryStore {
     /// Maps file_id → ScanSessionId of the session that last touched it.
     /// Equivalent to SqliteStore's `files.last_seen_session_id` column.
     file_session_affinity: Mutex<HashMap<Uuid, crate::transition::ScanSessionId>>,
+    /// VOOM-originated mutations, keyed by (session, path).
+    mutations: Mutex<
+        HashMap<(crate::transition::ScanSessionId, std::path::PathBuf), VoomOriginatedMutation>,
+    >,
 }
 
 impl InMemoryStore {
@@ -164,6 +169,7 @@ impl InMemoryStore {
             last_seen: Default::default(),
             new_in_session: Default::default(),
             file_session_affinity: Default::default(),
+            mutations: Default::default(),
         }
     }
 
@@ -1744,6 +1750,47 @@ impl EstimateStorage for InMemoryStore {
             samples.truncate(limit as usize);
         }
         Ok(samples)
+    }
+}
+
+impl ScanSessionMutationStorage for InMemoryStore {
+    fn record_voom_mutation(&self, m: &VoomOriginatedMutation) -> Result<()> {
+        let mut guard = self.mutations.lock();
+        // One row per touched path: record destination.
+        let mut dest = VoomOriginatedMutation::new(m.session, m.path.clone(), None, m.kind);
+        dest.recorded_at = m.recorded_at;
+        guard.insert((m.session, m.path.clone()), dest);
+        // If this is a rename, also protect the source path.
+        if let Some(orig) = m.original.as_ref() {
+            let mut src = VoomOriginatedMutation::new(m.session, orig.clone(), None, m.kind);
+            src.recorded_at = m.recorded_at;
+            guard.insert((m.session, orig.clone()), src);
+        }
+        Ok(())
+    }
+
+    fn is_voom_originated(
+        &self,
+        session: crate::transition::ScanSessionId,
+        path: &std::path::Path,
+    ) -> Result<bool> {
+        Ok(self
+            .mutations
+            .lock()
+            .contains_key(&(session, path.to_path_buf())))
+    }
+
+    fn voom_mutations_for_session(
+        &self,
+        session: crate::transition::ScanSessionId,
+    ) -> Result<Vec<VoomOriginatedMutation>> {
+        Ok(self
+            .mutations
+            .lock()
+            .iter()
+            .filter(|((s, _), _)| *s == session)
+            .map(|(_, m)| m.clone())
+            .collect())
     }
 }
 
