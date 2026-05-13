@@ -5,11 +5,10 @@
 //! `--features test-hooks` so the `delay_root` harness method is available.
 
 mod common;
-use common::*;
 
 #[cfg(feature = "test-hooks")]
 mod acceptance {
-    use super::*;
+    use super::common::*;
 
     // The test-hooks global `DELAYS` is a process-wide static — concurrent
     // tests would race when one test's `clear()` fires during another test's

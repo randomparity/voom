@@ -107,6 +107,7 @@ voom process <PATH>... [--policy <FILE> | --policy-map <TOML>] [OPTIONS]
 | `--plan-only` | `false` | Output raw plans as JSON to stdout without executing (implies --dry-run) |
 | `--confirm-savings <SIZE>` | *optional* | Execute only files whose estimated savings meet the per-file threshold |
 | `--priority-by-date` | `false` | Assign job priority based on file modification date |
+| `--execute-during-discovery` | `false` | Unlock each root for execution as soon as its walk finishes (see below) |
 
 Before processing, stale database entries for files that no longer exist under the target directory are automatically pruned (along with their associated plans and processing stats). Files that previously failed introspection (tracked as "bad files") are automatically skipped unless `--force-rescan` is set.
 
@@ -118,6 +119,42 @@ If an executable plan fails, the file job is marked failed and the final
 summary error count is non-zero. With `--on-error continue`, the command still
 finishes the batch; inspect `voom jobs list --status failed` and
 `voom report errors --session <session>` for details.
+
+#### `--execute-during-discovery` (advanced, opt-in)
+
+When multiple roots are supplied, this flag allows VOOM to begin executing
+mutating policy plans for files in a root *as soon as that root's filesystem
+walk completes*, while other roots may still be walking.
+
+**Default:** off. Execution waits for every root to finish walking. This is
+the safest behavior and is recommended for almost all users.
+
+**When to opt in:**
+
+- You are processing two or more large, unrelated libraries on different
+  storage volumes and want overlap between the slow walk on volume A and
+  policy execution on volume B.
+- You are scripting batched jobs where wall-clock overlap matters more than
+  pessimistic ordering.
+
+**Risks (read before enabling):**
+
+- Single-root invocations get no benefit — the flag is accepted but ignored
+  with an `info`-level log line.
+- The safety model relies on three layers: per-root execution gating, scan-
+  session-tagged mutations, and scanner-side exclusion of VOOM-touched paths.
+  If custom plugins mutate the filesystem outside the standard executor path,
+  those mutations are not tagged and may be misclassified.
+- Symlinks that cross root boundaries are not currently special-cased.
+
+**Observability:**
+
+- The CLI emits a `tracing::warn!` at startup when the mode is active.
+- The run record stored by job-manager includes `execute_during_discovery=true`.
+- Per-root unlock is logged at `debug`.
+
+See the per-root gate architecture in `docs/architecture.md` for the full
+safety model.
 
 **Examples:**
 
