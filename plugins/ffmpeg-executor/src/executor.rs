@@ -11,7 +11,10 @@ use voom_domain::plan::{
     ActionParams, ActionResult, ExecutionDetail, LoudnessMeasurement, Plan, PlannedAction,
     SampleStrategy,
 };
+use voom_domain::scan_session_mutations::record_mutation_for_pending_write;
+use voom_domain::storage::ScanSessionMutationStorage;
 use voom_domain::transcode::TranscodeOutcome;
+use voom_domain::transition::ScanSessionId;
 use voom_process::run_with_timeout_env;
 
 use voom_domain::temp_file::temp_path_with_ext;
@@ -96,19 +99,24 @@ impl VmafRunner for DefaultVmafRunner {
 /// renames the temp file over the original (or to the new extension
 /// if converting containers).
 pub fn execute_plan(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<Vec<ActionResult>> {
-    Ok(execute_plan_with_outcomes(plan, hw_accel)?.action_results)
+    Ok(execute_plan_with_outcomes(plan, hw_accel, None)?.action_results)
 }
 
-pub fn execute_plan_with_outcomes(plan: &Plan, hw_accel: &HwAccelConfig) -> Result<PlanExecution> {
-    execute_plan_with_runner(plan, hw_accel, &DefaultVmafRunner)
+pub fn execute_plan_with_outcomes(
+    plan: &Plan,
+    hw_accel: &HwAccelConfig,
+    storage: Option<&dyn ScanSessionMutationStorage>,
+) -> Result<PlanExecution> {
+    execute_plan_with_runner(plan, hw_accel, &DefaultVmafRunner, storage)
 }
 
 fn execute_plan_with_runner(
     plan: &Plan,
     hw_accel: &HwAccelConfig,
     vmaf_runner: &dyn VmafRunner,
+    storage: Option<&dyn ScanSessionMutationStorage>,
 ) -> Result<PlanExecution> {
-    execute_plan_with_runners(plan, hw_accel, vmaf_runner, &DefaultProcessRunner)
+    execute_plan_with_runners(plan, hw_accel, vmaf_runner, &DefaultProcessRunner, storage)
 }
 
 fn execute_plan_with_runners(
@@ -116,6 +124,7 @@ fn execute_plan_with_runners(
     hw_accel: &HwAccelConfig,
     vmaf_runner: &dyn VmafRunner,
     process_runner: &dyn ProcessRunner,
+    storage: Option<&dyn ScanSessionMutationStorage>,
 ) -> Result<PlanExecution> {
     if !plan.file.path.exists() {
         return Err(VoomError::ToolExecution {
@@ -165,12 +174,14 @@ fn execute_plan_with_runners(
                     &output_path,
                     &env_vars,
                     process_runner,
+                    storage,
+                    prepared_plan.scan_session,
                 ) {
                     let _ = std::fs::remove_file(&output_path);
                     return Err(error);
                 }
             }
-            let final_path = rename_output(&prepared_plan, &output_path, &ext)?;
+            let final_path = rename_output(&prepared_plan, &output_path, &ext, storage)?;
 
             tracing::info!(
                 path = %final_path.display(),
@@ -348,6 +359,13 @@ fn dynamic_hdr_error(message: impl Into<String>) -> VoomError {
     }
 }
 
+/// Bundles mutation-recording context for passing through the dynamic-HDR pipeline.
+struct MutationCtx<'a> {
+    storage: Option<&'a dyn ScanSessionMutationStorage>,
+    scan_session: Option<ScanSessionId>,
+    plan_source: &'a Path,
+}
+
 fn ensure_tool_available(
     tool: &str,
     runner: &dyn ProcessRunner,
@@ -370,9 +388,16 @@ fn apply_dynamic_hdr_reinjection(
     output_path: &Path,
     env_vars: &[(&str, &str)],
     runner: &dyn ProcessRunner,
+    storage: Option<&dyn ScanSessionMutationStorage>,
+    scan_session: Option<ScanSessionId>,
 ) -> Result<()> {
     let work_dir = std::env::temp_dir().join(format!("voom-dynamic-hdr-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&work_dir).map_err(|error| dynamic_hdr_error(error.to_string()))?;
+    let mutation = MutationCtx {
+        storage,
+        scan_session,
+        plan_source: source_path,
+    };
     let result = apply_dynamic_hdr_reinjection_in_dir(
         job,
         source_path,
@@ -380,6 +405,7 @@ fn apply_dynamic_hdr_reinjection(
         env_vars,
         runner,
         &work_dir,
+        &mutation,
     );
     let cleanup = std::fs::remove_dir_all(&work_dir);
     if result.is_ok() {
@@ -397,6 +423,7 @@ fn apply_dynamic_hdr_reinjection_in_dir(
     env_vars: &[(&str, &str)],
     runner: &dyn ProcessRunner,
     work_dir: &Path,
+    mutation: &MutationCtx<'_>,
 ) -> Result<()> {
     let source_hevc = work_dir.join("source.hevc");
     let encoded_hevc = work_dir.join("encoded.hevc");
@@ -420,7 +447,7 @@ fn apply_dynamic_hdr_reinjection_in_dir(
         runner,
     )?;
     remux_injected_hevc(output_path, &injected_hevc, &remuxed, env_vars, runner)?;
-    replace_output(output_path, &remuxed)
+    replace_output(mutation, output_path, &remuxed)
 }
 
 fn extract_source_hevc(
@@ -567,7 +594,16 @@ fn remux_injected_hevc(
     run_checked("ffmpeg", args, env_vars, runner)
 }
 
-fn replace_output(output_path: &Path, remuxed: &Path) -> Result<()> {
+fn replace_output(mutation: &MutationCtx<'_>, output_path: &Path, remuxed: &Path) -> Result<()> {
+    record_mutation_for_pending_write(
+        mutation.storage,
+        mutation.scan_session,
+        mutation.plan_source,
+        output_path,
+    )
+    .inspect_err(|_| {
+        let _ = std::fs::remove_file(remuxed);
+    })?;
     std::fs::remove_file(output_path).map_err(|error| dynamic_hdr_error(error.to_string()))?;
     std::fs::rename(remuxed, output_path).map_err(|error| dynamic_hdr_error(error.to_string()))
 }
@@ -826,6 +862,7 @@ fn rename_output(
     plan: &Plan,
     output_path: &std::path::Path,
     ext: &str,
+    storage: Option<&dyn ScanSessionMutationStorage>,
 ) -> Result<std::path::PathBuf> {
     let original_ext = plan
         .file
@@ -836,6 +873,15 @@ fn rename_output(
 
     if ext == original_ext {
         // Same extension: rename temp over original
+        record_mutation_for_pending_write(
+            storage,
+            plan.scan_session,
+            &plan.file.path,
+            &plan.file.path,
+        )
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(output_path);
+        })?;
         std::fs::rename(output_path, &plan.file.path).map_err(|e| {
             let _ = std::fs::remove_file(output_path);
             VoomError::ToolExecution {
@@ -850,6 +896,10 @@ fn rename_output(
     } else {
         // Container conversion: rename to new extension
         let new_path = plan.file.path.with_extension(ext);
+        record_mutation_for_pending_write(storage, plan.scan_session, &plan.file.path, &new_path)
+            .inspect_err(|_| {
+            let _ = std::fs::remove_file(output_path);
+        })?;
         std::fs::rename(output_path, &new_path).map_err(|e| {
             let _ = std::fs::remove_file(output_path);
             VoomError::ToolExecution {
@@ -1088,7 +1138,8 @@ mod tests {
             output_extension: "mkv".into(),
         };
 
-        apply_dynamic_hdr_reinjection(&job, &source_path, &output_path, &[], &runner).unwrap();
+        apply_dynamic_hdr_reinjection(&job, &source_path, &output_path, &[], &runner, None, None)
+            .unwrap();
 
         let calls = runner.calls();
         assert_eq!(calls[0].0, "ffmpeg");

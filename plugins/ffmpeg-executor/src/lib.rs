@@ -23,7 +23,8 @@ use voom_domain::events::{
 };
 use voom_domain::media::Container;
 use voom_domain::plan::{ActionParams, OperationType, Plan, PlannedAction};
-use voom_domain::storage::StorageTrait;
+use voom_domain::scan_session_mutations::record_mutation_for_pending_write;
+use voom_domain::storage::{ScanSessionMutationStorage, StorageTrait};
 use voom_domain::temp_file::temp_path;
 use voom_domain::utils::language::is_valid_language;
 use voom_domain::utils::sanitize::validate_metadata_value;
@@ -154,6 +155,13 @@ impl FfmpegExecutorPlugin {
     pub fn with_store(mut self, store: Arc<dyn StorageTrait>) -> Self {
         self.store = Some(store);
         self
+    }
+
+    /// Return a storage handle as a `ScanSessionMutationStorage` trait object, if available.
+    fn mutation_storage(&self) -> Option<&dyn ScanSessionMutationStorage> {
+        self.store
+            .as_deref()
+            .map(|s| s as &dyn ScanSessionMutationStorage)
     }
 
     /// Check whether this plugin can handle the given plan.
@@ -322,12 +330,13 @@ impl FfmpegExecutorPlugin {
                 .iter()
                 .filter(|a| a.operation == OperationType::MuxSubtitle)
             {
-                results.extend(self.execute_mux_subtitle(&plan.file.path, action)?);
+                results.extend(self.execute_mux_subtitle(plan, action)?);
             }
             return Ok(results);
         }
 
-        let execution = executor::execute_plan_with_outcomes(plan, &self.hw_accel)?;
+        let execution =
+            executor::execute_plan_with_outcomes(plan, &self.hw_accel, self.mutation_storage())?;
         if let Some(store) = &self.store {
             for outcome in &execution.transcode_outcomes {
                 store.insert_transcode_outcome(outcome)?;
@@ -355,9 +364,10 @@ impl FfmpegExecutorPlugin {
     /// Execute a `MuxSubtitle` action by running ffmpeg.
     fn execute_mux_subtitle(
         &self,
-        path: &std::path::Path,
+        plan: &Plan,
         action: &PlannedAction,
     ) -> Result<Vec<voom_domain::plan::ActionResult>> {
+        let path = &plan.file.path;
         let ActionParams::MuxSubtitle {
             subtitle_path,
             language,
@@ -402,6 +412,15 @@ impl FfmpegExecutorPlugin {
 
         match output {
             Ok(o) if o.status.success() => {
+                record_mutation_for_pending_write(
+                    self.mutation_storage(),
+                    plan.scan_session,
+                    path,
+                    path,
+                )
+                .inspect_err(|_| {
+                    let _ = std::fs::remove_file(&temp_path);
+                })?;
                 std::fs::rename(&temp_path, path).map_err(|e| {
                     let _ = std::fs::remove_file(&temp_path);
                     plugin_err(format!("failed to rename temp file: {e}"))
