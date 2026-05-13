@@ -1,9 +1,3 @@
-// The streaming pipeline is constructed in this task (Task 5) and wired into
-// `process::run` in the next task. Until then the public symbols below have
-// no production caller, only tests, so dead-code lints would fire under
-// `-D warnings`. The allow is removed by Task 6's commit.
-#![allow(dead_code)]
-
 //! Streaming pipeline for `voom process`: discovery → ingest → worker pool.
 //!
 //! Mirrors the layout of `scan/pipeline.rs`. The discovery stage runs
@@ -51,8 +45,15 @@ pub(crate) struct StreamingOutcome {
     /// Errors raised by the discovery walk (open / hash failures).
     pub(crate) discovery_errors: u64,
     /// Full `FileDiscoveredEvent` set fed to the reporter via `seed_events`.
+    /// Surfaced on the outcome so Task 7 integration tests can assert on the
+    /// exact event stream observed by the reporter without re-running discovery.
+    #[allow(dead_code)]
     pub(crate) events_for_eta: Vec<FileDiscoveredEvent>,
-    /// `Vec<JobResult>` returned by the worker pool.
+    /// `Vec<JobResult>` returned by the worker pool. Production callers don't
+    /// inspect this (results are aggregated through the kernel event bus and
+    /// `RunCounters`), but Task 7 integration tests verify per-job outcomes
+    /// directly off this field.
+    #[allow(dead_code)]
     pub(crate) job_results: Vec<JobResult>,
 }
 

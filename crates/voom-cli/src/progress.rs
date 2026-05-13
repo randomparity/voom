@@ -88,18 +88,6 @@ pub struct DiscoveryProgress {
 }
 
 impl DiscoveryProgress {
-    /// Create a new discovery-phase progress indicator.
-    pub fn new() -> Self {
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(spinner_style());
-        pb.enable_steady_tick(TICK_INTERVAL);
-        Self {
-            pb,
-            start: Instant::now(),
-            transitioned: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
     /// Create a hidden (no-op) progress indicator for quiet/scripted mode.
     pub fn hidden() -> Self {
         Self {
