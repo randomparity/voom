@@ -221,24 +221,25 @@ fn walk_media_files(
                 orphaned_temp_count += 1;
                 continue;
             }
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            let raw_path = entry.into_path();
+            let path = normalize_path(&raw_path);
             if let Some(snap) = snapshot {
-                if snap.contains(entry.path()) {
+                if snap.contains(&path) {
                     tracing::debug!(
-                        path = %entry.path().display(),
-                        "skipping voom-originated mutation path"
+                        path = %path.display(),
+                        "skipping VOOM-originated mutation path"
                     );
                     continue;
                 }
             }
-            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-            let path = entry.into_path();
             if let Some(ref cb) = options.on_progress {
                 cb(crate::ScanProgress::Discovered {
                     count: media_paths.len() + 1,
                     path: path.clone(),
                 });
             }
-            media_paths.push((normalize_path(&path), size));
+            media_paths.push((path, size));
         }
     }
 

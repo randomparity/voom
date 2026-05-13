@@ -149,8 +149,10 @@ impl SqliteStore {
     ) -> voom_domain::errors::Result<voom_discovery::SessionMutationSnapshot> {
         use voom_domain::storage::ScanSessionMutationStorage as _;
         let mutations = self.voom_mutations_for_session(session)?;
-        let paths: std::collections::HashSet<std::path::PathBuf> =
-            mutations.into_iter().map(|m| m.path).collect();
+        let paths: std::collections::HashSet<std::path::PathBuf> = mutations
+            .into_iter()
+            .map(|m| voom_discovery::normalize_path(&m.path))
+            .collect();
         Ok(voom_discovery::SessionMutationSnapshot::new(paths))
     }
 }

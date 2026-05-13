@@ -36,9 +36,9 @@ pub enum ScanProgress {
 /// Set of paths the active scan session has marked as VOOM-originated mutations.
 ///
 /// Loaded as a single snapshot before the walker begins so lookup is infallible
-/// during the walk. The snapshot loader is responsible for storing paths in the
-/// same canonical form the walker emits (i.e. via `normalize_path`). Refreshed
-/// between roots by the caller.
+/// during the walk. Paths in the snapshot are stored in the form produced by
+/// [`normalize_path`] (NFC + canonicalized), so the walker performs the same
+/// normalization on each entry before checking the snapshot.
 #[derive(Debug, Default, Clone)]
 pub struct SessionMutationSnapshot {
     paths: std::collections::HashSet<std::path::PathBuf>,
