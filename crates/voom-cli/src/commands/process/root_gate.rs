@@ -6,10 +6,6 @@
 //! observability and as a building block; the holding buffer (below) is
 //! what actually defers job enqueue in the gate-at-enqueue model.
 
-// Pipeline wiring lands in a later commit (--execute-during-discovery flag +
-// RootWalkCompleted event flow). Suppress dead-code lint until then.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -54,6 +50,7 @@ impl RootGate {
     }
 
     /// Open every root unconditionally. Used by dry-run / plan-only callers.
+    #[allow(dead_code)] // used in unit tests and reserved for future dry-run path
     pub fn open_all(&self) {
         let guard = self.inner.map.read();
         for entry in guard.values() {
@@ -128,12 +125,14 @@ impl<T> HoldingBuffer<T> {
 
     /// Number of items currently held for `root`. For tests and metrics only.
     #[must_use]
+    #[allow(dead_code)] // used in unit tests; metrics use case planned
     pub fn len(&self, root: &Path) -> usize {
         self.inner.lock().get(root).map_or(0, Vec::len)
     }
 
     /// Whether `root` currently has any items held. For tests and metrics only.
     #[must_use]
+    #[allow(dead_code)] // used in unit tests; metrics use case planned
     pub fn is_empty(&self, root: &Path) -> bool {
         self.len(root) == 0
     }

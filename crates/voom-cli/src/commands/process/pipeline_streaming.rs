@@ -26,10 +26,13 @@ use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use voom_domain::bad_file::BadFileSource;
-use voom_domain::events::{Event, FileDiscoveredEvent};
+use voom_domain::events::{Event, FileDiscoveredEvent, RootWalkCompletedEvent};
 use voom_domain::storage::StorageTrait;
+use voom_domain::transition::ScanSessionId;
 use voom_job_manager::progress::ProgressReporter;
 use voom_job_manager::worker::{JobErrorStrategy, JobResult, WorkItem, WorkerPool};
+
+use super::root_gate::{HoldingBuffer, RootGate, root_for_path};
 
 use crate::cli::ProcessArgs;
 use crate::introspect::DiscoveredFilePayload;
@@ -93,6 +96,7 @@ pub(crate) async fn run_streaming_pipeline<F, Fut>(
     quiet: bool,
     plan_only: bool,
     token: CancellationToken,
+    scan_session: ScanSessionId,
 ) -> Result<StreamingOutcome>
 where
     F: Fn(voom_domain::job::Job) -> Fut + Send + Sync + 'static,
@@ -100,11 +104,33 @@ where
         + Send
         + 'static,
 {
+    let execute_during_discovery = args.execute_during_discovery;
+
+    // Log activation when the flag is on.
+    if execute_during_discovery && !args.dry_run && !plan_only {
+        tracing::warn!(
+            target: "voom.streaming.mode",
+            flag = "execute_during_discovery",
+            value = true,
+            "executing mutating plans during active discovery; per-root gates active"
+        );
+        if paths.len() == 1 {
+            tracing::info!(
+                "single-root invocation: --execute-during-discovery has no effect; \
+                 execution will still wait for the root's walk to complete"
+            );
+        }
+    }
+
     let effective_workers = pool.config().effective_workers();
     let channel_depth = effective_workers * CHANNEL_DEPTH_PER_WORKER;
 
     let (tx_disc, rx_disc) = mpsc::channel::<FileDiscoveredEvent>(channel_depth);
     let (tx_items, rx_items) = mpsc::channel::<WorkItem<DiscoveredFilePayload>>(channel_depth);
+
+    // Channel for discovery stage to signal root completion to the dispatcher.
+    // Capacity = number of roots so discovery never blocks on this send.
+    let (tx_root_done, rx_root_done) = mpsc::channel::<RootWalkCompletedEvent>(paths.len().max(1));
 
     let execution_gate = Arc::new(Notify::new());
     let pipeline_cancel = token.child_token();
@@ -128,8 +154,11 @@ where
         store.clone(),
         kernel.clone(),
         tx_disc,
+        tx_root_done,
         pipeline_cancel.clone(),
         discovery_errors.clone(),
+        scan_session,
+        execute_during_discovery,
     );
 
     let ingest_handle = spawn_ingest_stage(
@@ -137,7 +166,9 @@ where
         bad_files,
         args.force_rescan,
         args.priority_by_date,
+        paths.to_vec(),
         rx_disc,
+        rx_root_done,
         tx_items,
         execution_gate.clone(),
         pipeline_cancel.clone(),
@@ -148,6 +179,7 @@ where
         reporter.clone(),
         quiet,
         plan_only,
+        execute_during_discovery,
     );
 
     // Drive the pool future concurrently with discovery and ingest. Awaiting
@@ -228,8 +260,11 @@ fn spawn_discovery_stage(
     store: Arc<dyn StorageTrait>,
     kernel: Arc<voom_kernel::Kernel>,
     tx_disc: mpsc::Sender<FileDiscoveredEvent>,
+    tx_root_done: mpsc::Sender<RootWalkCompletedEvent>,
     token: CancellationToken,
     discovery_errors: Arc<AtomicU64>,
+    scan_session: ScanSessionId,
+    with_gate: bool,
 ) -> JoinHandle<Result<()>> {
     let workers = args.workers;
     let hash_files = !args.no_backup;
@@ -249,6 +284,17 @@ fn spawn_discovery_stage(
                 options.workers = workers;
                 options.fingerprint_lookup =
                     Some(crate::introspect::fingerprint_lookup(store.clone()));
+
+                // When gate mode is on, load a fresh snapshot per root so that
+                // mutations recorded during prior roots' execution are excluded
+                // from later walks. Snapshot load failures abort the scan
+                // (fail-closed).
+                if with_gate {
+                    let snapshot_store = store.clone();
+                    options.session_mutations = Some(std::sync::Arc::new(move || {
+                        load_snapshot_via_storage_trait(&snapshot_store, scan_session)
+                    }));
+                }
 
                 let kernel_clone = kernel.clone();
                 let errors_clone = discovery_errors.clone();
@@ -277,9 +323,18 @@ fn spawn_discovery_stage(
                     let _ = tx_inner.blocking_send(event);
                 });
 
+                let started = std::time::Instant::now();
                 discovery
                     .scan_streaming(&options, on_event)
                     .with_context(|| format!("filesystem scan failed for {}", path.display()))?;
+
+                // Emit RootWalkCompleted so the dispatcher can open the gate
+                // and drain the holding buffer for this root.
+                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let evt = RootWalkCompletedEvent::new(path.clone(), scan_session, elapsed_ms);
+                if let Err(e) = tx_root_done.blocking_send(evt) {
+                    tracing::warn!(error = %e, "tx_root_done dropped; ingest dispatcher gone");
+                }
             }
             Ok(())
         };
@@ -295,8 +350,24 @@ fn spawn_discovery_stage(
             token.cancel();
         }
         drop(tx_disc);
+        drop(tx_root_done);
         result
     })
+}
+
+/// Build a `SessionMutationSnapshot` from the storage trait's
+/// `voom_mutations_for_session` method. Paths are normalized via
+/// `voom_discovery::normalize_path` so they match what the scanner emits.
+fn load_snapshot_via_storage_trait(
+    store: &Arc<dyn StorageTrait>,
+    session: ScanSessionId,
+) -> voom_domain::errors::Result<voom_discovery::SessionMutationSnapshot> {
+    let mutations = store.voom_mutations_for_session(session)?;
+    let paths: HashSet<PathBuf> = mutations
+        .into_iter()
+        .map(|m| voom_discovery::normalize_path(&m.path))
+        .collect();
+    Ok(voom_discovery::SessionMutationSnapshot::new(paths))
 }
 
 // --- Ingest stage -----------------------------------------------------------
@@ -307,7 +378,9 @@ fn spawn_ingest_stage(
     bad_files: HashSet<PathBuf>,
     force_rescan: bool,
     priority_by_date: bool,
+    roots: Vec<PathBuf>,
     mut rx_disc: mpsc::Receiver<FileDiscoveredEvent>,
+    rx_root_done: mpsc::Receiver<RootWalkCompletedEvent>,
     tx_items: mpsc::Sender<WorkItem<DiscoveredFilePayload>>,
     execution_gate: Arc<Notify>,
     token: CancellationToken,
@@ -318,8 +391,47 @@ fn spawn_ingest_stage(
     reporter: Arc<dyn ProgressReporter>,
     quiet: bool,
     plan_only: bool,
+    execute_during_discovery: bool,
 ) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
+        let gate = RootGate::new(&roots);
+        let holding = Arc::new(HoldingBuffer::<WorkItem<DiscoveredFilePayload>>::new());
+
+        // Spawn dispatcher task when gate mode is on. It listens for
+        // RootWalkCompleted events, opens the gate, and drains the holding
+        // buffer into tx_items.
+        let dispatcher_handle: Option<JoinHandle<()>> = if execute_during_discovery {
+            let gate_d = gate.clone();
+            let holding_d = holding.clone();
+            let tx_items_d = tx_items.clone();
+            let enqueued_d = enqueued.clone();
+            let token_d = token.clone();
+            Some(tokio::spawn(async move {
+                let mut rx = rx_root_done;
+                loop {
+                    let msg = tokio::select! {
+                        biased;
+                        () = token_d.cancelled() => break,
+                        msg = rx.recv() => msg,
+                    };
+                    let Some(evt) = msg else { break };
+                    gate_d.open(&evt.root);
+                    let drained = holding_d.drain_root(&evt.root);
+                    for item in drained {
+                        if tx_items_d.send(item).await.is_err() {
+                            return;
+                        }
+                        enqueued_d.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }))
+        } else {
+            // Drop rx_root_done immediately — discovery will still send on
+            // tx_root_done but the sends are best-effort (warn on error).
+            drop(rx_root_done);
+            None
+        };
+
         let mut seen: HashSet<PathBuf> = HashSet::new();
 
         loop {
@@ -354,14 +466,45 @@ fn spawn_ingest_stage(
                 content_hash: event.content_hash.clone(),
             };
             let item = WorkItem::new(voom_domain::job::JobType::Process, priority, Some(payload));
-            if tx_items.send(item).await.is_err() {
-                // The pool's enqueuer dropped its receiver; bail out.
-                break;
+
+            if execute_during_discovery {
+                let item_path =
+                    PathBuf::from(item.payload.as_ref().map_or("", |p| p.path.as_str()));
+                if let Some(root) = root_for_path(&roots, &item_path) {
+                    if gate.is_open(root) {
+                        if tx_items.send(item).await.is_err() {
+                            break;
+                        }
+                        enqueued.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        holding.push(root, item);
+                        // Not yet eligible; dispatcher will bump enqueued when draining.
+                    }
+                } else {
+                    // No matching root — pass through.
+                    if tx_items.send(item).await.is_err() {
+                        break;
+                    }
+                    enqueued.fetch_add(1, Ordering::Relaxed);
+                }
+            } else {
+                if tx_items.send(item).await.is_err() {
+                    // The pool's enqueuer dropped its receiver; bail out.
+                    break;
+                }
+                enqueued.fetch_add(1, Ordering::Relaxed);
             }
-            enqueued.fetch_add(1, Ordering::Relaxed);
         }
 
-        // Dropping tx_items signals "no more work" to the pool's enqueuer.
+        // Dropping tx_items signals "no more work" to the pool's enqueuer
+        // (after the dispatcher is also done).
+        if let Some(handle) = dispatcher_handle {
+            // Wait for the dispatcher to drain all buffered items before
+            // dropping tx_items. If cancelled, the holding buffer will still
+            // have items — just discard them (no SQL rows were created).
+            let _ = handle.await;
+            let _ = holding.drain_all(); // discard any leftover held items
+        }
         drop(tx_items);
 
         // Seed the reporter with the full discovery set so progress bars and
@@ -502,6 +645,7 @@ mod tests {
             true,
             true,
             token,
+            voom_domain::transition::ScanSessionId::new(),
         )
         .await
         .unwrap();
@@ -539,6 +683,7 @@ mod tests {
             true,
             true,
             token,
+            voom_domain::transition::ScanSessionId::new(),
         )
         .await
         .unwrap();
@@ -582,6 +727,7 @@ mod tests {
             true,
             true,
             token,
+            voom_domain::transition::ScanSessionId::new(),
         )
         .await
         .unwrap();
@@ -624,6 +770,7 @@ mod tests {
             true,
             true,
             token,
+            voom_domain::transition::ScanSessionId::new(),
         )
         .await
         .unwrap();
@@ -675,6 +822,7 @@ mod tests {
             true,
             true,
             token,
+            voom_domain::transition::ScanSessionId::new(),
         )
         .await
         .unwrap();
@@ -724,6 +872,7 @@ mod tests {
                 true,
                 true,
                 token,
+                voom_domain::transition::ScanSessionId::new(),
             ),
         )
         .await;
@@ -761,6 +910,7 @@ mod tests {
             true,
             true,
             token,
+            voom_domain::transition::ScanSessionId::new(),
         )
         .await
         .unwrap();

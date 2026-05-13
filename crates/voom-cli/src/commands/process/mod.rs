@@ -303,6 +303,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
             quiet,
             plan_only,
             token.clone(),
+            scan_session,
         )
         .await
         {
