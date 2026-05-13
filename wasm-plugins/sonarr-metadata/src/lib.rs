@@ -31,15 +31,17 @@
 
 use serde::{Deserialize, Serialize};
 use voom_plugin_sdk::{
-    deserialize_event, language_code_from_name, load_plugin_config, serialize_event, Capability,
-    Event, HostFunctions, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
+    Capability, Event, HostFunctions, MetadataEnrichedEvent, OnEventResult, PluginInfoData,
+    deserialize_event, language_code_from_name, load_plugin_config, serialize_event,
 };
 
 pub fn get_info() -> PluginInfoData {
     PluginInfoData::new(
         "sonarr-metadata",
         "0.1.0",
-        vec![Capability::EnrichMetadata { source: "sonarr".to_string() }],
+        vec![Capability::EnrichMetadata {
+            source: "sonarr".to_string(),
+        }],
     )
     .with_description("TV metadata enrichment via Sonarr API")
     .with_author("David Christensen")
@@ -61,15 +63,20 @@ pub fn on_event(
         return None;
     }
 
-    let event = deserialize_event(payload).map_err(|e| {
-        host.log("error", &format!("failed to deserialize event: {e}"));
-    }).ok()?;
-    let file = match &event {
-        Event::FileIntrospected(e) => &e.file,
+    let event = deserialize_event(payload)
+        .map_err(|e| {
+            host.log("error", &format!("failed to deserialize event: {e}"));
+        })
+        .ok()?;
+    let (file, scan_session) = match &event {
+        Event::FileIntrospected(e) => (&e.file, e.scan_session),
         _ => return None,
     };
 
-    host.log("info", &format!("looking up Sonarr metadata for: {}", file.path.display()));
+    host.log(
+        "info",
+        &format!("looking up Sonarr metadata for: {}", file.path.display()),
+    );
 
     let config: SonarrConfig = match load_plugin_config(|key| host.get_plugin_data(key)) {
         Ok(Some(config)) => config,
@@ -101,16 +108,16 @@ pub fn on_event(
 
     let mut enriched =
         MetadataEnrichedEvent::new(file.path.clone(), "sonarr".to_string(), metadata);
-    if let Event::FileIntrospected(intro) = &event {
-        if let Some(s) = intro.scan_session {
-            enriched = enriched.with_scan_session(s);
-        }
+    if let Some(s) = scan_session {
+        enriched = enriched.with_scan_session(s);
     }
     let enriched_event = Event::MetadataEnriched(enriched);
 
-    let produced_payload = serialize_event(&enriched_event).map_err(|e| {
-        host.log("error", &format!("failed to serialize event: {e}"));
-    }).ok()?;
+    let produced_payload = serialize_event(&enriched_event)
+        .map_err(|e| {
+            host.log("error", &format!("failed to serialize event: {e}"));
+        })
+        .ok()?;
 
     Some(OnEventResult::new(
         "sonarr-metadata",
@@ -176,37 +183,62 @@ fn lookup_episode(
     let series_url = format!("{}/api/v3/series", config.sonarr_url);
     let headers = vec![("X-Api-Key".to_string(), config.api_key.clone())];
 
-    let response = host.http_get(&series_url, &headers).map_err(|e| {
-        host.log("error", &format!("Sonarr series API request failed: {e}"));
-    }).ok()?;
+    let response = host
+        .http_get(&series_url, &headers)
+        .map_err(|e| {
+            host.log("error", &format!("Sonarr series API request failed: {e}"));
+        })
+        .ok()?;
     if response.status != 200 {
-        host.log("warn", &format!("Sonarr series API returned status {}", response.status));
+        host.log(
+            "warn",
+            &format!("Sonarr series API returned status {}", response.status),
+        );
         return None;
     }
 
-    let all_series: Vec<SonarrSeries> = serde_json::from_slice(&response.body).map_err(|e| {
-        host.log("error", &format!("failed to parse Sonarr series response: {e}"));
-    }).ok()?;
-    let series = all_series.into_iter().find(|s| file_path.starts_with(&s.path))?;
+    let all_series: Vec<SonarrSeries> = serde_json::from_slice(&response.body)
+        .map_err(|e| {
+            host.log(
+                "error",
+                &format!("failed to parse Sonarr series response: {e}"),
+            );
+        })
+        .ok()?;
+    let series = all_series
+        .into_iter()
+        .find(|s| file_path.starts_with(&s.path))?;
 
     // Then look up episode files for this series.
     let episodes_url = format!(
         "{}/api/v3/episodefile?seriesId={}",
         config.sonarr_url, series.id
     );
-    let response = host.http_get(&episodes_url, &headers).map_err(|e| {
-        host.log("error", &format!("Sonarr episode API request failed: {e}"));
-    }).ok()?;
+    let response = host
+        .http_get(&episodes_url, &headers)
+        .map_err(|e| {
+            host.log("error", &format!("Sonarr episode API request failed: {e}"));
+        })
+        .ok()?;
     if response.status != 200 {
-        host.log("warn", &format!("Sonarr episode API returned status {}", response.status));
+        host.log(
+            "warn",
+            &format!("Sonarr episode API returned status {}", response.status),
+        );
         return None;
     }
 
-    let episode_files: Vec<SonarrEpisodeFile> =
-        serde_json::from_slice(&response.body).map_err(|e| {
-            host.log("error", &format!("failed to parse Sonarr episode response: {e}"));
-        }).ok()?;
-    let matched = episode_files.into_iter().find(|ef| file_path.ends_with(&ef.relative_path))?;
+    let episode_files: Vec<SonarrEpisodeFile> = serde_json::from_slice(&response.body)
+        .map_err(|e| {
+            host.log(
+                "error",
+                &format!("failed to parse Sonarr episode response: {e}"),
+            );
+        })
+        .ok()?;
+    let matched = episode_files
+        .into_iter()
+        .find(|ef| file_path.ends_with(&ef.relative_path))?;
 
     let original_language = series
         .original_language
@@ -288,7 +320,11 @@ mod tests {
     }
 
     impl HostFunctions for MockHost {
-        fn http_get(&self, url: &str, _headers: &[(String, String)]) -> Result<HttpResponse, String> {
+        fn http_get(
+            &self,
+            url: &str,
+            _headers: &[(String, String)],
+        ) -> Result<HttpResponse, String> {
             let body = if url.contains("/episodefile") {
                 serde_json::to_vec(&self.episode_files).unwrap()
             } else {
@@ -336,12 +372,8 @@ mod tests {
     #[test]
     fn test_on_event_episode_found() {
         let host = MockHost::new();
-        let file = make_test_file(
-            "/media/tv/Breaking Bad/Season 01/Breaking.Bad.S01E01.1080p.mkv",
-        );
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let file = make_test_file("/media/tv/Breaking Bad/Season 01/Breaking.Bad.S01E01.1080p.mkv");
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("file.introspected", &payload, &host);
@@ -368,9 +400,7 @@ mod tests {
     fn test_on_event_series_not_found() {
         let host = MockHost::new();
         let file = make_test_file("/media/tv/Unknown Show/S01E01.mkv");
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("file.introspected", &payload, &host);
@@ -381,9 +411,7 @@ mod tests {
     fn test_on_event_no_config() {
         let host = MockHost::without_config();
         let file = make_test_file("/media/tv/test.mkv");
-        let event = Event::FileIntrospected(
-            FileIntrospectedEvent::new(file),
-        );
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
         let payload = serialize_event(&event).unwrap();
 
         let result = on_event("file.introspected", &payload, &host);
@@ -395,6 +423,42 @@ mod tests {
         let host = MockHost::new();
         let result = on_event("file.discovered", &[], &host);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_scan_session_forwarded_when_present() {
+        let host = MockHost::new();
+        let file = make_test_file("/media/tv/Breaking Bad/Season 01/Breaking.Bad.S01E01.1080p.mkv");
+        let session = voom_plugin_sdk::ScanSessionId::new();
+        let event =
+            Event::FileIntrospected(FileIntrospectedEvent::new(file).with_scan_session(session));
+        let payload = serialize_event(&event).unwrap();
+
+        let result = on_event("file.introspected", &payload, &host).unwrap();
+        let produced: Event = deserialize_event(&result.produced_events[0].1).unwrap();
+        match produced {
+            Event::MetadataEnriched(e) => {
+                assert_eq!(e.scan_session, Some(session));
+            }
+            _ => panic!("expected MetadataEnriched"),
+        }
+    }
+
+    #[test]
+    fn test_scan_session_none_when_not_set() {
+        let host = MockHost::new();
+        let file = make_test_file("/media/tv/Breaking Bad/Season 01/Breaking.Bad.S01E01.1080p.mkv");
+        let event = Event::FileIntrospected(FileIntrospectedEvent::new(file));
+        let payload = serialize_event(&event).unwrap();
+
+        let result = on_event("file.introspected", &payload, &host).unwrap();
+        let produced: Event = deserialize_event(&result.produced_events[0].1).unwrap();
+        match produced {
+            Event::MetadataEnriched(e) => {
+                assert_eq!(e.scan_session, None);
+            }
+            _ => panic!("expected MetadataEnriched"),
+        }
     }
 
     #[test]
