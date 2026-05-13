@@ -446,12 +446,30 @@ impl RootWalkCompletedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileIntrospectedEvent {
     pub file: MediaFile,
+    /// Scan session this introspection was produced within. Downstream
+    /// metadata enrichers (radarr, sonarr, whisper, etc.) must forward this
+    /// onto any `MetadataEnriched` events they emit so the chain reaches the
+    /// executor's fail-closed mutation recording. `None` when introspection
+    /// happens outside a scan session (e.g. `voom inspect`).
+    #[serde(default)]
+    pub scan_session: Option<crate::transition::ScanSessionId>,
 }
 
 impl FileIntrospectedEvent {
     #[must_use]
     pub fn new(file: MediaFile) -> Self {
-        Self { file }
+        Self {
+            file,
+            scan_session: None,
+        }
+    }
+
+    /// Attach a scan session ID to this event. Forwarded to downstream
+    /// metadata enrichers so the session chain of custody is preserved.
+    #[must_use]
+    pub fn with_scan_session(mut self, session: crate::transition::ScanSessionId) -> Self {
+        self.scan_session = Some(session);
+        self
     }
 }
 

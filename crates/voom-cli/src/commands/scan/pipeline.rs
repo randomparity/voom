@@ -619,6 +619,7 @@ fn spawn_probe_stage(
                     &kernel_inner,
                     ffprobe_path.as_deref(),
                     animation_mode,
+                    None,
                 )
                 .await
                 {

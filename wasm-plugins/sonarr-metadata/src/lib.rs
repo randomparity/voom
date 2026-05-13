@@ -99,10 +99,14 @@ pub fn on_event(
         metadata["original_language"] = serde_json::Value::String(lang.clone());
     }
 
-    // TODO(#361): forward scan_session once upstream events carry it
-    let enriched_event = Event::MetadataEnriched(
-        MetadataEnrichedEvent::new(file.path.clone(), "sonarr".to_string(), metadata),
-    );
+    let mut enriched =
+        MetadataEnrichedEvent::new(file.path.clone(), "sonarr".to_string(), metadata);
+    if let Event::FileIntrospected(intro) = &event {
+        if let Some(s) = intro.scan_session {
+            enriched = enriched.with_scan_session(s);
+        }
+    }
+    let enriched_event = Event::MetadataEnriched(enriched);
 
     let produced_payload = serialize_event(&enriched_event).map_err(|e| {
         host.log("error", &format!("failed to serialize event: {e}"));

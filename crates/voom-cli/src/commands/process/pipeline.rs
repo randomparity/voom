@@ -79,6 +79,7 @@ pub(super) async fn process_single_file(
             &ctx.kernel,
             ctx.ffprobe_path,
             ctx.animation_detection_mode,
+            Some(ctx.scan_session),
         )
         .await
         .map_err(|e| format!("introspect {}: {e}", payload.path))?;
