@@ -40,3 +40,7 @@ harness = false
 [[bench]]
 name = "scan_session"
 harness = false
+
+[[bench]]
+name = "stats_sink"
+harness = false
