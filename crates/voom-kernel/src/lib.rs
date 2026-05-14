@@ -99,6 +99,20 @@ pub trait Plugin: Send + Sync {
     fn shutdown(&self) -> Result<()> {
         Ok(())
     }
+
+    /// Handle a unary or streaming Call dispatched via
+    /// `Kernel::dispatch_to_capability`. Default impl returns an error so a
+    /// plugin that does NOT claim any capability that expects calls compiles
+    /// without override but fails cleanly if invoked.
+    ///
+    /// Plugins that expose Call-handling capabilities (e.g. EvaluatePolicy,
+    /// OrchestratePhases, Discover) override this.
+    fn on_call(&self, _call: &voom_domain::call::Call) -> Result<voom_domain::call::CallResponse> {
+        Err(voom_domain::errors::VoomError::plugin(
+            self.name(),
+            "plugin does not handle calls (no on_call override)",
+        ))
+    }
 }
 
 /// Configuration and resources provided to a plugin during initialization.
@@ -702,6 +716,47 @@ mod tests {
         );
         assert_eq!(kernel.registry.len(), 1);
         assert_eq!(kernel.subscriber_count(), 1);
+    }
+
+    #[test]
+    fn on_call_default_returns_error() {
+        use std::path::PathBuf;
+        use voom_domain::call::Call;
+        use voom_domain::compiled::{CompiledConfig, CompiledMetadata, CompiledPolicy, ErrorStrategy};
+        use voom_domain::media::MediaFile;
+
+        struct MinimalPlugin;
+        impl Plugin for MinimalPlugin {
+            fn name(&self) -> &str {
+                "minimal"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[]
+            }
+        }
+
+        let plugin = MinimalPlugin;
+        let policy = CompiledPolicy::new(
+            "demo".into(),
+            CompiledMetadata::default(),
+            CompiledConfig::new(vec![], vec![], ErrorStrategy::Abort, vec![], false),
+            vec![],
+            vec![],
+            String::new(),
+        );
+        let call = Call::EvaluatePolicy {
+            policy,
+            file: MediaFile::new(PathBuf::from("/x.mkv")),
+            phase: None,
+            phase_outputs: None,
+            phase_outcomes: None,
+            capabilities_override: None,
+        };
+        let err = plugin.on_call(&call).unwrap_err();
+        assert!(err.to_string().contains("does not handle calls"));
     }
 }
 
