@@ -237,6 +237,19 @@ impl TestEnv {
         &self.primary_root
     }
 
+    /// Return the path to the SQLite database (`<data_dir>/voom.db`).
+    pub fn db_path(&self) -> PathBuf {
+        self.data_dir.join("voom.db")
+    }
+
+    /// Return the config home directory (`<tmp>/config`).
+    ///
+    /// Set `XDG_CONFIG_HOME` to this path to isolate a scan run that calls
+    /// `config::load_config` directly (e.g. `commands::scan::run`).
+    pub fn config_home(&self) -> &Path {
+        &self.config_home
+    }
+
     /// Write a synthetic media file at `<root>/<name>` with `size` bytes.
     ///
     /// Content is a repeating byte pattern derived from the file name so
