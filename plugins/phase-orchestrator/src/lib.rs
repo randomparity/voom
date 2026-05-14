@@ -5,32 +5,9 @@
 //! and provides dry-run formatting. Does not call executors — the CLI's
 //! `process` command handles actual execution and re-introspection.
 
+pub use voom_domain::orchestration::OrchestrationResult;
 use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
 use voom_dsl::compiled::{CompiledPolicy, ErrorStrategy};
-
-/// Result of orchestrating all phases of a policy.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct OrchestrationResult {
-    /// Plans produced for each phase (in execution order).
-    pub plans: Vec<Plan>,
-    /// Results for each executed phase.
-    pub phase_results: Vec<PhaseResult>,
-    /// Whether any phase modified the file.
-    pub file_modified: bool,
-}
-
-impl OrchestrationResult {
-    /// Create a new orchestration result.
-    #[must_use]
-    pub fn new(plans: Vec<Plan>, phase_results: Vec<PhaseResult>, file_modified: bool) -> Self {
-        Self {
-            plans,
-            phase_results,
-            file_modified,
-        }
-    }
-}
 
 /// Produce phase outcomes from pre-evaluated plans, computing skip/completion
 /// state and dry-run summary.
@@ -62,11 +39,7 @@ pub fn orchestrate(plans: Vec<Plan>) -> OrchestrationResult {
         phase_results.push(phase_result);
     }
 
-    OrchestrationResult {
-        plans,
-        phase_results,
-        file_modified,
-    }
+    OrchestrationResult::new(plans, phase_results, file_modified)
 }
 
 /// Build a human-readable dry-run summary.
