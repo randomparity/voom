@@ -390,6 +390,99 @@ run_runtime_timeline_missing_dir_test() {
 
 run_runtime_timeline_missing_dir_test
 
+run_env_check_timeline_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/logs/env-check" "${actual}/diffs"
+
+  cat >"${actual}/logs/env-check/0001.log" <<'EOF'
+timestamp: 2026-05-13T10:00:00-07:00
+External tools:
+  ffmpeg ... OK (7.1.2)
+  rclone ... OK (1.66.0)
+Hardware acceleration:
+  Backend ... NVENC (cuda) (auto-detected)
+
+  GPUs:
+    GPU 0: NVIDIA RTX A6000 (49140 MiB)
+    GPU 1: Quadro RTX 4000 (8192 MiB)
+EOF
+
+  cat >"${actual}/logs/env-check/0002.log" <<'EOF'
+timestamp: 2026-05-13T11:00:00-07:00
+External tools:
+  ffmpeg ... OK (7.1.2)
+  rclone ... OK (1.66.0)
+Hardware acceleration:
+  Backend ... none (unavailable)
+
+  GPUs:
+EOF
+
+  cat >"${actual}/logs/env-check/0003.log" <<'EOF'
+timestamp: 2026-05-13T12:00:00-07:00
+External tools:
+  ffmpeg ... OK (7.1.2)
+  rclone ... OK (1.66.0)
+Hardware acceleration:
+  Backend ... NVENC (cuda) (auto-detected)
+
+  GPUs:
+    GPU 0: NVIDIA RTX A6000 (49140 MiB)
+    GPU 1: Quadro RTX 4000 (8192 MiB)
+EOF
+
+  cat >"${actual}/logs/env-check/notes.log" <<'EOF'
+This is not a sampler-generated env check log.
+NVENC: FAIL
+GPUs: 99
+ffmpeg: FAIL
+rclone: FAIL
+EOF
+
+  "lib/env-check-timeline.py" \
+    "${actual}/logs/env-check" \
+    "${actual}/diffs/env-check-timeline.md"
+  assert_match \
+    "${actual}/diffs/env-check-timeline.md" \
+    "tests/expected/env-check-timeline.md"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_env_check_timeline_test
+
+run_env_check_timeline_synthetic_lines_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/logs/env-check" "${actual}/diffs"
+
+  cat >"${actual}/logs/env-check/0001.log" <<'EOF'
+NVENC: OK
+GPUs: 2
+ffmpeg: OK
+rclone: OK
+EOF
+
+  "lib/env-check-timeline.py" \
+    "${actual}/logs/env-check" \
+    "${actual}/diffs/env-check-timeline.md"
+
+  if ! grep -Fq "| 1 | NVENC OK | 2 | OK | OK |" \
+    "${actual}/diffs/env-check-timeline.md"; then
+    echo "FAIL: synthetic env check lines were not parsed" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_env_check_timeline_synthetic_lines_test
+
 raw_actual=$(mktemp -d)
 trap 'rm -rf "${raw_actual}"' EXIT
 
