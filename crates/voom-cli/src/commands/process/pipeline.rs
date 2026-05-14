@@ -63,7 +63,12 @@ pub(super) async fn process_single_file(
     let path = std::path::PathBuf::from(&payload.path);
 
     let stored = crate::introspect::load_stored_file(ctx.store.clone(), path.clone()).await;
+    // `needs_reintrospect` is set by the ingest stage when
+    // `ingest_discovered_file` returned a decision (Moved / ExternallyChanged)
+    // that indicates the stored row's tracks/metadata are stale even though
+    // size+hash would normally match. Honour it ahead of the cache check.
     let cache_hit = !ctx.force_rescan
+        && !payload.needs_reintrospect
         && stored.as_ref().is_some_and(|s| {
             crate::introspect::matches_discovery(s, payload.size, payload.content_hash.as_deref())
         });

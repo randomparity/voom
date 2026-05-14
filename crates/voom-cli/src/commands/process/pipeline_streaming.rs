@@ -59,6 +59,11 @@ pub(crate) struct StreamingOutcome {
     /// directly off this field.
     #[allow(dead_code)]
     pub(crate) job_results: Vec<JobResult>,
+    /// Deduplicated, full discovered path set (every path the ingest stage
+    /// saw before any bad-file filtering). Used by the no-hash success path
+    /// in `process::run` to call `mark_missing_paths` for path-only
+    /// reconciliation — mirroring `voom scan`'s unhashed branch.
+    pub(crate) discovered_paths: Vec<PathBuf>,
 }
 
 /// Channel capacity per worker. Same constant as scan phase 2.
@@ -153,6 +158,7 @@ where
 
     let discovery_errors = Arc::new(AtomicU64::new(0));
     let events_for_eta: Arc<Mutex<Vec<FileDiscoveredEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let discovered_paths: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
     let enqueued = Arc::new(AtomicU64::new(0));
     let discovered = Arc::new(AtomicU64::new(0));
     let skipped_bad = Arc::new(AtomicU64::new(0));
@@ -172,6 +178,8 @@ where
 
     let ingest_handle = spawn_ingest_stage(
         kernel.clone(),
+        store.clone(),
+        scan_session,
         bad_files,
         args.force_rescan,
         args.priority_by_date,
@@ -185,6 +193,7 @@ where
         enqueued.clone(),
         skipped_bad.clone(),
         events_for_eta.clone(),
+        discovered_paths.clone(),
         reporter.clone(),
         quiet,
         plan_only,
@@ -249,6 +258,9 @@ where
     let events_for_eta = Arc::try_unwrap(events_for_eta)
         .map(parking_lot::Mutex::into_inner)
         .unwrap_or_else(|m| m.lock().clone());
+    let discovered_paths = Arc::try_unwrap(discovered_paths)
+        .map(parking_lot::Mutex::into_inner)
+        .unwrap_or_else(|m| m.lock().clone());
 
     Ok(StreamingOutcome {
         discovered: discovered.load(Ordering::Relaxed),
@@ -257,6 +269,7 @@ where
         discovery_errors: discovery_errors.load(Ordering::Relaxed),
         events_for_eta,
         job_results,
+        discovered_paths,
     })
 }
 
@@ -388,6 +401,8 @@ fn load_snapshot_via_storage_trait(
 #[allow(clippy::too_many_arguments)]
 fn spawn_ingest_stage(
     kernel: Arc<voom_kernel::Kernel>,
+    store: Arc<dyn StorageTrait>,
+    scan_session: ScanSessionId,
     bad_files: HashSet<PathBuf>,
     force_rescan: bool,
     priority_by_date: bool,
@@ -401,6 +416,7 @@ fn spawn_ingest_stage(
     enqueued: Arc<AtomicU64>,
     skipped_bad: Arc<AtomicU64>,
     events_for_eta: Arc<Mutex<Vec<FileDiscoveredEvent>>>,
+    discovered_paths: Arc<Mutex<Vec<PathBuf>>>,
     reporter: Arc<dyn ProgressReporter>,
     quiet: bool,
     plan_only: bool,
@@ -464,7 +480,82 @@ fn spawn_ingest_stage(
                 continue;
             }
             discovered.fetch_add(1, Ordering::Relaxed);
+            // Track every deduped, observed path. This is the input set for
+            // `mark_missing_paths` on the no-hash (`--no-backup`) success
+            // path. Collected BEFORE the bad-file filter because a known-bad
+            // file is still present on disk — excluding it would falsely
+            // mark it missing on the next path-only reconciliation.
+            discovered_paths.lock().push(event.path.clone());
 
+            // Session registration MUST happen BEFORE the bad-file filter:
+            // a known-bad file may still be physically present on disk and
+            // have an active row in `files`. If we skipped registration
+            // here, `finish_scan_session` would later see the row as not
+            // registered this session and mark it Missing — false-positive
+            // missing of a present file. (Codex second-pass review, May
+            // 2026.)
+            let needs_reintrospect = if let Some(hash) = event.content_hash.clone() {
+                let df = voom_domain::transition::DiscoveredFile::new(
+                    event.path.clone(),
+                    event.size,
+                    hash,
+                );
+                let store_for_blocking = store.clone();
+                let session_for_blocking = scan_session;
+                let join_result = tokio::task::spawn_blocking(move || {
+                    store_for_blocking.ingest_discovered_file(session_for_blocking, &df)
+                })
+                .await;
+
+                // Ingest failure must be FAIL-CLOSED: cancel the pipeline
+                // (so discovery stops walking and the pool stops claiming),
+                // cancel the scan session (so no later code path can call
+                // finish_scan_session and falsely mark files missing), then
+                // propagate the error. Without this, discovery keeps
+                // emitting events until the walk completes naturally and —
+                // under `--execute-during-discovery` — workers can keep
+                // mutating files after registration has already failed.
+                let decision = match join_result {
+                    Ok(Ok(decision)) => decision,
+                    Ok(Err(e)) => {
+                        token.cancel();
+                        if let Err(cancel_err) = store.cancel_scan_session(scan_session) {
+                            tracing::warn!(
+                                error = %cancel_err,
+                                "cancel_scan_session failed after ingest error"
+                            );
+                        }
+                        return Err(anyhow::Error::new(e).context("ingest_discovered_file failed"));
+                    }
+                    Err(e) => {
+                        token.cancel();
+                        if let Err(cancel_err) = store.cancel_scan_session(scan_session) {
+                            tracing::warn!(
+                                error = %cancel_err,
+                                "cancel_scan_session failed after ingest join error"
+                            );
+                        }
+                        return Err(anyhow::anyhow!("ingest_discovered_file join failed: {e}"));
+                    }
+                };
+                // `Moved` and `ExternallyChanged` indicate the existing row
+                // is stale; the worker must bypass the matches_discovery
+                // cache and re-introspect. `Unchanged` / `Duplicate` are
+                // safe cache hits. `New` requires introspection by
+                // definition; surface that too so the bit is meaningful
+                // regardless of which decision came back.
+                decision.needs_introspection_path(&event.path).is_some()
+            } else {
+                // No hash → no session registration possible. Treat as
+                // needing introspection (the worker will introspect; the
+                // success path will do path-only reconciliation).
+                true
+            };
+
+            // Bad-file filter runs AFTER session registration so the row
+            // counts as "seen this session" for `finish_scan_session`.
+            // Skipping the work item still saves the worker pool the load,
+            // but the file isn't falsely missing.
             if !force_rescan && bad_files.contains(&event.path) {
                 skipped_bad.fetch_add(1, Ordering::Relaxed);
                 continue;
@@ -482,6 +573,7 @@ fn spawn_ingest_stage(
                 path: event.path.to_string_lossy().into_owned(),
                 size: event.size,
                 content_hash: event.content_hash.clone(),
+                needs_reintrospect,
             };
             let item = WorkItem::new(voom_domain::job::JobType::Process, priority, Some(payload));
 

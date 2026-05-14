@@ -209,9 +209,17 @@ mod tests {
 }
 
 /// Shared payload for jobs keyed on a discovered file (introspection, processing).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiscoveredFilePayload {
     pub path: String,
     pub size: u64,
     pub content_hash: Option<String>,
+    /// Set to `true` when the upstream pipeline determined that this file's
+    /// stored row is stale (e.g. an `IngestDecision::Moved` or
+    /// `ExternallyChanged` decision was returned by `ingest_discovered_file`)
+    /// and the worker must NOT take the stored-row cache hit. Defaults to
+    /// `false` so existing call sites (and on-disk snapshots from before
+    /// this field was added) get the cache-hit behavior they had before.
+    #[serde(default)]
+    pub needs_reintrospect: bool,
 }

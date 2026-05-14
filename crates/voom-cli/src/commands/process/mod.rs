@@ -319,17 +319,108 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
 
         heartbeat_handle.abort();
 
-        // Cancel rather than finish on success: finish_scan_session computes
-        // missing files as the set difference between the files table and
-        // files registered via ingest_discovered_file(session, df), but the
-        // streaming pipeline does not call that — it emits FileDiscovered
-        // events to the bus where sqlite-store uses upsert_discovered_file
-        // (no session registration). Calling finish here would mark every
-        // pre-existing file missing. The fail-closed safety properties this
-        // session enables (record_voom_mutation, SessionMutationSnapshot)
-        // do not depend on finish.
-        if let Err(e) = store.cancel_scan_session(scan_session) {
-            tracing::warn!(error = %e, "failed to cancel scan session");
+        // Session finalization:
+        //   - cancelled  → cancel_scan_session (never mark anything missing)
+        //   - discovery_errors > 0 → fail-closed cancel + bail. Discovery
+        //     `on_error` paths cover walk/build/hash failures that emit no
+        //     FileDiscovered event, so the affected files are absent from
+        //     both the session registrations AND `discovered_paths`. Any
+        //     reconciliation in this state could falsely mark a present-
+        //     but-erroring file as `Missing`.
+        //   - no-backup  → mark_missing_paths over the union of
+        //     `discovered_paths` and any voom-session mutation
+        //     destinations (so a renamed-by-VOOM output is never flagged
+        //     missing). Errors are propagated, not warned.
+        //   - hashed run → finish_scan_session (the canonical path).
+        //     Errors are propagated.
+        if token.is_cancelled() {
+            if let Err(e) = store.cancel_scan_session(scan_session) {
+                tracing::warn!(error = %e, "failed to cancel scan session");
+            }
+        } else if outcome.discovery_errors > 0 {
+            // Fail-closed: do NOT finalize when discovery had any errors.
+            // The user has visible warnings already from on_error callbacks;
+            // returning Err keeps the session cancelled and surfaces the
+            // failure in the exit code.
+            if let Err(cancel_err) = store.cancel_scan_session(scan_session) {
+                tracing::warn!(
+                    error = %cancel_err,
+                    "failed to cancel scan session after discovery errors"
+                );
+            }
+            anyhow::bail!(
+                "discovery reported {} error(s); scan session cancelled \
+                 to avoid false-missing reconciliation",
+                outcome.discovery_errors
+            );
+        } else if args.no_backup {
+            // Build an exclusion set of VOOM-session mutation destinations
+            // (and originals) so we never mark voom's own output as
+            // missing in a `--no-backup` mutating run. On any failure
+            // along this branch, ALWAYS attempt to close the scan session
+            // — leaving it in_progress would block subsequent runs of
+            // `voom process` until stale-session cleanup kicks in.
+            let mutations_result = store.voom_mutations_for_session(scan_session);
+            let mark_result = mutations_result.and_then(|mutations| {
+                let mut effective_paths = outcome.discovered_paths.clone();
+                for m in mutations {
+                    effective_paths.push(m.path);
+                }
+                store.mark_missing_paths(&effective_paths, &paths)
+            });
+            // Always cancel the session, regardless of mark_result outcome.
+            // Capture the cancel result so a cancellation failure surfaces.
+            let cancel_result = store.cancel_scan_session(scan_session);
+            // Decide which error to propagate. mark_missing_paths failure
+            // takes precedence (that's the user-visible work that failed);
+            // a cancellation failure on top of it is logged. If
+            // reconciliation succeeded but cancel failed, propagate the
+            // cancel error so the next run isn't blocked silently.
+            match (mark_result, cancel_result) {
+                (Ok(missing), Ok(())) => {
+                    tracing::info!(missing, "path-only reconciliation complete (--no-backup)");
+                }
+                (Ok(missing), Err(cancel_err)) => {
+                    tracing::info!(missing, "path-only reconciliation complete; cancel failed");
+                    return Err(anyhow::Error::new(cancel_err).context(
+                        "cancel_scan_session failed after successful --no-backup reconciliation",
+                    ));
+                }
+                (Err(mark_err), Ok(())) => {
+                    return Err(anyhow::Error::new(mark_err)
+                        .context("--no-backup reconciliation failed (session cancelled)"));
+                }
+                (Err(mark_err), Err(cancel_err)) => {
+                    tracing::warn!(
+                        error = %cancel_err,
+                        "cancel_scan_session also failed after mark_missing_paths error"
+                    );
+                    return Err(anyhow::Error::new(mark_err).context(
+                        "--no-backup reconciliation failed and cancel_scan_session also failed",
+                    ));
+                }
+            }
+        } else {
+            // Canonical hashed path: finish_scan_session does the
+            // reconciliation. Propagate errors so the CLI exit code
+            // reflects reality.
+            let finish = match store.finish_scan_session(scan_session) {
+                Ok(finish) => finish,
+                Err(e) => {
+                    if let Err(cancel_err) = store.cancel_scan_session(scan_session) {
+                        tracing::warn!(
+                            error = %cancel_err,
+                            "failed to cancel scan session after finish failure"
+                        );
+                    }
+                    return Err(anyhow::Error::new(e).context("finish_scan_session failed"));
+                }
+            };
+            tracing::info!(
+                missing = finish.missing,
+                promoted_moves = finish.promoted_moves,
+                "scan session finished"
+            );
         }
 
         if outcome.discovery_errors > 0 {
