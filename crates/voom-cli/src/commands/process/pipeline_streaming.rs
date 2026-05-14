@@ -513,12 +513,42 @@ fn spawn_ingest_stage(
                 );
                 let store_for_blocking = store.clone();
                 let session_for_blocking = scan_session;
-                let decision = tokio::task::spawn_blocking(move || {
+                let join_result = tokio::task::spawn_blocking(move || {
                     store_for_blocking.ingest_discovered_file(session_for_blocking, &df)
                 })
-                .await
-                .map_err(|e| anyhow::anyhow!("ingest_discovered_file join failed: {e}"))?
-                .context("ingest_discovered_file failed")?;
+                .await;
+
+                // Ingest failure must be FAIL-CLOSED: cancel the pipeline
+                // (so discovery stops walking and the pool stops claiming),
+                // cancel the scan session (so no later code path can call
+                // finish_scan_session and falsely mark files missing), then
+                // propagate the error. Without this, discovery keeps
+                // emitting events until the walk completes naturally and —
+                // under `--execute-during-discovery` — workers can keep
+                // mutating files after registration has already failed.
+                let decision = match join_result {
+                    Ok(Ok(decision)) => decision,
+                    Ok(Err(e)) => {
+                        token.cancel();
+                        if let Err(cancel_err) = store.cancel_scan_session(scan_session) {
+                            tracing::warn!(
+                                error = %cancel_err,
+                                "cancel_scan_session failed after ingest error"
+                            );
+                        }
+                        return Err(anyhow::Error::new(e).context("ingest_discovered_file failed"));
+                    }
+                    Err(e) => {
+                        token.cancel();
+                        if let Err(cancel_err) = store.cancel_scan_session(scan_session) {
+                            tracing::warn!(
+                                error = %cancel_err,
+                                "cancel_scan_session failed after ingest join error"
+                            );
+                        }
+                        return Err(anyhow::anyhow!("ingest_discovered_file join failed: {e}"));
+                    }
+                };
                 // `Moved` and `ExternallyChanged` indicate the existing row
                 // is stale; the worker must bypass the matches_discovery
                 // cache and re-introspect. `Unchanged` / `Duplicate` are

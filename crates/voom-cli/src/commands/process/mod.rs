@@ -321,55 +321,96 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
 
         // Session finalization:
         //   - cancelled  → cancel_scan_session (never mark anything missing)
-        //   - no-backup  → mark_missing_paths (path-only reconciliation,
-        //                  mirroring voom scan's unhashed branch)
-        //   - hashed run → finish_scan_session (the canonical path)
-        //
-        // The streaming pipeline now calls `ingest_discovered_file` directly
-        // for every hashed FileDiscovered (see pipeline_streaming.rs), so
-        // `finish_scan_session` sees a fully registered session and only
-        // marks rows missing when they were genuinely absent from this
-        // walk. On `--no-backup` no hashes are available so we cannot
-        // ingest; `mark_missing_paths` performs path-only reconciliation
-        // against the deduped path set the ingest stage collected.
+        //   - discovery_errors > 0 → fail-closed cancel + bail. Discovery
+        //     `on_error` paths cover walk/build/hash failures that emit no
+        //     FileDiscovered event, so the affected files are absent from
+        //     both the session registrations AND `discovered_paths`. Any
+        //     reconciliation in this state could falsely mark a present-
+        //     but-erroring file as `Missing`.
+        //   - no-backup  → mark_missing_paths over the union of
+        //     `discovered_paths` and any voom-session mutation
+        //     destinations (so a renamed-by-VOOM output is never flagged
+        //     missing). Errors are propagated, not warned.
+        //   - hashed run → finish_scan_session (the canonical path).
+        //     Errors are propagated.
         if token.is_cancelled() {
             if let Err(e) = store.cancel_scan_session(scan_session) {
                 tracing::warn!(error = %e, "failed to cancel scan session");
             }
+        } else if outcome.discovery_errors > 0 {
+            // Fail-closed: do NOT finalize when discovery had any errors.
+            // The user has visible warnings already from on_error callbacks;
+            // returning Err keeps the session cancelled and surfaces the
+            // failure in the exit code.
+            if let Err(cancel_err) = store.cancel_scan_session(scan_session) {
+                tracing::warn!(
+                    error = %cancel_err,
+                    "failed to cancel scan session after discovery errors"
+                );
+            }
+            anyhow::bail!(
+                "discovery reported {} error(s); scan session cancelled \
+                 to avoid false-missing reconciliation",
+                outcome.discovery_errors
+            );
         } else if args.no_backup {
-            match store.mark_missing_paths(&outcome.discovered_paths, &paths) {
-                Ok(missing) => {
-                    tracing::info!(
-                        missing,
-                        "path-only reconciliation complete (--no-backup)"
-                    );
+            // Build an exclusion set of VOOM-session mutation destinations
+            // (and originals) so we never mark voom's own output as
+            // missing in a `--no-backup` mutating run.
+            let mut effective_paths = outcome.discovered_paths.clone();
+            match store.voom_mutations_for_session(scan_session) {
+                Ok(mutations) => {
+                    for m in mutations {
+                        effective_paths.push(m.path);
+                    }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "mark_missing_paths failed");
+                    // Cannot exclude → cancel rather than risk a false-missing.
+                    if let Err(cancel_err) = store.cancel_scan_session(scan_session)
+                    {
+                        tracing::warn!(
+                            error = %cancel_err,
+                            "failed to cancel scan session after voom_mutations_for_session error"
+                        );
+                    }
+                    return Err(anyhow::Error::new(e).context(
+                        "voom_mutations_for_session failed; cancelling \
+                         scan session to avoid false-missing reconciliation",
+                    ));
                 }
             }
+            let missing = store
+                .mark_missing_paths(&effective_paths, &paths)
+                .context("mark_missing_paths failed during --no-backup reconciliation")?;
+            tracing::info!(
+                missing,
+                "path-only reconciliation complete (--no-backup)"
+            );
             if let Err(e) = store.cancel_scan_session(scan_session) {
                 tracing::warn!(error = %e, "failed to cancel scan session after mark_missing_paths");
             }
         } else {
-            match store.finish_scan_session(scan_session) {
-                Ok(finish) => {
-                    tracing::info!(
-                        missing = finish.missing,
-                        promoted_moves = finish.promoted_moves,
-                        "scan session finished"
-                    );
-                }
+            // Canonical hashed path: finish_scan_session does the
+            // reconciliation. Propagate errors so the CLI exit code
+            // reflects reality.
+            let finish = match store.finish_scan_session(scan_session) {
+                Ok(finish) => finish,
                 Err(e) => {
-                    tracing::warn!(error = %e, "failed to finish scan session");
                     if let Err(cancel_err) = store.cancel_scan_session(scan_session) {
                         tracing::warn!(
                             error = %cancel_err,
                             "failed to cancel scan session after finish failure"
                         );
                     }
+                    return Err(anyhow::Error::new(e)
+                        .context("finish_scan_session failed"));
                 }
-            }
+            };
+            tracing::info!(
+                missing = finish.missing,
+                promoted_moves = finish.promoted_moves,
+                "scan session finished"
+            );
         }
 
         if outcome.discovery_errors > 0 {
