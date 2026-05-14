@@ -183,6 +183,20 @@ fi
     echo "(none)"
   fi
   echo
+  echo "### Failure timeline"
+  if [[ -s "${run}/diffs/failure-timeline.md" ]]; then
+    sed -n '1,24p' "${run}/diffs/failure-timeline.md"
+  else
+    echo "(not generated)"
+  fi
+  echo
+  echo "### Plugin error summary"
+  if [[ -s "${run}/diffs/plugin-error-summary.md" ]]; then
+    sed -n '1,24p' "${run}/diffs/plugin-error-summary.md"
+  else
+    echo "(not generated)"
+  fi
+  echo
   echo "### Failed plans (first 20)"
   echo '```'
   if [[ -f "${failed_plans}" ]] && [[ $(awk 'END {print NR}' "${failed_plans}") -gt 1 ]]; then
@@ -238,6 +252,10 @@ fi
   echo "- [web-smoke/](web-smoke/)"
   link_artifact_if_exists "diffs/runtime-timeline.md"
   link_artifact_if_exists "diffs/env-check-timeline.md"
+  link_artifact_if_exists "diffs/failure-timeline.md"
+  link_artifact_if_exists "diffs/plugin-error-summary.md"
+  link_artifact_if_exists "reports/events-deduped.json"
+  link_artifact_if_exists "logs/plugin-errors/"
   link_artifact_if_exists "runtime/"
   link_artifact_if_exists "env/journal.log"
   link_artifact_if_exists "env/dmesg.log"
