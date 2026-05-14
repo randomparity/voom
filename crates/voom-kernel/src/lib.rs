@@ -317,6 +317,13 @@ impl Kernel {
         Ok(())
     }
 
+    /// Install a `StatsSink` that the event bus will forward every plugin
+    /// invocation record to. Idempotent; calling repeatedly replaces the
+    /// previous sink. Intended for one-shot wiring at bootstrap.
+    pub fn set_stats_sink(&self, sink: Arc<dyn stats_sink::StatsSink>) {
+        self.bus.set_stats_sink(sink);
+    }
+
     /// Dispatch an event through the bus to all matching subscribers.
     pub fn dispatch(&self, event: Event) -> Vec<EventResult> {
         let event_type = event.event_type().to_string();
@@ -695,5 +702,84 @@ mod tests {
         );
         assert_eq!(kernel.registry.len(), 1);
         assert_eq!(kernel.subscriber_count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod stats_sink_wiring_tests {
+    use super::*;
+    use crate::stats_sink::StatsSink;
+    use std::sync::Mutex;
+    use voom_domain::plugin_stats::PluginStatRecord;
+
+    #[derive(Default)]
+    struct CountingSink(Mutex<u64>);
+
+    impl StatsSink for CountingSink {
+        fn record(&self, _r: PluginStatRecord) {
+            *self.0.lock().unwrap() += 1;
+        }
+    }
+
+    struct MinimalPlugin {
+        name: String,
+    }
+
+    impl Plugin for MinimalPlugin {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn version(&self) -> &str {
+            "0.1.0"
+        }
+        fn capabilities(&self) -> &[voom_domain::capabilities::Capability] {
+            &[]
+        }
+        fn handles(&self, event_type: &str) -> bool {
+            event_type == voom_domain::events::Event::TOOL_DETECTED
+        }
+        fn on_event(
+            &self,
+            _event: &voom_domain::events::Event,
+        ) -> voom_domain::errors::Result<Option<voom_domain::events::EventResult>> {
+            Ok(Some(voom_domain::events::EventResult::new(
+                self.name.clone(),
+            )))
+        }
+    }
+
+    #[test]
+    fn set_stats_sink_swaps_the_active_sink() {
+        let mut kernel = Kernel::new();
+        let sink = Arc::new(CountingSink::default());
+
+        // Register a plugin that handles TOOL_DETECTED before installing the sink.
+        kernel
+            .register_plugin(
+                Arc::new(MinimalPlugin {
+                    name: "test-plugin".into(),
+                }),
+                10,
+            )
+            .unwrap();
+
+        // Install the new sink.
+        kernel.set_stats_sink(sink.clone());
+
+        // Dispatch one event the plugin handles.
+        let event =
+            voom_domain::events::Event::ToolDetected(voom_domain::events::ToolDetectedEvent::new(
+                "test-tool",
+                "1.0.0",
+                "/usr/bin/test-tool".into(),
+            ));
+        kernel.dispatch(event);
+
+        // The new sink must have seen exactly one record.
+        assert_eq!(
+            *sink.0.lock().unwrap(),
+            1,
+            "CountingSink should record exactly one invocation"
+        );
     }
 }

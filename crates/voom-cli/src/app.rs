@@ -130,6 +130,9 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
             // sqlite-store disabled: open a standalone pool so callers always
             // get a usable handle.  No plugin is registered, so events will
             // not be persisted, but read-only CLI commands still work.
+            tracing::warn!(
+                "sqlite-store disabled — plugin invocation stats will not be recorded (issue #92)"
+            );
             open_store_in(data_dir).context("Failed to open storage")?
         } else {
             let mut plugin = voom_sqlite_store::SqliteStorePlugin::new();
@@ -137,13 +140,25 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
                 voom_kernel::PluginContext::new(plugin_json("sqlite-store"), data_dir.clone());
             let init_events = plugin.init(&ctx).context("Failed to initialize storage")?;
 
-            // Capture the store handle before moving the plugin into an Arc.
-            // `plugin.store()` is always Some after a successful init().
-            let handle = plugin
+            // Capture the concrete `Arc<SqliteStore>` BEFORE casting to the
+            // trait-object handle returned to callers. The stats sink needs the
+            // concrete type because `insert_plugin_stats_batch` is a SqliteStore
+            // inherent method, and we don't want to widen the public StorageTrait
+            // surface for one consumer.
+            let concrete_store: Arc<voom_sqlite_store::store::SqliteStore> = plugin
                 .store()
-                .map(|s| Arc::clone(s) as Arc<dyn voom_domain::storage::StorageTrait>)
+                .cloned()
                 .expect("store is Some after successful init");
 
+            // Install the stats sink BEFORE registering the plugin on the bus so
+            // the storage plugin's own init events (dispatched below) are captured.
+            // Until this call, the bus uses NoopStatsSink.
+            let stats_sink: Arc<dyn voom_kernel::stats_sink::StatsSink> = Arc::new(
+                voom_sqlite_store::SqliteStatsSink::new(concrete_store.clone()),
+            );
+            kernel.set_stats_sink(stats_sink);
+
+            let handle = concrete_store.clone() as Arc<dyn voom_domain::storage::StorageTrait>;
             let plugin_arc: Arc<dyn voom_kernel::Plugin> = Arc::new(plugin);
             kernel.register_plugin(plugin_arc, PRIORITY_STORAGE)?;
 
