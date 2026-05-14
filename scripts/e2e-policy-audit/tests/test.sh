@@ -249,27 +249,75 @@ run_runtime_timeline_test() {
   mkdir -p "${actual}/runtime" "${actual}/diffs"
 
   cat >"${actual}/runtime/0001-2026-05-13T100000-0700.txt" <<'EOF'
+# Runtime sample 0001
+
 timestamp: 2026-05-13T10:00:00-07:00
+
+## nvidia-smi -L
+
+$ nvidia-smi -L
+
 GPU 0: RTX 4090 (UUID: GPU-a)
 GPU 1: RTX 4090 (UUID: GPU-b)
+completed-helper process is not a voom job row
+
+## df -h
+
+$ df -h /mnt/raid0 /home
+
+Filesystem      Size  Used Avail Use% Mounted on
 /dev/md0        100T   80T   20T  80% /mnt/raid0
 /dev/nvme0n1p3  900G  100G  800G  12% /home
+
+## voom jobs list tail
+
+$ bash -lc 'voom jobs list 2>/dev/null | tail -20'
+
+id status
 job-a running
 job-b pending
 EOF
 
   cat >"${actual}/runtime/0002-2026-05-13T100500-0700.txt" <<'EOF'
+# Runtime sample 0002
+
 timestamp: 2026-05-13T10:05:00-07:00
+
+## df -h
+
+$ df -h /mnt/raid0 /home
+
+Filesystem      Size  Used Avail Use% Mounted on
 /dev/md0        100T   96T  4.0T  96% /mnt/raid0
 /dev/nvme0n1p3  900G  100G  800G  12% /home
+
+## voom jobs list tail
+
+$ bash -lc 'voom jobs list 2>/dev/null | tail -20'
+
+id status
 job-a running
 job-b pending
 EOF
 
   cat >"${actual}/runtime/0003-2026-05-13T101000-0700.txt" <<'EOF'
+# Runtime sample 0003
+
 timestamp: 2026-05-13T10:10:00-07:00
+
+## df -h
+
+$ df -h /mnt/raid0 /home
+
+Filesystem      Size  Used Avail Use% Mounted on
 /dev/md0        100T   96T  4.0T  96% /mnt/raid0
 /dev/nvme0n1p3  900G  100G  800G  12% /home
+
+## voom jobs list tail
+
+$ bash -lc 'voom jobs list 2>/dev/null | tail -20'
+
+id status
 job-a running
 job-b pending
 EOF
@@ -283,6 +331,64 @@ EOF
 }
 
 run_runtime_timeline_test
+
+run_runtime_timeline_zero_jobs_no_stall_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/runtime" "${actual}/diffs"
+
+  cat >"${actual}/runtime/0001.txt" <<'EOF'
+timestamp: 2026-05-13T10:00:00-07:00
+
+## voom jobs list tail
+
+$ bash -lc 'voom jobs list 2>/dev/null | tail -20'
+EOF
+
+  cat >"${actual}/runtime/0002.txt" <<'EOF'
+timestamp: 2026-05-13T10:05:00-07:00
+
+## voom jobs list tail
+
+$ bash -lc 'voom jobs list 2>/dev/null | tail -20'
+EOF
+
+  "lib/runtime-timeline.py" "${actual}/runtime" "${actual}/diffs/runtime-timeline.md" \
+    --job-stall-samples 2
+
+  if grep -Fq "jobs list row count stalled" "${actual}/diffs/runtime-timeline.md"; then
+    echo "FAIL: zero job rows should not emit a job stall transition" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_runtime_timeline_zero_jobs_no_stall_test
+
+run_runtime_timeline_missing_dir_test() {
+  local actual
+  local stderr
+  actual=$(mktemp -d)
+  stderr=$(mktemp)
+  trap 'rm -R "${actual}"; rm -f "${stderr}"' EXIT
+
+  if "lib/runtime-timeline.py" "${actual}/missing-runtime" "${actual}/runtime-timeline.md" 2>"${stderr}"; then
+    echo "FAIL: missing runtime dir should fail" >&2
+    fail=1
+  elif ! grep -Fq "runtime dir not found" "${stderr}"; then
+    echo "FAIL: missing runtime dir error was not clear" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  rm -f "${stderr}"
+  trap - EXIT
+}
+
+run_runtime_timeline_missing_dir_test
 
 raw_actual=$(mktemp -d)
 trap 'rm -rf "${raw_actual}"' EXIT

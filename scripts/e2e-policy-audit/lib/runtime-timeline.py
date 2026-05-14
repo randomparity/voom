@@ -8,21 +8,30 @@ GPU_RE = re.compile(r"^GPU \d+:", re.MULTILINE)
 TIMESTAMP_RE = re.compile(r"^timestamp:\s+(.+)$", re.MULTILINE)
 DF_RE = re.compile(r"^\S+\s+\S+\s+\S+\s+\S+\s+(\d+)%\s+(\S+)$", re.MULTILINE)
 JOB_STATUS_RE = re.compile(
-    r"\b(running|pending|completed|failed|cancelled|skipped)\b", re.IGNORECASE
+    r"(?<![\w-])(running|pending|completed|failed|cancelled|skipped)(?![\w-])",
+    re.IGNORECASE,
 )
+
+
+def jobs_section_lines(text: str) -> list[str]:
+    in_jobs_section = False
+    lines = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            in_jobs_section = line.strip() == "## voom jobs list tail"
+            continue
+        if in_jobs_section:
+            lines.append(line)
+    return lines
 
 
 def count_job_rows(text: str) -> int:
     count = 0
-    for line in text.splitlines():
+    for line in jobs_section_lines(text):
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith(("#", "$", "[", "timestamp:", "/dev/")):
-            continue
-        if stripped.startswith(("GPU ", "Filesystem", "Mem:", "Swap:")):
-            continue
-        if "load average" in stripped:
+        if stripped.startswith(("#", "$", "[")):
             continue
         if JOB_STATUS_RE.search(stripped):
             count += 1
@@ -76,7 +85,7 @@ def state_transitions(samples: list[dict], disk_threshold: int, stall_samples: i
         else:
             job_streak = 1
 
-        if stall_samples > 0 and job_streak == stall_samples:
+        if stall_samples > 0 and sample["job_rows"] > 0 and job_streak == stall_samples:
             transitions.append(
                 f"{sample['timestamp']}: jobs list row count stalled at "
                 f"{sample['job_rows']} for {stall_samples} samples"
@@ -127,9 +136,12 @@ def main() -> int:
     args = parser.parse_args()
 
     runtime_dir = Path(args.runtime_dir)
+    if not runtime_dir.is_dir():
+        parser.error(f"runtime dir not found: {runtime_dir}")
+
     samples = [
         parse_sample(path)
-        for path in sorted(runtime_dir.iterdir())
+        for path in sorted(runtime_dir.glob("*.txt"))
         if path.is_file()
     ]
     transitions = state_transitions(
