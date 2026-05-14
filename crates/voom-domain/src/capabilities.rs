@@ -23,7 +23,7 @@ pub enum Capability {
     DetectTools,
     ManageJobs,
     ServeHttp,
-    Plan,
+    OrchestratePhases,
     Backup,
     EnrichMetadata {
         source: String,
@@ -50,7 +50,7 @@ impl Capability {
             Capability::DetectTools => "detect_tools",
             Capability::ManageJobs => "manage_jobs",
             Capability::ServeHttp => "serve_http",
-            Capability::Plan => "plan",
+            Capability::OrchestratePhases => "orchestrate_phases",
             Capability::Backup => "backup",
             Capability::EnrichMetadata { .. } => "enrich_metadata",
             Capability::Transcribe => "transcribe",
@@ -73,7 +73,7 @@ impl Capability {
             Capability::DetectTools => R::Competing,
             Capability::ManageJobs => R::Exclusive,
             Capability::ServeHttp => R::Exclusive,
-            Capability::Plan => R::Exclusive,
+            Capability::OrchestratePhases => R::Exclusive,
             Capability::Backup => R::Competing,
             Capability::EnrichMetadata { .. } => R::Sharded,
             Capability::Transcribe => R::Competing,
@@ -113,9 +113,9 @@ mod tests {
     }
 
     #[test]
-    fn plan_resolution_is_exclusive() {
+    fn orchestrate_phases_resolution_is_exclusive() {
         use crate::capability_resolution::CapabilityResolution;
-        let cap = Capability::Plan;
+        let cap = Capability::OrchestratePhases;
         assert_eq!(cap.resolution(), CapabilityResolution::Exclusive);
     }
 
