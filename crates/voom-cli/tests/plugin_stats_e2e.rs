@@ -210,3 +210,96 @@ async fn plugin_stats_query_does_not_mutate_database() {
          {after_event_log}"
     );
 }
+
+// ─── Test 4 (issue #382) ─────────────────────────────────────────────────────
+
+/// `voom estimate calibrate` must NOT add rows to `plugin_stats` or
+/// `event_log`. It only writes `cost_model_samples`; using
+/// `bootstrap_kernel_with_store` for this would register every plugin
+/// and dispatch their init events through the bus, polluting the
+/// bookkeeping tables — the same anti-pattern that was fixed for
+/// `voom plugin stats` in de69c75.
+#[tokio::test]
+async fn estimate_calibrate_does_not_mutate_database() {
+    use clap::Parser;
+
+    let _lock = TEST_LOCK.lock().await;
+    let env = TestEnv::new().await;
+    // Seed the DB by running a scan first, so plugin_stats and
+    // event_log are non-empty before we measure deltas.
+    env.write_media("a.mkv", 1);
+    run_scan(&env).await;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    let db_path = env.db_path();
+    let baseline_plugin_stats: i64 = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM plugin_stats", [], |r| r.get(0))
+            .unwrap()
+    };
+    let baseline_event_log: i64 = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM event_log", [], |r| r.get(0))
+            .unwrap()
+    };
+    let baseline_cost_model_samples: i64 = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM cost_model_samples", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert!(
+        baseline_plugin_stats > 0,
+        "scan must produce stats first; got {baseline_plugin_stats}"
+    );
+
+    // Run `voom estimate calibrate` end-to-end in-process.
+    let config_home = env.config_home().to_str().expect("utf-8 config_home");
+    let _guard = EnvOverride::set("XDG_CONFIG_HOME", config_home);
+    let argv = ["voom", "estimate", "calibrate"];
+    let cli = voom_cli::cli::Cli::try_parse_from(argv)
+        .unwrap_or_else(|e| panic!("CLI parse failed: {e}"));
+    let estimate_args = match cli.command {
+        voom_cli::cli::Commands::Estimate(a) => a,
+        _ => panic!("expected Estimate subcommand"),
+    };
+    let token = tokio_util::sync::CancellationToken::new();
+    voom_cli::commands::estimate::run(estimate_args, true, token)
+        .await
+        .expect("voom estimate calibrate must succeed");
+    drop(_guard);
+
+    // Settle any (theoretically nonexistent) pending writer work.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let after_plugin_stats: i64 = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM plugin_stats", [], |r| r.get(0))
+            .unwrap()
+    };
+    let after_event_log: i64 = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM event_log", [], |r| r.get(0))
+            .unwrap()
+    };
+    let after_cost_model_samples: i64 = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM cost_model_samples", [], |r| r.get(0))
+            .unwrap()
+    };
+
+    assert_eq!(
+        after_plugin_stats, baseline_plugin_stats,
+        "estimate calibrate must not add plugin_stats rows: was {baseline_plugin_stats}, \
+         now {after_plugin_stats}"
+    );
+    assert_eq!(
+        after_event_log, baseline_event_log,
+        "estimate calibrate must not add event_log rows: was {baseline_event_log}, now \
+         {after_event_log}"
+    );
+    assert!(
+        after_cost_model_samples > baseline_cost_model_samples,
+        "estimate calibrate MUST add cost_model_samples rows: was \
+         {baseline_cost_model_samples}, now {after_cost_model_samples}"
+    );
+}
