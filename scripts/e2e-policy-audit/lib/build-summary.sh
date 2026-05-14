@@ -20,6 +20,12 @@ note_warn() {
   soft_warns+=("$1")
   [[ "${verdict}" == "PASS" ]] && verdict="WARN"
 }
+link_artifact_if_exists() {
+  local path="$1"
+  if [[ -e "${run}/${path}" ]]; then
+    echo "- [${path}](${path})"
+  fi
+}
 
 check_log_rc() {
   local log_name="$1"
@@ -230,6 +236,13 @@ fi
   echo "- [db-export/](db-export/)"
   echo "- [repro/](repro/)"
   echo "- [web-smoke/](web-smoke/)"
+  link_artifact_if_exists "diffs/runtime-timeline.md"
+  link_artifact_if_exists "diffs/env-check-timeline.md"
+  link_artifact_if_exists "runtime/"
+  link_artifact_if_exists "env/journal.log"
+  link_artifact_if_exists "env/dmesg.log"
+  link_artifact_if_exists "env/dnf-history.txt"
+  link_artifact_if_exists "env/rpm-recently-changed.txt"
 } >"${run}/summary.md"
 
 echo "build-summary: ${verdict} — see ${run}/summary.md"

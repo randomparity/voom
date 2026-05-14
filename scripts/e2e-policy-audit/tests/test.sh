@@ -30,7 +30,18 @@ run_summary_failed_phase_test() {
     "${actual}/logs" \
     "${actual}/reports" \
     "${actual}/db-export" \
-    "${actual}/diffs"
+    "${actual}/diffs" \
+    "${actual}/runtime" \
+    "${actual}/env"
+
+  touch \
+    "${actual}/runtime/0001-2026-05-13T100000-0700.txt" \
+    "${actual}/diffs/runtime-timeline.md" \
+    "${actual}/diffs/env-check-timeline.md" \
+    "${actual}/env/journal.log" \
+    "${actual}/env/dmesg.log" \
+    "${actual}/env/dnf-history.txt" \
+    "${actual}/env/rpm-recently-changed.txt"
 
   for log_name in env-check policy-validate scan; do
     printf '0\n' >"${actual}/logs/${log_name}.log.rc"
