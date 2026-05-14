@@ -31,7 +31,7 @@ const MAX_CONSECUTIVE_FLUSH_FAILURES: u32 = 30;
 const MAX_BUFFER_RECORDS: usize = 64 * 1024;
 
 pub struct SqliteStatsSink {
-    tx: SyncSender<PluginStatRecord>,
+    tx: Option<SyncSender<PluginStatRecord>>,
     dropped: Arc<AtomicU64>,
     failed_flushes: Arc<AtomicU64>,
     evicted: Arc<AtomicU64>,
@@ -64,7 +64,7 @@ impl SqliteStatsSink {
             })
             .expect("spawn voom-stats-writer thread");
         Self {
-            tx,
+            tx: Some(tx),
             dropped,
             failed_flushes,
             evicted,
@@ -100,12 +100,14 @@ impl SqliteStatsSink {
 
 impl StatsSink for SqliteStatsSink {
     fn record(&self, record: PluginStatRecord) {
-        if self.tx.try_send(record).is_err() {
-            let prev = self.dropped.fetch_add(1, Ordering::Relaxed);
-            if prev == 0 {
-                tracing::warn!(
-                    "voom-stats-writer channel full or closed; dropping records (first occurrence)"
-                );
+        if let Some(tx) = &self.tx {
+            if tx.try_send(record).is_err() {
+                let prev = self.dropped.fetch_add(1, Ordering::Relaxed);
+                if prev == 0 {
+                    tracing::warn!(
+                        "voom-stats-writer channel full or closed; dropping records (first occurrence)"
+                    );
+                }
             }
         }
     }
@@ -113,11 +115,17 @@ impl StatsSink for SqliteStatsSink {
 
 impl Drop for SqliteStatsSink {
     fn drop(&mut self) {
+        // Setting shutdown is no longer strictly necessary — the writer's
+        // Disconnected arm runs the final flush and exits — but leave it as
+        // a safety net in case the writer is in the middle of a long flush
+        // when we drop tx.
         self.shutdown.store(true, Ordering::Relaxed);
-        // Closing the sender side breaks the recv loop.
-        // Move tx out by replacing with a dummy is not possible here; relying
-        // on the original tx being the last clone, this sink owns it. When
-        // SqliteStatsSink is dropped, tx is dropped, channel closes, writer exits.
+        // Drop the sender FIRST so the writer's recv_timeout returns
+        // Err(Disconnected) on the next tick; the Disconnected arm drains
+        // the channel and runs the guaranteed final flush before exiting.
+        // Struct fields are dropped AFTER Drop::drop returns, so we must
+        // explicitly take() and drop tx here, before joining the writer.
+        drop(self.tx.take());
         if let Some(h) = self.writer.take() {
             let _ = h.join();
         }
@@ -167,6 +175,12 @@ fn writer_loop(
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // Drain any remaining records from the closed channel so
+                // they are included in the final guaranteed flush.
+                while let Ok(record) = rx.try_recv() {
+                    buf.push(record);
+                    cap_buffer(&mut buf, &evicted);
+                }
                 if !buf.is_empty() {
                     flush(
                         &store,
@@ -231,7 +245,7 @@ fn flush(
                 evicted.fetch_add(buf.len() as u64, Ordering::Relaxed);
                 tracing::error!(
                     attempts = *consecutive_failures,
-                    dropped = buf.len(),
+                    evicted = buf.len(),
                     "plugin_stats writer giving up after consecutive failures; dropping buffer"
                 );
                 buf.clear();
@@ -260,16 +274,23 @@ mod tests {
     #[test]
     fn records_flush_to_store_within_one_second() {
         let store = Arc::new(SqliteStore::in_memory().unwrap());
-        let sink = SqliteStatsSink::new(store.clone());
-        for i in 0..50 {
-            sink.record(rec(i));
+        {
+            let sink = SqliteStatsSink::new(store.clone());
+            for i in 0..50 {
+                sink.record(rec(i));
+            }
+            // Wait for at least one periodic flush to fire.
+            std::thread::sleep(Duration::from_millis(800));
+            let conn = store.conn().unwrap();
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM plugin_stats", [], |r| r.get(0))
+                .unwrap();
+            assert!(
+                count >= 50,
+                "expected at least 50 rows after periodic flush, got {count}"
+            );
+            // sink dropped here — additional cleanup not relied on
         }
-        std::thread::sleep(Duration::from_millis(800));
-        let conn = store.conn().unwrap();
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM plugin_stats", [], |r| r.get(0))
-            .unwrap();
-        assert!(count >= 50, "expected at least 50 rows, got {count}");
     }
 
     #[test]
@@ -301,9 +322,12 @@ mod tests {
             sink.record(rec(i));
         }
         std::thread::sleep(Duration::from_millis(200));
-        // We expect the writer to catch up eventually; the assertion here
-        // is just that calling record many times never panics.
-        let _ = sink.dropped_count();
+        // With channel capacity 4096 and 50k records sent in a tight loop,
+        // drops are inevitable — the writer thread cannot drain fast enough.
+        assert!(
+            sink.dropped_count() > 0,
+            "expected some records to be dropped due to channel overflow"
+        );
     }
 
     #[test]
