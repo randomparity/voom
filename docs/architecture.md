@@ -216,26 +216,34 @@ the bus must not block.
 
 #### Coverage: subscribers only
 
-The dispatcher instruments only plugins that subscribe to events through
-the bus. Pure publishers — `discovery` (walks filesystem and emits
-`FileDiscovered`), `phase-orchestrator` (CLI-called, emits phase events),
-and `policy-evaluator` (CLI-called, emits `Plan` events) — emit events
-but never have their work timed at the dispatcher boundary.
+The dispatcher instruments only plugins that subscribe to events
+through the bus — its instrumentation point is the
+`Plugin::on_event(...)` invocation. Two distinct kinds of code emit
+events but never enter that path, and their absence from
+`plugin_stats` is for two different reasons:
 
-This is intentional for Deliverable 1 (#92):
+- **Kernel-registered no-subscriber plugins.** `discovery` is a
+  registered plugin whose `handles()` returns `false` for every event,
+  so the dispatcher never calls `on_event` on it. It emits
+  `FileDiscovered` events via `kernel.dispatch(...)` from within its
+  own scan loop. This is the textbook "publisher-only plugin" case:
+  the work *is* a plugin invocation, just not one the dispatcher
+  observes.
+- **Library-only callees.** `phase-orchestrator` and `policy-evaluator`
+  are not registered with the kernel at all (see
+  [Two-Tier Plugin Model](#two-tier-plugin-model)). The CLI calls them
+  directly; the corresponding `PlanCreated` / `PlanExecuting` /
+  `PlanCompleted` events are dispatched by the CLI's `PlanDispatcher`,
+  not by the libraries themselves. There is no plugin invocation to
+  attribute time to.
 
-- The dispatcher's natural instrumentation point is the
-  `handler.on_event(...)` invocation. Publishers do not pass through it.
-- A publish-side timer (timing `bus.publish(event)`) would measure the
-  cost of dispatching to *other* plugins, not the publisher's own work.
-- A plugin self-reporting host API (e.g.
-  `PluginStats::record(key, value)`) is the right long-term primitive
-  but requires kernel + WASM surface that is out of scope for #92.
-
-For end-to-end visibility across publishers and subscribers, use the
-Deliverable-2 (Prometheus `/metrics`) and Deliverable-3 (OpenTelemetry)
-exporters that #92 builds toward. Issue #378 records this decision and
-the deferred work; a future host-API issue can revisit the trade-offs.
+For end-to-end visibility across both kinds of gap, use the
+Deliverable-2 (Prometheus `/metrics`) and Deliverable-3
+(OpenTelemetry) exporters that #92 builds toward. Issue #378 records
+the decision to leave Deliverable 1 scoped to dispatcher-observed
+subscribers; a future host-API issue can revisit a plugin
+self-reporting primitive if `discovery`-class coverage gaps become a
+measured operational pain point.
 
 ### Retention invariants
 

@@ -354,11 +354,18 @@ Stats are persisted to the `plugin_stats` SQLite table with retention managed
 by the same `[retention.plugin_stats]` config section as other tables (PR #170).
 Defaults: keep for 30 days, keep last 100,000 rows.
 
-**Note (coverage):** Only plugins that *subscribe* to events appear in the
-rollup. Pure publishers — `discovery`, `phase-orchestrator`, and
-`policy-evaluator` — emit events but never receive them through
-`Plugin::on_event`, so the dispatcher does not time their work. This is
-an intentional design boundary for Deliverable 1 of #92; see
+**Note (coverage):** Only plugins that *subscribe* to events appear in
+the rollup. Two kinds of code are missing for distinct reasons:
+
+- `discovery` is a kernel-registered plugin that publishes
+  `FileDiscovered` but does not subscribe to anything, so the
+  dispatcher never observes it.
+- `phase-orchestrator` and `policy-evaluator` are not plugins at all —
+  they are library-only crates the CLI calls directly. The
+  corresponding `Plan*` events come from the CLI's `PlanDispatcher`,
+  not from those crates.
+
+This is an intentional design boundary for Deliverable 1 of #92; see
 [Bus dispatcher instrumentation — Coverage: subscribers only][arch] in
 the architecture docs for the rationale and the path to full coverage
 via Prometheus / OpenTelemetry (Deliverables 2 and 3). Tracked as
