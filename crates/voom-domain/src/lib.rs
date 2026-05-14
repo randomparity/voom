@@ -4,6 +4,7 @@ pub mod bad_file;
 pub mod capabilities;
 pub mod capability_map;
 pub mod capability_resolution;
+pub mod compiled;
 pub mod errors;
 pub mod estimate;
 pub mod events;

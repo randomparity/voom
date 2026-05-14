@@ -8,8 +8,8 @@ use std::fmt;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-pub use voom_domain::media::Container;
-pub use voom_domain::plan::{
+pub use crate::media::Container;
+pub use crate::plan::{
     CropSettings, LoudnessNormalization, LoudnessPreset, SampleStrategy, TranscodeChannels,
     TranscodeFallback,
 };
@@ -275,7 +275,7 @@ pub enum CompiledOperation {
         rules: Vec<CompiledRule>,
     },
     Verify {
-        mode: voom_domain::verification::VerificationMode,
+        mode: crate::verification::VerificationMode,
     },
 }
 

@@ -21,8 +21,10 @@
 
 pub mod ast;
 pub mod bundled;
-pub mod compiled;
 pub mod compiler;
+// `compiled` types moved to voom-domain; re-export so callers using
+// `voom_dsl::compiled::*` paths continue to compile unchanged.
+pub use voom_domain::compiled;
 mod composition;
 pub mod errors;
 pub mod formatter;
