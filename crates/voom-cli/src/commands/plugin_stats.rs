@@ -17,13 +17,17 @@ pub fn run(
 ) -> Result<()> {
     let since_dt = since.as_deref().map(parse_since).transpose()?;
     let cfg = config::load_config()?;
-    let result = app::bootstrap_kernel_with_store(&cfg)?;
+    // Read-only path: open the SQLite pool directly. Do NOT construct a
+    // kernel or install a stats sink — that would write to event_log and
+    // plugin_stats just by running this command. See Codex adversarial
+    // review (May 2026).
+    let store = app::open_store(&cfg)?;
     let filter = PluginStatsFilter {
         plugin,
         since: since_dt,
         top,
     };
-    let rollups = result.store.rollup_plugin_stats(&filter)?;
+    let rollups = store.rollup_plugin_stats(&filter)?;
     render(&rollups, format)
 }
 

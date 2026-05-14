@@ -149,3 +149,68 @@ async fn plugin_stats_handler_runs_after_scan() {
         result.err()
     );
 }
+
+// ─── Test 3 ──────────────────────────────────────────────────────────────────
+
+/// After a scan populates `plugin_stats` and `event_log`, invoking
+/// `plugin_stats::run` must NOT add new rows to either table. The command is
+/// read-only; bootstrapping a full kernel just to render a rollup is the bug
+/// this test guards against (Codex adversarial review, May 2026).
+#[tokio::test]
+async fn plugin_stats_query_does_not_mutate_database() {
+    let _lock = TEST_LOCK.lock().await;
+    let env = TestEnv::new().await;
+    env.write_media("a.mkv", 1);
+
+    run_scan(&env).await;
+
+    // Allow the writer thread to flush.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    let db_path = env.db_path();
+    let baseline_plugin_stats: i64 = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM plugin_stats", [], |r| r.get(0))
+            .unwrap()
+    };
+    let baseline_event_log: i64 = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM event_log", [], |r| r.get(0))
+            .unwrap()
+    };
+    assert!(baseline_plugin_stats > 0, "scan must produce stats first");
+
+    // Run the stats query the same way the CLI handler does.
+    let config_home = env.config_home().to_str().expect("utf-8 config_home");
+    let _guard = EnvOverride::set("XDG_CONFIG_HOME", config_home);
+
+    voom_cli::commands::plugin_stats::run(None, None, None, voom_cli::cli::OutputFormat::Json)
+        .expect("plugin stats query must succeed");
+
+    drop(_guard);
+
+    // Allow any pending writer-thread work (there should be none) to settle.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let after_plugin_stats: i64 = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM plugin_stats", [], |r| r.get(0))
+            .unwrap()
+    };
+    let after_event_log: i64 = {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.query_row("SELECT COUNT(*) FROM event_log", [], |r| r.get(0))
+            .unwrap()
+    };
+
+    assert_eq!(
+        after_plugin_stats, baseline_plugin_stats,
+        "plugin_stats query must not add plugin_stats rows: was {baseline_plugin_stats}, now \
+         {after_plugin_stats}"
+    );
+    assert_eq!(
+        after_event_log, baseline_event_log,
+        "plugin_stats query must not add event_log rows: was {baseline_event_log}, now \
+         {after_event_log}"
+    );
+}
