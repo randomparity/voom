@@ -25,7 +25,13 @@ cleanup() {
     fi
 }
 
-trap cleanup INT TERM EXIT
+terminate() {
+    cleanup
+    exit 0
+}
+
+trap terminate INT TERM
+trap cleanup EXIT
 
 while true; do
     sample_index=$((sample_index + 1))
