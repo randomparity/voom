@@ -61,6 +61,50 @@ pub enum Call {
     },
 }
 
+/// Response to a `Call`. Variant matches the request 1:1.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub enum CallResponse {
+    EvaluatePolicy(crate::evaluation::EvaluationResult),
+    Orchestrate(crate::orchestration::OrchestrationResult),
+    ScanLibrary(ScanSummary),
+}
+
+/// Summary returned by a successful `Call::ScanLibrary`.
+#[non_exhaustive]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ScanSummary {
+    pub file_count: u64,
+    pub errors: Vec<DiscoveryError>,
+    pub roots_scanned: u64,
+}
+
+impl ScanSummary {
+    #[must_use]
+    pub fn new(file_count: u64, errors: Vec<DiscoveryError>, roots_scanned: u64) -> Self {
+        Self {
+            file_count,
+            errors,
+            roots_scanned,
+        }
+    }
+}
+
+/// One discovery-level error encountered during a `Call::ScanLibrary`.
+#[non_exhaustive]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DiscoveryError {
+    pub path: String,
+    pub message: String,
+}
+
+impl DiscoveryError {
+    #[must_use]
+    pub fn new(path: String, message: String) -> Self {
+        Self { path, message }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +149,31 @@ mod tests {
         };
         let dbg = format!("{call:?}");
         assert!(dbg.contains("Orchestrate"));
+    }
+
+    #[test]
+    fn call_response_evaluate_policy_constructs() {
+        let r = CallResponse::EvaluatePolicy(crate::evaluation::EvaluationResult::new(vec![]));
+        let dbg = format!("{r:?}");
+        assert!(dbg.contains("EvaluatePolicy"));
+    }
+
+    #[test]
+    fn call_response_orchestrate_constructs() {
+        let r = CallResponse::Orchestrate(crate::orchestration::OrchestrationResult::new(
+            vec![],
+            vec![],
+            false,
+        ));
+        let dbg = format!("{r:?}");
+        assert!(dbg.contains("Orchestrate"));
+    }
+
+    #[test]
+    fn call_response_scan_library_constructs() {
+        let r = CallResponse::ScanLibrary(ScanSummary::new(0, vec![], 0));
+        let dbg = format!("{r:?}");
+        assert!(dbg.contains("ScanLibrary"));
     }
 
     #[test]
