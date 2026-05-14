@@ -10,9 +10,15 @@ out_dir="${run_dir}/runtime"
 mkdir -p "${out_dir}"
 
 sample_index=0
+active_pid=""
 sleep_pid=""
 
 cleanup() {
+    if [[ -n "${active_pid}" ]]; then
+        kill "${active_pid}" 2>/dev/null || true
+        wait "${active_pid}" 2>/dev/null || true
+        active_pid=""
+    fi
     if [[ -n "${sleep_pid}" ]]; then
         kill "${sleep_pid}" 2>/dev/null || true
         wait "${sleep_pid}" 2>/dev/null || true
@@ -30,12 +36,23 @@ trap cleanup EXIT
 
 capture_command() {
     local label="$1"
+    local rc
     shift
     printf '\n## %s\n\n' "${label}"
     printf '$'
     printf ' %q' "$@"
     printf '\n\n'
-    "$@" 2>&1 || printf '[command failed: rc=%s]\n' "$?"
+    "$@" 2>&1 &
+    active_pid="$!"
+    if wait "${active_pid}"; then
+        rc=0
+    else
+        rc="$?"
+    fi
+    active_pid=""
+    if [[ "${rc}" -ne 0 ]]; then
+        printf '[command failed: rc=%s]\n' "${rc}"
+    fi
 }
 
 while true; do

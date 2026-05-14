@@ -15,9 +15,15 @@ out_dir="${run_dir}/logs/env-check"
 mkdir -p "${out_dir}"
 
 sample_index=0
+active_pid=""
 sleep_pid=""
 
 cleanup() {
+    if [[ -n "${active_pid}" ]]; then
+        kill "${active_pid}" 2>/dev/null || true
+        wait "${active_pid}" 2>/dev/null || true
+        active_pid=""
+    fi
     if [[ -n "${sleep_pid}" ]]; then
         kill "${sleep_pid}" 2>/dev/null || true
         wait "${sleep_pid}" 2>/dev/null || true
@@ -38,7 +44,17 @@ while true; do
     out="${out_dir}/$(printf '%04d.log' "${sample_index}")"
     {
         printf 'timestamp: %s\n\n' "$(date -Iseconds)"
-        "${voom_bin}" env check 2>&1 || printf '[env check failed: rc=%s]\n' "$?"
+        "${voom_bin}" env check 2>&1 &
+        active_pid="$!"
+        if wait "${active_pid}"; then
+            rc=0
+        else
+            rc="$?"
+        fi
+        active_pid=""
+        if [[ "${rc}" -ne 0 ]]; then
+            printf '[env check failed: rc=%s]\n' "${rc}"
+        fi
     } >"${out}"
     sleep "${interval}" &
     sleep_pid="$!"
