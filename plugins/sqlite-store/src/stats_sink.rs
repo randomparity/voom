@@ -12,7 +12,7 @@
 //! logged at error level — never silently lost.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -47,7 +47,6 @@ pub struct SqliteStatsSink {
     dropped: Arc<AtomicU64>,
     failed_flushes: Arc<AtomicU64>,
     evicted: Arc<AtomicU64>,
-    shutdown: Arc<AtomicBool>,
     writer: Option<JoinHandle<()>>,
 }
 
@@ -65,14 +64,12 @@ impl SqliteStatsSink {
         let dropped = Arc::new(AtomicU64::new(0));
         let failed_flushes = Arc::new(AtomicU64::new(0));
         let evicted = Arc::new(AtomicU64::new(0));
-        let shutdown = Arc::new(AtomicBool::new(false));
         let writer = std::thread::Builder::new()
             .name("voom-stats-writer".into())
             .spawn({
-                let shutdown = shutdown.clone();
                 let failed_flushes = failed_flushes.clone();
                 let evicted = evicted.clone();
-                move || writer_loop(rx, store, shutdown, failed_flushes, evicted)
+                move || writer_loop(rx, store, failed_flushes, evicted)
             })
             .expect("spawn voom-stats-writer thread");
         Self {
@@ -80,7 +77,6 @@ impl SqliteStatsSink {
             dropped,
             failed_flushes,
             evicted,
-            shutdown,
             writer: Some(writer),
         }
     }
@@ -128,14 +124,12 @@ impl SqliteStatsSink {
         let dropped = Arc::new(AtomicU64::new(0));
         let failed_flushes = Arc::new(AtomicU64::new(0));
         let evicted = Arc::new(AtomicU64::new(0));
-        let shutdown = Arc::new(AtomicBool::new(false));
         let writer = std::thread::Builder::new()
             .name("voom-stats-writer-test".into())
             .spawn({
-                let shutdown = shutdown.clone();
                 let failed_flushes = failed_flushes.clone();
                 let evicted = evicted.clone();
-                move || writer_loop(rx, store, shutdown, failed_flushes, evicted)
+                move || writer_loop(rx, store, failed_flushes, evicted)
             })
             .expect("spawn voom-stats-writer-test thread");
         Self {
@@ -143,7 +137,6 @@ impl SqliteStatsSink {
             dropped,
             failed_flushes,
             evicted,
-            shutdown,
             writer: Some(writer),
         }
     }
@@ -168,13 +161,9 @@ impl Drop for SqliteStatsSink {
     fn drop(&mut self) {
         // Drop the sender FIRST so the writer's recv_timeout returns
         // Err(Disconnected) on the next tick — the Disconnected arm
-        // is the single path that performs the bounded-retry drain.
-        // Setting `shutdown` before tx is dropped would race the Timeout
-        // arm and let it break out without draining the surviving buf.
+        // is the single path that performs the bounded-retry drain
+        // and exits the loop.
         drop(self.tx.take());
-        // Safety net for late observers; functionally redundant once tx
-        // is dropped because the next recv returns Disconnected.
-        self.shutdown.store(true, Ordering::Relaxed);
         if let Some(h) = self.writer.take() {
             let _ = h.join();
         }
@@ -184,12 +173,6 @@ impl Drop for SqliteStatsSink {
 fn writer_loop(
     rx: Receiver<PluginStatRecord>,
     store: Arc<SqliteStore>,
-    // The `shutdown` flag is set by `SqliteStatsSink::drop` as a safety net,
-    // but the writer no longer observes it: the channel-disconnect signal
-    // from dropping `tx` is the single shutdown path through the
-    // bounded-retry drain. Kept on the struct/signature to avoid a deeper
-    // refactor; prefixed `_` to silence unused-variable lints.
-    _shutdown: Arc<AtomicBool>,
     failed_flushes: Arc<AtomicU64>,
     evicted: Arc<AtomicU64>,
 ) {
