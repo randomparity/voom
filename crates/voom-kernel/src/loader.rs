@@ -1417,7 +1417,7 @@ description = "A test WASM plugin"
 handles_events = ["file.discovered"]
 
 [[capabilities]]
-Evaluate = {}
+EvaluatePolicy = {}
 "#,
             )
             .unwrap();
@@ -1456,7 +1456,7 @@ description = "A test plugin"
 handles_events = ["file.discovered"]
 
 [[capabilities]]
-Evaluate = {}
+EvaluatePolicy = {}
 "#,
             )
             .unwrap();
@@ -1540,7 +1540,7 @@ handles_events = ["file.discovered"]
 protocol_version = {CURRENT_PROTOCOL_VERSION}
 
 [[capabilities]]
-Evaluate = {{}}
+EvaluatePolicy = {{}}
 "#
                 ),
             )
@@ -1564,7 +1564,7 @@ description = "A test WASM plugin"
 handles_events = ["file.discovered"]
 
 [[capabilities]]
-Evaluate = {}
+EvaluatePolicy = {}
 "#,
             )
             .unwrap();
@@ -1829,7 +1829,7 @@ handles_events = ["file.discovered"]
 protocol_version = {bad_version}
 
 [[capabilities]]
-Evaluate = {{}}
+EvaluatePolicy = {{}}
 "#
                 ),
             )

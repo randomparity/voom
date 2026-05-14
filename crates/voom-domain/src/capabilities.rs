@@ -12,7 +12,7 @@ pub enum Capability {
     Introspect {
         formats: Vec<String>,
     },
-    Evaluate,
+    EvaluatePolicy,
     Execute {
         operations: Vec<OperationType>,
         formats: Vec<String>,
@@ -44,7 +44,7 @@ impl Capability {
         match self {
             Capability::Discover { .. } => "discover",
             Capability::Introspect { .. } => "introspect",
-            Capability::Evaluate => "evaluate",
+            Capability::EvaluatePolicy => "evaluate_policy",
             Capability::Execute { .. } => "execute",
             Capability::Store { .. } => "store",
             Capability::DetectTools => "detect_tools",
@@ -67,7 +67,7 @@ impl Capability {
         match self {
             Capability::Discover { .. } => R::Sharded,
             Capability::Introspect { .. } => R::Competing,
-            Capability::Evaluate => R::Exclusive,
+            Capability::EvaluatePolicy => R::Exclusive,
             Capability::Execute { .. } => R::Competing,
             Capability::Store { .. } => R::Exclusive,
             Capability::DetectTools => R::Competing,
@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn evaluate_resolution_is_exclusive() {
         use crate::capability_resolution::CapabilityResolution;
-        let cap = Capability::Evaluate;
+        let cap = Capability::EvaluatePolicy;
         assert_eq!(cap.resolution(), CapabilityResolution::Exclusive);
     }
 

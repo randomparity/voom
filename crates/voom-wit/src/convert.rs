@@ -118,7 +118,7 @@ pub fn capability_from_wit(cap_str: &str) -> Result<Option<Capability>> {
         "introspect" => Ok(Some(Capability::Introspect {
             formats: split_comma_list(params),
         })),
-        "evaluate" => Ok(Some(Capability::Evaluate)),
+        "evaluate_policy" => Ok(Some(Capability::EvaluatePolicy)),
         "execute" => {
             // Format: "execute:op1+op2:fmt1,fmt2"
             let mut parts = params.splitn(2, ':');
@@ -211,7 +211,7 @@ pub fn capability_to_wit(cap: &Capability) -> String {
                 format!("introspect:{}", formats.join(","))
             }
         }
-        Capability::Evaluate => "evaluate".to_string(),
+        Capability::EvaluatePolicy => "evaluate_policy".to_string(),
         Capability::Execute {
             operations,
             formats,
@@ -317,9 +317,9 @@ mod tests {
 
     #[test]
     fn test_capability_roundtrip_evaluate() {
-        let cap = Capability::Evaluate;
+        let cap = Capability::EvaluatePolicy;
         let s = capability_to_wit(&cap);
-        assert_eq!(s, "evaluate");
+        assert_eq!(s, "evaluate_policy");
         let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
@@ -394,7 +394,7 @@ mod tests {
             (Capability::Transcribe, "transcribe"),
             (Capability::Synthesize, "synthesize"),
             (Capability::HealthCheck, "health_check"),
-            (Capability::Evaluate, "evaluate"),
+            (Capability::EvaluatePolicy, "evaluate_policy"),
         ] {
             let s = capability_to_wit(&cap);
             assert_eq!(s, expected_str);

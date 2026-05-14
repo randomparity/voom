@@ -32,7 +32,7 @@ impl PluginInfoData {
     /// let info = PluginInfoData::new(
     ///     "my-plugin",
     ///     "1.0.0",
-    ///     vec![Capability::Evaluate],
+    ///     vec![Capability::EvaluatePolicy],
     /// )
     /// .with_description("Evaluates policies")
     /// .with_author("VOOM Contributors")
