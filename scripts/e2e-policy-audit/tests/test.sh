@@ -242,6 +242,48 @@ EOF
 
 run_repro_set_test
 
+run_runtime_timeline_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/runtime" "${actual}/diffs"
+
+  cat >"${actual}/runtime/0001-2026-05-13T100000-0700.txt" <<'EOF'
+timestamp: 2026-05-13T10:00:00-07:00
+GPU 0: RTX 4090 (UUID: GPU-a)
+GPU 1: RTX 4090 (UUID: GPU-b)
+/dev/md0        100T   80T   20T  80% /mnt/raid0
+/dev/nvme0n1p3  900G  100G  800G  12% /home
+job-a running
+job-b pending
+EOF
+
+  cat >"${actual}/runtime/0002-2026-05-13T100500-0700.txt" <<'EOF'
+timestamp: 2026-05-13T10:05:00-07:00
+/dev/md0        100T   96T  4.0T  96% /mnt/raid0
+/dev/nvme0n1p3  900G  100G  800G  12% /home
+job-a running
+job-b pending
+EOF
+
+  cat >"${actual}/runtime/0003-2026-05-13T101000-0700.txt" <<'EOF'
+timestamp: 2026-05-13T10:10:00-07:00
+/dev/md0        100T   96T  4.0T  96% /mnt/raid0
+/dev/nvme0n1p3  900G  100G  800G  12% /home
+job-a running
+job-b pending
+EOF
+
+  "lib/runtime-timeline.py" "${actual}/runtime" "${actual}/diffs/runtime-timeline.md" \
+    --disk-used-threshold 95 --job-stall-samples 2
+  assert_match "${actual}/diffs/runtime-timeline.md" "tests/expected/runtime-timeline.md"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_runtime_timeline_test
+
 raw_actual=$(mktemp -d)
 trap 'rm -rf "${raw_actual}"' EXIT
 
