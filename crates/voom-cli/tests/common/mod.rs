@@ -513,13 +513,13 @@ fn path_from_payload(payload: Option<&serde_json::Value>) -> PathBuf {
 /// test must run with `--test-threads=1` or be wrapped in a per-test mutex.
 /// The acceptance tests call `run_process` sequentially within a single async
 /// test body, which is safe.
-struct EnvOverride {
+pub struct EnvOverride {
     key: &'static str,
     prior: Option<std::ffi::OsString>,
 }
 
 impl EnvOverride {
-    fn set(key: &'static str, value: &str) -> Self {
+    pub fn set(key: &'static str, value: &str) -> Self {
         let prior = std::env::var_os(key);
         // SAFETY: single-threaded test context; see struct-level note.
         #[allow(unused_unsafe)]
