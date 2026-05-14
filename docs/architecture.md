@@ -204,6 +204,20 @@ The event bus is the sole communication mechanism between plugins. It uses synch
 
 Events are published to all subscribed plugins, ordered by priority (lower = runs first). Each subscriber can optionally return an `EventResult` that may influence downstream processing.
 
+### Bus dispatcher instrumentation
+
+Every plugin invocation is timed by the dispatcher and forwarded to a
+`StatsSink` (issue #92). The default sink (`NoopStatsSink`) discards records;
+the CLI wires `SqliteStatsSink` to persist to the `plugin_stats` table.
+Records carry `plugin_id`, `event_type`, `started_at`, `duration_ms`, and an
+`outcome` of `ok` / `skipped` / `err{category}` / `panic`. Records are
+written in background batches and dropped if the bounded channel overflows —
+the bus must not block.
+
+**Coverage:** the dispatcher only times handlers invoked through
+`Plugin::on_event`. Pure publishers (plugins that emit events but don't
+subscribe to any) are not represented in `plugin_stats`.
+
 ### Retention invariants
 
 `event_log` records every event dispatched on the bus, including

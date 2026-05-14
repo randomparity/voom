@@ -327,6 +327,38 @@ voom plugin install <PATH>
 
 Copies the WASM binary to `~/.config/voom/plugins/wasm/` and registers it.
 
+#### `voom plugin stats`
+
+Show a per-plugin invocation rollup capturing automatic timing and outcome
+metrics. Stats are recorded by the event bus dispatcher with no plugin code
+changes required (issue #92).
+
+| Flag         | Default | Description                                         |
+|--------------|---------|-----------------------------------------------------|
+| `--plugin`   | —       | Filter to a single plugin by name.                  |
+| `--since`    | —       | Look back this far. Format: `<N>{s,m,h,d}`.         |
+| `--top`      | —       | Show only the top N slowest plugins (ranked by p95).|
+| `--format`   | `table` | `table` or `json`.                                  |
+
+Example:
+
+```
+voom plugin stats --since 24h --top 10
+plugin                          calls     ok  skipped    err  panic    p50ms    p95ms    p99ms
+ffmpeg-executor                    18     17        0      1      0    32100    98722    99812
+ffprobe-introspector              412    410        0      2      0       42      180      290
+mkvtoolnix-executor                 5      5        0      0      0      850     2100     2400
+```
+
+Stats are persisted to the `plugin_stats` SQLite table with retention managed
+by the same `[retention.plugin_stats]` config section as other tables (PR #170).
+Defaults: keep for 30 days, keep last 100,000 rows.
+
+**Note:** Only plugins that *subscribe* to events appear in the rollup. Pure
+publishers (e.g., the `discovery` plugin, which walks the filesystem and emits
+`FileDiscovered` events but doesn't consume any events) are not timed by the
+dispatcher and therefore have no rows.
+
 ---
 
 ### `voom jobs`
