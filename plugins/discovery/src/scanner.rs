@@ -580,16 +580,8 @@ mod tests {
             std::os::unix::fs::symlink(&real_dir, dir.path().join("link")).unwrap();
         }
 
-        let options = ScanOptions {
-            root: dir.path().to_path_buf(),
-            recursive: true,
-            hash_files: false,
-            workers: 0,
-            on_progress: None,
-            on_error: None,
-            fingerprint_lookup: None,
-            session_mutations: None,
-        };
+        let mut options = ScanOptions::new(dir.path());
+        options.hash_files = false;
         let events = scan_directory(&options).unwrap();
         // Should only find the file under "real/", not under "link/"
         assert_eq!(events.len(), 1);

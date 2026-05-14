@@ -1201,8 +1201,8 @@ mod tests {
         let mut kernel = Kernel::new();
         kernel.register_plugin(Arc::new(E), 10).unwrap();
         let call = Call::EvaluatePolicy {
-            policy: minimal_policy_for_test(),
-            file: MediaFile::new(PathBuf::from("/x.mkv")),
+            policy: Box::new(minimal_policy_for_test()),
+            file: Box::new(MediaFile::new(PathBuf::from("/x.mkv"))),
             phase: None,
             phase_outputs: None,
             phase_outcomes: None,
@@ -1230,8 +1230,8 @@ mod tests {
 
         let kernel = Kernel::new();
         let call = Call::EvaluatePolicy {
-            policy: minimal_policy_for_test(),
-            file: MediaFile::new(PathBuf::from("/x.mkv")),
+            policy: Box::new(minimal_policy_for_test()),
+            file: Box::new(MediaFile::new(PathBuf::from("/x.mkv"))),
             phase: None,
             phase_outputs: None,
             phase_outcomes: None,
@@ -1287,8 +1287,8 @@ mod tests {
         kernel.set_stats_sink(sink.clone());
         kernel.register_plugin(Arc::new(E), 10).unwrap();
         let call = Call::EvaluatePolicy {
-            policy: minimal_policy_for_test(),
-            file: MediaFile::new(PathBuf::from("/x.mkv")),
+            policy: Box::new(minimal_policy_for_test()),
+            file: Box::new(MediaFile::new(PathBuf::from("/x.mkv"))),
             phase: None,
             phase_outputs: None,
             phase_outcomes: None,
@@ -1347,8 +1347,8 @@ mod tests {
         kernel.set_stats_sink(sink.clone());
         kernel.register_plugin(Arc::new(P), 10).unwrap();
         let call = Call::EvaluatePolicy {
-            policy: minimal_policy_for_test(),
-            file: MediaFile::new(PathBuf::from("/x.mkv")),
+            policy: Box::new(minimal_policy_for_test()),
+            file: Box::new(MediaFile::new(PathBuf::from("/x.mkv"))),
             phase: None,
             phase_outputs: None,
             phase_outcomes: None,
@@ -1398,8 +1398,8 @@ mod tests {
             String::new(),
         );
         let call = Call::EvaluatePolicy {
-            policy,
-            file: MediaFile::new(PathBuf::from("/x.mkv")),
+            policy: Box::new(policy),
+            file: Box::new(MediaFile::new(PathBuf::from("/x.mkv"))),
             phase: None,
             phase_outputs: None,
             phase_outcomes: None,

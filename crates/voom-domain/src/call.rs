@@ -27,9 +27,13 @@ use crate::transition::ScanSessionId;
 #[derive(Debug)]
 pub enum Call {
     /// Evaluate a compiled policy against a media file. Unary Call.
+    ///
+    /// `policy` and `file` are boxed to keep the enum's stack size small;
+    /// `CompiledPolicy` and `MediaFile` are large structs and storing them
+    /// inline would inflate every `Call` variant.
     EvaluatePolicy {
-        policy: CompiledPolicy,
-        file: MediaFile,
+        policy: Box<CompiledPolicy>,
+        file: Box<MediaFile>,
         phase: Option<String>,
         phase_outputs: Option<HashMap<String, PhaseOutput>>,
         phase_outcomes: Option<HashMap<String, EvaluationOutcome>>,
@@ -130,8 +134,8 @@ mod tests {
     #[test]
     fn evaluate_policy_call_constructs() {
         let call = Call::EvaluatePolicy {
-            policy: minimal_policy(),
-            file: MediaFile::new(PathBuf::from("/x.mkv")),
+            policy: Box::new(minimal_policy()),
+            file: Box::new(MediaFile::new(PathBuf::from("/x.mkv"))),
             phase: None,
             phase_outputs: None,
             phase_outcomes: None,
