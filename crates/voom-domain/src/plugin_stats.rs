@@ -4,6 +4,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginInvocationOutcome {
@@ -36,6 +37,7 @@ impl PluginInvocationOutcome {
 /// One record is produced per (plugin, event) handler call and later persisted
 /// to the `plugin_stats` SQLite table. This is the raw unit that rollups
 /// aggregate over.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginStatRecord {
     pub plugin_id: String,
@@ -45,12 +47,34 @@ pub struct PluginStatRecord {
     pub outcome: PluginInvocationOutcome,
 }
 
+impl PluginStatRecord {
+    /// Construct a `PluginStatRecord`. Use this from outside the crate to
+    /// avoid struct-literal construction, which `#[non_exhaustive]` blocks.
+    #[must_use]
+    pub fn new(
+        plugin_id: impl Into<String>,
+        event_type: impl Into<String>,
+        started_at: DateTime<Utc>,
+        duration_ms: u64,
+        outcome: PluginInvocationOutcome,
+    ) -> Self {
+        Self {
+            plugin_id: plugin_id.into(),
+            event_type: event_type.into(),
+            started_at,
+            duration_ms,
+            outcome,
+        }
+    }
+}
+
 /// Aggregated per-plugin summary computed from a collection of
 /// [`PluginStatRecord`]s.
 ///
 /// Produced by both the in-memory rollup (recent window) and the SQLite-backed
 /// historical rollup. Latency percentiles use nearest-rank over the matching
 /// records' `duration_ms` values.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginStatsRollup {
     pub plugin_id: String,
@@ -69,11 +93,25 @@ pub struct PluginStatsRollup {
 ///
 /// Passed to the in-memory and SQLite rollup APIs. Intentionally omits Serde
 /// derives because it's an in-process query parameter, not a wire type.
+#[non_exhaustive]
 #[derive(Debug, Clone, Default)]
 pub struct PluginStatsFilter {
     pub plugin: Option<String>,
     pub since: Option<DateTime<Utc>>,
     pub top: Option<usize>,
+}
+
+impl PluginStatsFilter {
+    /// Construct a `PluginStatsFilter`. Use this from outside the crate to
+    /// avoid struct-literal construction, which `#[non_exhaustive]` blocks.
+    #[must_use]
+    pub fn new(plugin: Option<String>, since: Option<DateTime<Utc>>, top: Option<usize>) -> Self {
+        Self {
+            plugin,
+            since,
+            top,
+        }
+    }
 }
 
 /// Nearest-rank percentile (1-indexed rank = ceil(p * n / 100), clamped to [1, n]).
