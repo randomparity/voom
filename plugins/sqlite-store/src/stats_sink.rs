@@ -5,6 +5,11 @@
 //! lock on the subscriber list. The sink MUST NOT block. We use a bounded
 //! `std::sync::mpsc::sync_channel` and `try_send`; on overflow, the record
 //! is dropped (logged once at warn level).
+//!
+//! On shutdown, the writer drains the channel and retries the final flush
+//! for up to [`SHUTDOWN_FLUSH_DEADLINE`]. Records that survive past the
+//! deadline are accounted for in [`SqliteStatsSink::evicted_count`] and
+//! logged at error level — never silently lost.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -29,6 +34,13 @@ const MAX_CONSECUTIVE_FLUSH_FAILURES: u32 = 30;
 /// drain (e.g. DB completely unavailable), the oldest records are evicted
 /// instead of growing the buffer without bound.
 const MAX_BUFFER_RECORDS: usize = 64 * 1024;
+/// Maximum time the writer will spend retrying the final flush at
+/// shutdown. Tuned to ride out typical SQLite WAL lock contention while
+/// keeping process shutdown bounded. Records that survive past the
+/// deadline are evicted and the eviction is logged.
+const SHUTDOWN_FLUSH_DEADLINE: Duration = Duration::from_secs(5);
+/// Sleep between retry attempts during the shutdown drain.
+const SHUTDOWN_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 
 pub struct SqliteStatsSink {
     tx: Option<SyncSender<PluginStatRecord>>,
@@ -100,6 +112,13 @@ impl SqliteStatsSink {
 
 #[cfg(test)]
 impl SqliteStatsSink {
+    /// Test-only accessor that clones the evicted-counter Arc. Used by
+    /// shutdown tests that need to observe the counter AFTER the sink is
+    /// dropped (which moves the field).
+    pub(crate) fn evicted_handle_for_tests(&self) -> Arc<AtomicU64> {
+        self.evicted.clone()
+    }
+
     /// Test-only constructor allowing a custom channel capacity to
     /// deterministically exercise the overflow path. `capacity=0` produces a
     /// rendezvous channel where every `try_send` fails unless the writer is
@@ -207,20 +226,37 @@ fn writer_loop(
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                // Drain any remaining records from the closed channel so
-                // they are included in the final guaranteed flush.
+                // Drain any remaining records from the closed channel so they are
+                // included in the final flush attempts.
                 while let Ok(record) = rx.try_recv() {
                     buf.push(record);
                     cap_buffer(&mut buf, &evicted);
                 }
                 if !buf.is_empty() {
-                    flush(
-                        &store,
-                        &mut buf,
-                        &failed_flushes,
-                        &evicted,
-                        &mut consecutive_failures,
-                    );
+                    let deadline = Instant::now() + SHUTDOWN_FLUSH_DEADLINE;
+                    while !buf.is_empty() && Instant::now() < deadline {
+                        flush(
+                            &store,
+                            &mut buf,
+                            &failed_flushes,
+                            &evicted,
+                            &mut consecutive_failures,
+                        );
+                        if !buf.is_empty() {
+                            std::thread::sleep(SHUTDOWN_RETRY_INTERVAL);
+                        }
+                    }
+                    if !buf.is_empty() {
+                        evicted.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                        tracing::error!(
+                            dropped = buf.len(),
+                            deadline_ms = u64::try_from(SHUTDOWN_FLUSH_DEADLINE.as_millis())
+                                .unwrap_or(u64::MAX),
+                            "plugin_stats writer abandoning records at shutdown after retry deadline; \
+                             store unavailable"
+                        );
+                        buf.clear();
+                    }
                 }
                 break;
             }
@@ -432,6 +468,44 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM plugin_stats", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn shutdown_evicts_records_when_final_flush_fails() {
+        // The Disconnected arm must not silently drop the buffer on shutdown.
+        // If the final flush cannot succeed within the shutdown deadline, the
+        // surviving buffer must be accounted for in `evicted` and surfaced via
+        // tracing — never lost without trace. (Codex adversarial review, May 2026)
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+
+        let store = Arc::new(SqliteStore::in_memory().unwrap());
+        // Persistently fail every insert by dropping the table.
+        {
+            let conn = store.conn().unwrap();
+            conn.execute("DROP TABLE plugin_stats", []).unwrap();
+        }
+
+        // The sink owns evicted: Arc<AtomicU64>. We need to observe it AFTER
+        // the sink is dropped, so capture a clone of the Arc via a test-only
+        // accessor before drop.
+        let sink = SqliteStatsSink::new(store.clone());
+        let evicted_handle: Arc<AtomicU64> = sink.evicted_handle_for_tests();
+
+        for i in 0..10 {
+            sink.record(rec(i));
+        }
+        // Allow the writer thread to receive and try (and fail) at least one
+        // flush before shutdown.
+        std::thread::sleep(Duration::from_millis(600));
+
+        drop(sink);
+
+        let lost = evicted_handle.load(Ordering::Relaxed);
+        assert!(
+            lost >= 10,
+            "expected >= 10 evicted records after persistent flush failure on shutdown, got {lost}"
+        );
     }
 
     #[test]
