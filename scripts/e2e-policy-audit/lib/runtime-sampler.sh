@@ -20,7 +20,13 @@ cleanup() {
     fi
 }
 
-trap cleanup INT TERM EXIT
+terminate() {
+    cleanup
+    exit 0
+}
+
+trap terminate INT TERM
+trap cleanup EXIT
 
 capture_command() {
     local label="$1"

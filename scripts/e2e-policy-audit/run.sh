@@ -140,13 +140,14 @@ signal_process() {
 
 stop_process_tree() {
     local pid="$1" uses_group="$2"
+    local initial_signal="${3:-TERM}"
     local i
 
     if [[ -z "${pid}" ]]; then
         return 0
     fi
 
-    signal_process "${pid}" "${uses_group}" TERM
+    signal_process "${pid}" "${uses_group}" "${initial_signal}"
     for _ in {1..5}; do
         if ! process_is_live "${pid}" "${uses_group}"; then
             wait "${pid}" 2>/dev/null || true
@@ -193,7 +194,9 @@ start_process_samplers() {
 forward_process_signal() {
     local signal="$1" exit_code="$2"
     trap - EXIT INT TERM
-    signal_process "${active_process_pid}" "${active_process_uses_group}" "${signal}"
+    stop_process_tree "${active_process_pid}" "${active_process_uses_group}" "${signal}"
+    active_process_pid=""
+    active_process_uses_group=0
     stop_process_samplers
     if [[ ! -f "${run_dir}/logs/process.log.rc" ]]; then
         echo "${exit_code}" >"${run_dir}/logs/process.log.rc"
