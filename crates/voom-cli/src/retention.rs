@@ -276,4 +276,28 @@ mod tests {
         let runner = RetentionRunner::new(store, config, None);
         assert!(runner.is_fully_disabled());
     }
+
+    #[test]
+    fn is_fully_disabled_false_when_only_plugin_stats_is_enabled() {
+        let zero = TableRetention {
+            keep_for_days: Some(0),
+            keep_last: Some(0),
+        };
+        let config = RetentionConfig {
+            jobs: zero.clone(),
+            event_log: zero.clone(),
+            file_transitions: zero.clone(),
+            plugin_stats: TableRetention {
+                keep_for_days: Some(30),
+                keep_last: Some(100_000),
+            },
+            ..RetentionConfig::default()
+        };
+        let store: Arc<dyn voom_domain::storage::StorageTrait> = Arc::new(InMemoryStore::new());
+        let runner = RetentionRunner::new(store, config, None);
+        assert!(
+            !runner.is_fully_disabled(),
+            "plugin_stats alone enabled must make is_fully_disabled return false"
+        );
+    }
 }
