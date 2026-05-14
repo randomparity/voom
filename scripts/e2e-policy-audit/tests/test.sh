@@ -30,7 +30,18 @@ run_summary_failed_phase_test() {
     "${actual}/logs" \
     "${actual}/reports" \
     "${actual}/db-export" \
-    "${actual}/diffs"
+    "${actual}/diffs" \
+    "${actual}/runtime" \
+    "${actual}/env"
+
+  touch \
+    "${actual}/runtime/0001-2026-05-13T100000-0700.txt" \
+    "${actual}/diffs/runtime-timeline.md" \
+    "${actual}/diffs/env-check-timeline.md" \
+    "${actual}/env/journal.log" \
+    "${actual}/env/dmesg.log" \
+    "${actual}/env/dnf-history.txt" \
+    "${actual}/env/rpm-recently-changed.txt"
 
   for log_name in env-check policy-validate scan; do
     printf '0\n' >"${actual}/logs/${log_name}.log.rc"
@@ -241,6 +252,296 @@ EOF
 }
 
 run_repro_set_test
+
+run_runtime_timeline_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/runtime" "${actual}/diffs"
+
+  cat >"${actual}/runtime/0001-2026-05-13T100000-0700.txt" <<'EOF'
+# Runtime sample 0001
+
+timestamp: 2026-05-13T10:00:00-07:00
+
+## nvidia-smi -L
+
+$ nvidia-smi -L
+
+GPU 0: RTX 4090 (UUID: GPU-a)
+GPU 1: RTX 4090 (UUID: GPU-b)
+completed-helper process is not a voom job row
+
+## df -h
+
+$ df -h /mnt/raid0 /home
+
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/md0        100T   80T   20T  80% /mnt/raid0
+/dev/nvme0n1p3  900G  100G  800G  12% /home
+
+## voom jobs list tail
+
+$ bash -lc 'voom jobs list 2>/dev/null | tail -20'
+
+id status
+job-a running
+job-b pending
+EOF
+
+  cat >"${actual}/runtime/0002-2026-05-13T100500-0700.txt" <<'EOF'
+# Runtime sample 0002
+
+timestamp: 2026-05-13T10:05:00-07:00
+
+## df -h
+
+$ df -h /mnt/raid0 /home
+
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/md0        100T   96T  4.0T  96% /mnt/raid0
+/dev/nvme0n1p3  900G  100G  800G  12% /home
+
+## voom jobs list tail
+
+$ bash -lc 'voom jobs list 2>/dev/null | tail -20'
+
+id status
+job-a running
+job-b pending
+EOF
+
+  cat >"${actual}/runtime/0003-2026-05-13T101000-0700.txt" <<'EOF'
+# Runtime sample 0003
+
+timestamp: 2026-05-13T10:10:00-07:00
+
+## df -h
+
+$ df -h /mnt/raid0 /home
+
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/md0        100T   96T  4.0T  96% /mnt/raid0
+/dev/nvme0n1p3  900G  100G  800G  12% /home
+
+## voom jobs list tail
+
+$ bash -lc 'voom jobs list 2>/dev/null | tail -20'
+
+id status
+job-a running
+job-b pending
+EOF
+
+  "lib/runtime-timeline.py" "${actual}/runtime" "${actual}/diffs/runtime-timeline.md" \
+    --disk-used-threshold 95 --job-stall-samples 2
+  assert_match "${actual}/diffs/runtime-timeline.md" "tests/expected/runtime-timeline.md"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_runtime_timeline_test
+
+run_runtime_timeline_zero_jobs_no_stall_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/runtime" "${actual}/diffs"
+
+  cat >"${actual}/runtime/0001.txt" <<'EOF'
+timestamp: 2026-05-13T10:00:00-07:00
+
+## voom jobs list tail
+
+$ bash -lc 'voom jobs list 2>/dev/null | tail -20'
+EOF
+
+  cat >"${actual}/runtime/0002.txt" <<'EOF'
+timestamp: 2026-05-13T10:05:00-07:00
+
+## voom jobs list tail
+
+$ bash -lc 'voom jobs list 2>/dev/null | tail -20'
+EOF
+
+  "lib/runtime-timeline.py" "${actual}/runtime" "${actual}/diffs/runtime-timeline.md" \
+    --job-stall-samples 2
+
+  if grep -Fq "jobs list row count stalled" "${actual}/diffs/runtime-timeline.md"; then
+    echo "FAIL: zero job rows should not emit a job stall transition" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_runtime_timeline_zero_jobs_no_stall_test
+
+run_runtime_timeline_uses_jobs_total_footer_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/runtime" "${actual}/diffs"
+
+  cat >"${actual}/runtime/0001.txt" <<'EOF'
+timestamp: 2026-05-13T10:00:00-07:00
+
+## voom jobs list tail
+
+$ bash -c '/tmp/fake-voom jobs list 2>/dev/null | tail -20'
+
+job-a running
+job-b pending
+Showing 20 of 100 jobs. Use --limit, --offset, or --status to narrow results.
+EOF
+
+  cat >"${actual}/runtime/0002.txt" <<'EOF'
+timestamp: 2026-05-13T10:05:00-07:00
+
+## voom jobs list tail
+
+$ bash -c '/tmp/fake-voom jobs list 2>/dev/null | tail -20'
+
+job-a running
+job-b pending
+Showing 20 of 120 jobs. Use --limit, --offset, or --status to narrow results.
+EOF
+
+  "lib/runtime-timeline.py" "${actual}/runtime" "${actual}/diffs/runtime-timeline.md" \
+    --job-stall-samples 2
+
+  if grep -Fq "jobs list row count stalled" "${actual}/diffs/runtime-timeline.md"; then
+    echo "FAIL: increasing total job count should not emit a job stall transition" >&2
+    fail=1
+  fi
+  if ! grep -Fq "| 2 | 2026-05-13T10:05:00-07:00 | 0 | 0% | 120 |" \
+    "${actual}/diffs/runtime-timeline.md"; then
+    echo "FAIL: runtime timeline did not use jobs list total footer" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_runtime_timeline_uses_jobs_total_footer_test
+
+run_runtime_timeline_missing_dir_test() {
+  local actual
+  local stderr
+  actual=$(mktemp -d)
+  stderr=$(mktemp)
+  trap 'rm -R "${actual}"; rm -f "${stderr}"' EXIT
+
+  if "lib/runtime-timeline.py" "${actual}/missing-runtime" "${actual}/runtime-timeline.md" 2>"${stderr}"; then
+    echo "FAIL: missing runtime dir should fail" >&2
+    fail=1
+  elif ! grep -Fq "runtime dir not found" "${stderr}"; then
+    echo "FAIL: missing runtime dir error was not clear" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  rm -f "${stderr}"
+  trap - EXIT
+}
+
+run_runtime_timeline_missing_dir_test
+
+run_env_check_timeline_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/logs/env-check" "${actual}/diffs"
+
+  cat >"${actual}/logs/env-check/0001.log" <<'EOF'
+timestamp: 2026-05-13T10:00:00-07:00
+External tools:
+  ffmpeg ... OK (7.1.2)
+  rclone ... OK (1.66.0)
+Hardware acceleration:
+  Backend ... NVENC (cuda) (auto-detected)
+
+  GPUs:
+    GPU 0: NVIDIA RTX A6000 (49140 MiB)
+    GPU 1: Quadro RTX 4000 (8192 MiB)
+EOF
+
+  cat >"${actual}/logs/env-check/0002.log" <<'EOF'
+timestamp: 2026-05-13T11:00:00-07:00
+External tools:
+  ffmpeg ... OK (7.1.2)
+  rclone ... OK (1.66.0)
+Hardware acceleration:
+  Backend ... none (unavailable)
+
+  GPUs:
+EOF
+
+  cat >"${actual}/logs/env-check/0003.log" <<'EOF'
+timestamp: 2026-05-13T12:00:00-07:00
+External tools:
+  ffmpeg ... OK (7.1.2)
+  rclone ... OK (1.66.0)
+Hardware acceleration:
+  Backend ... NVENC (cuda) (auto-detected)
+
+  GPUs:
+    GPU 0: NVIDIA RTX A6000 (49140 MiB)
+    GPU 1: Quadro RTX 4000 (8192 MiB)
+EOF
+
+  cat >"${actual}/logs/env-check/notes.log" <<'EOF'
+This is not a sampler-generated env check log.
+NVENC: FAIL
+GPUs: 99
+ffmpeg: FAIL
+rclone: FAIL
+EOF
+
+  "lib/env-check-timeline.py" \
+    "${actual}/logs/env-check" \
+    "${actual}/diffs/env-check-timeline.md"
+  assert_match \
+    "${actual}/diffs/env-check-timeline.md" \
+    "tests/expected/env-check-timeline.md"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_env_check_timeline_test
+
+run_env_check_timeline_synthetic_lines_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/logs/env-check" "${actual}/diffs"
+
+  cat >"${actual}/logs/env-check/0001.log" <<'EOF'
+NVENC: OK
+GPUs: 2
+ffmpeg: OK
+rclone: OK
+EOF
+
+  "lib/env-check-timeline.py" \
+    "${actual}/logs/env-check" \
+    "${actual}/diffs/env-check-timeline.md"
+
+  if ! grep -Fq "| 1 | NVENC OK | 2 | OK | OK |" \
+    "${actual}/diffs/env-check-timeline.md"; then
+    echo "FAIL: synthetic env check lines were not parsed" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_env_check_timeline_synthetic_lines_test
 
 raw_actual=$(mktemp -d)
 trap 'rm -rf "${raw_actual}"' EXIT
