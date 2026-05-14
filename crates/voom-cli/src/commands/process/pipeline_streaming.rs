@@ -487,24 +487,13 @@ fn spawn_ingest_stage(
             // mark it missing on the next path-only reconciliation.
             discovered_paths.lock().push(event.path.clone());
 
-            if !force_rescan && bad_files.contains(&event.path) {
-                skipped_bad.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-
-            events_for_eta.lock().push(event.clone());
-            super::dispatch::dispatch_and_log(&kernel, Event::FileDiscovered(event.clone()));
-
-            // Session registration: when a content hash is present, call
-            // `ingest_discovered_file` directly (mirrors `voom scan`). This
-            // is the call that lets `finish_scan_session` see the file as
-            // "registered this session" rather than marking it missing.
-            //
-            // When `--no-backup` disables hashing, content_hash is None and
-            // we cannot ingest; the success path will fall back to
-            // `mark_missing_paths` for path-only reconciliation. We still
-            // forward such files to the worker pool (downstream
-            // introspection will hash and persist via FileIntrospected).
+            // Session registration MUST happen BEFORE the bad-file filter:
+            // a known-bad file may still be physically present on disk and
+            // have an active row in `files`. If we skipped registration
+            // here, `finish_scan_session` would later see the row as not
+            // registered this session and mark it Missing — false-positive
+            // missing of a present file. (Codex second-pass review, May
+            // 2026.)
             let needs_reintrospect = if let Some(hash) = event.content_hash.clone() {
                 let df = voom_domain::transition::DiscoveredFile::new(
                     event.path.clone(),
@@ -562,6 +551,18 @@ fn spawn_ingest_stage(
                 // success path will do path-only reconciliation).
                 true
             };
+
+            // Bad-file filter runs AFTER session registration so the row
+            // counts as "seen this session" for `finish_scan_session`.
+            // Skipping the work item still saves the worker pool the load,
+            // but the file isn't falsely missing.
+            if !force_rescan && bad_files.contains(&event.path) {
+                skipped_bad.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+
+            events_for_eta.lock().push(event.clone());
+            super::dispatch::dispatch_and_log(&kernel, Event::FileDiscovered(event.clone()));
 
             let priority = if priority_by_date {
                 super::compute_file_date_priority(&event.path)
