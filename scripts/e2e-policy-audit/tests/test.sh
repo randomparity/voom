@@ -543,6 +543,71 @@ EOF
 
 run_env_check_timeline_synthetic_lines_test
 
+run_plugin_error_dedupe_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/reports" "${actual}/diffs" "${actual}/logs/plugin-errors"
+
+  cat >"${actual}/reports/events.json" <<'EOF'
+[
+  {
+    "rowid": 1,
+    "event_type": "plugin.error",
+    "created_at": "2026-05-14T10:00:01Z",
+    "summary": "backup-manager: rclone failed",
+    "payload": {
+      "plugin_name": "backup-manager",
+      "error": "rclone copy failed\nTransferred: 0 / 1, 0%\nERROR : /lib/a.mkv: permission denied"
+    }
+  },
+  {
+    "rowid": 2,
+    "event_type": "plugin.error",
+    "created_at": "2026-05-14T10:00:02Z",
+    "summary": "backup-manager: rclone failed",
+    "payload": {
+      "plugin_name": "backup-manager",
+      "error": "rclone copy failed\nTransferred: 0 / 1, 0%\nERROR : /lib/b.mkv: permission denied"
+    }
+  },
+  {
+    "rowid": 3,
+    "event_type": "plan.completed",
+    "created_at": "2026-05-14T10:00:03Z",
+    "summary": "plan completed",
+    "payload": {"plan_id": "plan-1"}
+  },
+  {
+    "rowid": 4,
+    "event_type": "plugin.error",
+    "created_at": "2026-05-14T10:05:00Z",
+    "summary": "backup-manager: config missing",
+    "payload": {
+      "plugin": "backup-manager",
+      "message": "config missing\nrclone remote not configured"
+    }
+  }
+]
+EOF
+
+  "lib/plugin-error-dedupe.py" \
+    "${actual}/reports/events.json" \
+    "${actual}/reports/events-deduped.json" \
+    "${actual}/logs/plugin-errors" \
+    "${actual}/diffs/plugin-error-summary.md"
+
+  assert_match "${actual}/reports/events-deduped.json" "tests/expected/events-deduped.json"
+  assert_match "${actual}/diffs/plugin-error-summary.md" "tests/expected/plugin-error-summary.md"
+  assert_match "${actual}/logs/plugin-errors/backup-manager.log" \
+    "tests/expected/plugin-errors/backup-manager.log"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_plugin_error_dedupe_test
+
 raw_actual=$(mktemp -d)
 trap 'rm -rf "${raw_actual}"' EXIT
 
