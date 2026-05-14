@@ -166,17 +166,15 @@ impl StatsSink for SqliteStatsSink {
 
 impl Drop for SqliteStatsSink {
     fn drop(&mut self) {
-        // Setting shutdown is no longer strictly necessary — the writer's
-        // Disconnected arm runs the final flush and exits — but leave it as
-        // a safety net in case the writer is in the middle of a long flush
-        // when we drop tx.
-        self.shutdown.store(true, Ordering::Relaxed);
         // Drop the sender FIRST so the writer's recv_timeout returns
-        // Err(Disconnected) on the next tick; the Disconnected arm drains
-        // the channel and runs the guaranteed final flush before exiting.
-        // Struct fields are dropped AFTER Drop::drop returns, so we must
-        // explicitly take() and drop tx here, before joining the writer.
+        // Err(Disconnected) on the next tick — the Disconnected arm
+        // is the single path that performs the bounded-retry drain.
+        // Setting `shutdown` before tx is dropped would race the Timeout
+        // arm and let it break out without draining the surviving buf.
         drop(self.tx.take());
+        // Safety net for late observers; functionally redundant once tx
+        // is dropped because the next recv returns Disconnected.
+        self.shutdown.store(true, Ordering::Relaxed);
         if let Some(h) = self.writer.take() {
             let _ = h.join();
         }
@@ -186,7 +184,12 @@ impl Drop for SqliteStatsSink {
 fn writer_loop(
     rx: Receiver<PluginStatRecord>,
     store: Arc<SqliteStore>,
-    shutdown: Arc<AtomicBool>,
+    // The `shutdown` flag is set by `SqliteStatsSink::drop` as a safety net,
+    // but the writer no longer observes it: the channel-disconnect signal
+    // from dropping `tx` is the single shutdown path through the
+    // bounded-retry drain. Kept on the struct/signature to avoid a deeper
+    // refactor; prefixed `_` to silence unused-variable lints.
+    _shutdown: Arc<AtomicBool>,
     failed_flushes: Arc<AtomicU64>,
     evicted: Arc<AtomicU64>,
 ) {
@@ -221,9 +224,8 @@ fn writer_loop(
                     );
                     last_flush = Instant::now();
                 }
-                if shutdown.load(Ordering::Relaxed) {
-                    break;
-                }
+                // No `shutdown` check here — the Disconnected arm is the single
+                // shutdown path. See SqliteStatsSink::drop ordering comment.
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 // Drain any remaining records from the closed channel so they are
@@ -505,6 +507,41 @@ mod tests {
         assert!(
             lost >= 10,
             "expected >= 10 evicted records after persistent flush failure on shutdown, got {lost}"
+        );
+    }
+
+    #[test]
+    fn shutdown_during_timeout_arm_still_drains_via_disconnected() {
+        // Regression test for the Timeout-arm bypass: even if the Drop impl
+        // races the writer through its periodic-flush tick at shutdown, the
+        // surviving buf must be drained or evicted — never silently lost.
+        // (Codex stop-time review follow-up, May 2026.)
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicU64;
+
+        let store = Arc::new(SqliteStore::in_memory().unwrap());
+        {
+            let conn = store.conn().unwrap();
+            conn.execute("DROP TABLE plugin_stats", []).unwrap();
+        }
+
+        let sink = SqliteStatsSink::new(store.clone());
+        let evicted_handle: Arc<AtomicU64> = sink.evicted_handle_for_tests();
+
+        // Send enough records that the writer is busy when we drop.
+        for i in 0..50 {
+            sink.record(rec(i));
+        }
+        // Sleep PAST the flush interval so the writer is most likely sitting
+        // in recv_timeout / processing a Timeout tick when Drop fires.
+        std::thread::sleep(Duration::from_millis(700));
+
+        drop(sink);
+
+        let lost = evicted_handle.load(Ordering::Relaxed);
+        assert!(
+            lost >= 50,
+            "shutdown must drain or evict every record even when it races the Timeout arm; got {lost}"
         );
     }
 
