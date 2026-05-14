@@ -652,6 +652,30 @@ EOF
 
 run_ffmpeg_stderr_normalize_test
 
+run_failure_timeline_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  cat >"${actual}/plans.tsv" <<'EOF'
+id	file_id	phase_name	status	result	executed_at
+plan-1	file-1	transcode-video	failed	{"detail":{"stderr_tail":"CUDA_ERROR_OUT_OF_MEMORY"},"error":"ffmpeg exited with exit status: 187"}	2026-05-14T10:01:00Z
+plan-2	file-2	transcode-video	failed	{"detail":{"stderr_tail":"CUDA_ERROR_OUT_OF_MEMORY"},"error":"ffmpeg exited with exit status: 187"}	2026-05-14T10:15:00Z
+plan-3	file-3	transcode-video	failed	{"detail":{"stderr_tail":"No device available for decoder"},"error":"ffmpeg exited with exit status: 1"}	2026-05-14T11:00:00Z
+plan-4	file-4	transcode-video	failed	{"detail":{"stderr_tail":"Impossible to convert between the formats"},"error":"ffmpeg exited with exit status: 1"}	2026-05-14T11:05:00Z
+plan-5	file-5	transcode-video	failed	{"detail":{"stderr_tail":"unclassified failure"},"error":"executor failed"}	2026-05-14T11:10:00Z
+plan-6	file-6	transcode-video	completed	{"ok":true}	2026-05-14T11:15:00Z
+EOF
+
+  "lib/failure-timeline.py" "${actual}/plans.tsv" "${actual}/failure-timeline.md"
+  assert_match "${actual}/failure-timeline.md" "tests/expected/failure-timeline.md"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_failure_timeline_test
+
 raw_actual=$(mktemp -d)
 trap 'rm -rf "${raw_actual}"' EXIT
 
