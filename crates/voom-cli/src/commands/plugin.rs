@@ -13,6 +13,12 @@ pub fn run(cmd: PluginCommands) -> Result<()> {
         PluginCommands::Enable { name } => enable(&name),
         PluginCommands::Disable { name } => disable(&name),
         PluginCommands::Install { path } => install(&path),
+        PluginCommands::Stats {
+            plugin,
+            since,
+            top,
+            format,
+        } => crate::commands::plugin_stats::run(plugin, since, top, format),
     }
 }
 

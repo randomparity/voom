@@ -13,6 +13,7 @@ pub mod inspect;
 pub mod jobs;
 pub mod plans;
 pub mod plugin;
+pub mod plugin_stats;
 pub mod policy;
 pub mod process;
 pub mod report;
