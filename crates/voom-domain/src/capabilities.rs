@@ -60,6 +60,29 @@ impl Capability {
             Capability::Verify { .. } => "verify",
         }
     }
+
+    #[must_use]
+    pub fn resolution(&self) -> crate::capability_resolution::CapabilityResolution {
+        use crate::capability_resolution::CapabilityResolution as R;
+        match self {
+            Capability::Discover { .. } => R::Sharded,
+            Capability::Introspect { .. } => R::Competing,
+            Capability::Evaluate => R::Exclusive,
+            Capability::Execute { .. } => R::Competing,
+            Capability::Store { .. } => R::Exclusive,
+            Capability::DetectTools => R::Competing,
+            Capability::ManageJobs => R::Exclusive,
+            Capability::ServeHttp => R::Exclusive,
+            Capability::Plan => R::Exclusive,
+            Capability::Backup => R::Competing,
+            Capability::EnrichMetadata { .. } => R::Sharded,
+            Capability::Transcribe => R::Competing,
+            Capability::Synthesize => R::Competing,
+            Capability::GenerateSubtitle => R::Competing,
+            Capability::HealthCheck => R::Competing,
+            Capability::Verify { .. } => R::Competing,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -73,5 +96,40 @@ mod tests {
             modes: vec![VerificationMode::Quick, VerificationMode::Thorough],
         };
         assert_eq!(cap.kind(), "verify");
+    }
+
+    #[test]
+    fn discover_resolution_is_sharded() {
+        use crate::capability_resolution::CapabilityResolution;
+        let cap = Capability::Discover { schemes: vec!["file".into()] };
+        assert_eq!(cap.resolution(), CapabilityResolution::Sharded);
+    }
+
+    #[test]
+    fn evaluate_resolution_is_exclusive() {
+        use crate::capability_resolution::CapabilityResolution;
+        let cap = Capability::Evaluate;
+        assert_eq!(cap.resolution(), CapabilityResolution::Exclusive);
+    }
+
+    #[test]
+    fn plan_resolution_is_exclusive() {
+        use crate::capability_resolution::CapabilityResolution;
+        let cap = Capability::Plan;
+        assert_eq!(cap.resolution(), CapabilityResolution::Exclusive);
+    }
+
+    #[test]
+    fn introspect_resolution_is_competing() {
+        use crate::capability_resolution::CapabilityResolution;
+        let cap = Capability::Introspect { formats: vec!["mkv".into()] };
+        assert_eq!(cap.resolution(), CapabilityResolution::Competing);
+    }
+
+    #[test]
+    fn store_resolution_is_exclusive() {
+        use crate::capability_resolution::CapabilityResolution;
+        let cap = Capability::Store { backend: "sqlite".into() };
+        assert_eq!(cap.resolution(), CapabilityResolution::Exclusive);
     }
 }
