@@ -822,6 +822,12 @@ pub trait ScanSessionMutationStorage: Send + Sync {
 /// # Errors
 ///
 /// All methods return [`VoomError::Storage`](crate::errors::VoomError::Storage) on database or I/O failures.
+// Note: this trait is a composition of 16 sub-traits. Whether to split
+// it (core + extension traits, macro-generated, dyn-Any side-channel,
+// or leave as-is) was discussed in #381. The decision was to keep the
+// current structure — a macro-based dedup (Option B) is a future
+// low-risk improvement if the lists ever drift. See
+// `docs/decisions/storage-trait-refactor.md` for the analysis.
 pub trait StorageTrait:
     FileStorage
     + JobStorage
