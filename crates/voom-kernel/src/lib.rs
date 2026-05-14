@@ -40,6 +40,26 @@ macro_rules! plugin_cargo_metadata {
     };
 }
 
+/// If the two Sharded capabilities have a key in common, return the colliding
+/// key. Used by `check_capability_collisions` to surface the specific key
+/// that conflicts (e.g. scheme `"file"`) in the error message.
+fn sharded_collision_key(
+    a: &voom_domain::capabilities::Capability,
+    b: &voom_domain::capabilities::Capability,
+) -> Option<String> {
+    use voom_domain::capabilities::Capability;
+    match (a, b) {
+        (Capability::Discover { schemes: a_s }, Capability::Discover { schemes: b_s }) => {
+            a_s.iter().find(|s| b_s.contains(*s)).cloned()
+        }
+        (
+            Capability::EnrichMetadata { source: a_src },
+            Capability::EnrichMetadata { source: b_src },
+        ) => (a_src == b_src).then(|| a_src.clone()),
+        _ => None,
+    }
+}
+
 /// Universal plugin interface. All native plugins implement this.
 ///
 /// `Plugin: Any + 'static` allows `Registry::get_typed::<P>` to recover the
@@ -239,12 +259,69 @@ impl Kernel {
 
     /// Register a native plugin, subscribing it to events it handles.
     ///
-    /// Returns an error if a plugin with the same name is already registered.
+    /// Returns an error if a plugin with the same name is already registered,
+    /// or if the new plugin's capabilities collide with an existing claim
+    /// (Exclusive: kind already taken; Sharded: a key overlaps).
     pub fn register_plugin(&mut self, plugin: Arc<dyn Plugin>, priority: i32) -> Result<()> {
+        self.verify_registration_invariants(&plugin)?;
         let name = plugin.name().to_string();
         self.registry.register(plugin.clone())?;
         self.bus.subscribe_plugin(plugin, priority);
         tracing::info!(plugin = %name, "plugin registered");
+        Ok(())
+    }
+
+    /// Pre-registration invariant check called by every registration entry
+    /// point before any plugin-side `init()` side effects can run on a doomed
+    /// plugin (rev-3). Today this only enforces capability-collision rules;
+    /// future invariants (manifest sanity checks, etc.) can plug in here
+    /// without re-wiring every entry point.
+    fn verify_registration_invariants(&self, new_plugin: &Arc<dyn Plugin>) -> Result<()> {
+        self.check_capability_collisions(new_plugin)
+    }
+
+    fn check_capability_collisions(&self, new_plugin: &Arc<dyn Plugin>) -> Result<()> {
+        use voom_domain::capability_resolution::CapabilityResolution;
+        let new_name = new_plugin.name().to_string();
+
+        for new_cap in new_plugin.capabilities() {
+            for (existing_name, existing_plugin) in self.registry.iter_all() {
+                if existing_name == new_name {
+                    continue;
+                }
+                for existing_cap in existing_plugin.capabilities() {
+                    if new_cap.kind() != existing_cap.kind() {
+                        continue;
+                    }
+                    match new_cap.resolution() {
+                        CapabilityResolution::Exclusive => {
+                            return Err(voom_domain::errors::VoomError::plugin(
+                                &new_name,
+                                format!(
+                                    "capability conflict: {} already claimed by '{}'",
+                                    new_cap.kind(),
+                                    existing_name,
+                                ),
+                            ));
+                        }
+                        CapabilityResolution::Sharded => {
+                            if let Some(key) = sharded_collision_key(new_cap, existing_cap) {
+                                return Err(voom_domain::errors::VoomError::plugin(
+                                    &new_name,
+                                    format!(
+                                        "capability conflict: {} key '{}' already claimed by '{}'",
+                                        new_cap.kind(),
+                                        key,
+                                        existing_name,
+                                    ),
+                                ));
+                            }
+                        }
+                        CapabilityResolution::Competing => {}
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -269,6 +346,8 @@ impl Kernel {
                 "a plugin with this name is already registered",
             ));
         }
+        // rev-3: collision check BEFORE init() side effects.
+        self.verify_registration_invariants(&plugin)?;
         let plugin_mut = Arc::get_mut(&mut plugin).ok_or_else(|| {
             voom_domain::errors::VoomError::plugin(
                 name.clone(),
@@ -301,6 +380,14 @@ impl Kernel {
                 name,
                 "a plugin with this name is already registered",
             ));
+        }
+        // rev-3: collision check BEFORE init() side effects. Cloning the typed
+        // Arc bumps the refcount to 2 just long enough to coerce it to a
+        // `&Arc<dyn Plugin>` for the invariant check; the clone is dropped
+        // before `Arc::get_mut` (which requires refcount-1) is called.
+        {
+            let arc_dyn: Arc<dyn Plugin> = arc.clone();
+            self.verify_registration_invariants(&arc_dyn)?;
         }
         let plugin_mut = Arc::get_mut(&mut arc).ok_or_else(|| {
             voom_domain::errors::VoomError::plugin(
@@ -720,6 +807,180 @@ mod tests {
         );
         assert_eq!(kernel.registry.len(), 1);
         assert_eq!(kernel.subscriber_count(), 1);
+    }
+
+    // rev-3: capability collisions must be enforced at every registration
+    // entry point, and BEFORE init() side effects can fire.
+
+    #[test]
+    fn register_rejects_exclusive_collision() {
+        struct A;
+        struct B;
+        impl Plugin for A {
+            fn name(&self) -> &str { "a" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+        }
+        impl Plugin for B {
+            fn name(&self) -> &str { "b" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+        }
+        let mut kernel = Kernel::new();
+        kernel.register_plugin(Arc::new(A), 10).unwrap();
+        let err = kernel.register_plugin(Arc::new(B), 20).unwrap_err();
+        assert!(err.to_string().contains("a"), "error should name prior claimant: {err}");
+    }
+
+    #[test]
+    fn init_and_register_rejects_exclusive_collision() {
+        struct A;
+        struct B;
+        impl Plugin for A {
+            fn name(&self) -> &str { "a" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+        }
+        impl Plugin for B {
+            fn name(&self) -> &str { "b" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+        }
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+        let mut kernel = Kernel::new();
+        kernel.init_and_register(Arc::new(A), 10, &ctx).unwrap();
+        let err = kernel.init_and_register(Arc::new(B), 20, &ctx).unwrap_err();
+        assert!(err.to_string().contains("a"), "error should name prior claimant: {err}");
+    }
+
+    #[test]
+    fn init_and_register_shared_rejects_exclusive_collision() {
+        #[derive(Debug)]
+        struct ConflictingPlugin {
+            init_called: Arc<AtomicBool>,
+        }
+        impl Plugin for ConflictingPlugin {
+            fn name(&self) -> &str { "conflicting" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+            fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
+                self.init_called.store(true, Ordering::SeqCst);
+                Ok(vec![])
+            }
+        }
+
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+        let mut kernel = Kernel::new();
+
+        struct FirstClaimant;
+        impl Plugin for FirstClaimant {
+            fn name(&self) -> &str { "first" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+        }
+        kernel.register_plugin(Arc::new(FirstClaimant), 10).unwrap();
+
+        let init_flag = Arc::new(AtomicBool::new(false));
+        let err = kernel
+            .init_and_register_shared(
+                ConflictingPlugin { init_called: init_flag.clone() },
+                20,
+                &ctx,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("first"),
+            "error should name prior claimant: {err}"
+        );
+        assert!(
+            !init_flag.load(Ordering::SeqCst),
+            "collision must be detected BEFORE init() side effects fire"
+        );
+    }
+
+    #[test]
+    fn register_rejects_sharded_same_key() {
+        use std::sync::LazyLock;
+        struct D1;
+        struct D2;
+        impl Plugin for D1 {
+            fn name(&self) -> &str { "d1" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> =
+                    LazyLock::new(|| vec![Capability::Discover { schemes: vec!["file".into()] }]);
+                &C
+            }
+        }
+        impl Plugin for D2 {
+            fn name(&self) -> &str { "d2" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> =
+                    LazyLock::new(|| vec![Capability::Discover { schemes: vec!["file".into()] }]);
+                &C
+            }
+        }
+        let mut kernel = Kernel::new();
+        kernel.register_plugin(Arc::new(D1), 10).unwrap();
+        let err = kernel.register_plugin(Arc::new(D2), 20).unwrap_err();
+        assert!(err.to_string().contains("file"), "error should name colliding scheme: {err}");
+    }
+
+    #[test]
+    fn register_allows_sharded_disjoint_keys() {
+        use std::sync::LazyLock;
+        struct DFile;
+        struct DS3;
+        impl Plugin for DFile {
+            fn name(&self) -> &str { "dfile" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> =
+                    LazyLock::new(|| vec![Capability::Discover { schemes: vec!["file".into()] }]);
+                &C
+            }
+        }
+        impl Plugin for DS3 {
+            fn name(&self) -> &str { "ds3" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> =
+                    LazyLock::new(|| vec![Capability::Discover { schemes: vec!["s3".into()] }]);
+                &C
+            }
+        }
+        let mut kernel = Kernel::new();
+        kernel.register_plugin(Arc::new(DFile), 10).unwrap();
+        kernel.register_plugin(Arc::new(DS3), 20).expect("disjoint schemes allowed");
+    }
+
+    #[test]
+    fn register_allows_competing() {
+        use std::sync::LazyLock;
+        struct I1;
+        struct I2;
+        impl Plugin for I1 {
+            fn name(&self) -> &str { "i1" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> =
+                    LazyLock::new(|| vec![Capability::Introspect { formats: vec!["mkv".into()] }]);
+                &C
+            }
+        }
+        impl Plugin for I2 {
+            fn name(&self) -> &str { "i2" }
+            fn version(&self) -> &str { "0.1.0" }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> =
+                    LazyLock::new(|| vec![Capability::Introspect { formats: vec!["mp4".into()] }]);
+                &C
+            }
+        }
+        let mut kernel = Kernel::new();
+        kernel.register_plugin(Arc::new(I1), 10).unwrap();
+        kernel.register_plugin(Arc::new(I2), 20).expect("Competing allows co-claim");
     }
 
     #[test]
