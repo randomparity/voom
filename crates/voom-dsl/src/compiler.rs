@@ -85,21 +85,18 @@ fn compile_metadata(
     extends_chain: Vec<String>,
 ) -> CompiledMetadata {
     let Some(metadata) = metadata else {
-        return CompiledMetadata {
-            extends_chain,
-            ..CompiledMetadata::default()
-        };
+        return CompiledMetadata::new(None, None, None, None, vec![], vec![], extends_chain);
     };
 
-    CompiledMetadata {
-        version: metadata.version.clone(),
-        author: metadata.author.clone(),
-        description: metadata.description.clone(),
-        requires_voom: metadata.requires_voom.clone(),
-        requires_tools: metadata.requires_tools.clone().unwrap_or_default(),
-        test_fixtures: metadata.test_fixtures.clone().unwrap_or_default(),
+    CompiledMetadata::new(
+        metadata.version.clone(),
+        metadata.author.clone(),
+        metadata.description.clone(),
+        metadata.requires_voom.clone(),
+        metadata.requires_tools.clone().unwrap_or_default(),
+        metadata.test_fixtures.clone().unwrap_or_default(),
         extends_chain,
-    }
+    )
 }
 
 fn compile_config(config: Option<&ConfigNode>) -> CompiledConfig {
@@ -170,45 +167,39 @@ fn compile_phase(
         .map(|spanned| compile_operation(&spanned.node))
         .collect::<std::result::Result<_, _>>()?;
 
-    Ok(CompiledPhase {
-        name: phase.name.clone(),
-        depends_on: phase.depends_on.clone().unwrap_or_default(),
+    Ok(CompiledPhase::new(
+        phase.name.clone(),
+        phase.depends_on.clone().unwrap_or_default(),
         skip_when,
         run_if,
-        on_error: phase
+        phase
             .on_error
             .map(compile_error_strategy)
             .unwrap_or(ErrorStrategy::Abort),
-        composition: compile_phase_composition(composition),
+        compile_phase_composition(composition),
         operations,
-    })
+    ))
 }
 
 fn compile_phase_composition(composition: Option<&PhaseComposition>) -> CompiledPhaseComposition {
     match composition {
-        None | Some(PhaseComposition::Local) => CompiledPhaseComposition {
-            kind: PhaseCompositionKind::Local,
-            source: None,
-            added_operations: 0,
-        },
-        Some(PhaseComposition::Inherited { source }) => CompiledPhaseComposition {
-            kind: PhaseCompositionKind::Inherited,
-            source: Some(source.clone()),
-            added_operations: 0,
-        },
+        None | Some(PhaseComposition::Local) => {
+            CompiledPhaseComposition::new(PhaseCompositionKind::Local, None, 0)
+        }
+        Some(PhaseComposition::Inherited { source }) => {
+            CompiledPhaseComposition::new(PhaseCompositionKind::Inherited, Some(source.clone()), 0)
+        }
         Some(PhaseComposition::Extended {
             source,
             added_operations,
-        }) => CompiledPhaseComposition {
-            kind: PhaseCompositionKind::Extended,
-            source: Some(source.clone()),
-            added_operations: *added_operations,
-        },
-        Some(PhaseComposition::Overridden { source }) => CompiledPhaseComposition {
-            kind: PhaseCompositionKind::Overridden,
-            source: Some(source.clone()),
-            added_operations: 0,
-        },
+        }) => CompiledPhaseComposition::new(
+            PhaseCompositionKind::Extended,
+            Some(source.clone()),
+            *added_operations,
+        ),
+        Some(PhaseComposition::Overridden { source }) => {
+            CompiledPhaseComposition::new(PhaseCompositionKind::Overridden, Some(source.clone()), 0)
+        }
     }
 }
 

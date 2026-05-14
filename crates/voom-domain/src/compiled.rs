@@ -120,6 +120,29 @@ pub struct CompiledMetadata {
     pub extends_chain: Vec<String>,
 }
 
+impl CompiledMetadata {
+    #[must_use]
+    pub fn new(
+        version: Option<String>,
+        author: Option<String>,
+        description: Option<String>,
+        requires_voom: Option<String>,
+        requires_tools: Vec<String>,
+        test_fixtures: Vec<String>,
+        extends_chain: Vec<String>,
+    ) -> Self {
+        Self {
+            version,
+            author,
+            description,
+            requires_voom,
+            requires_tools,
+            test_fixtures,
+            extends_chain,
+        }
+    }
+}
+
 /// Compiled configuration block.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -174,6 +197,29 @@ pub struct CompiledPhase {
     pub operations: Vec<CompiledOperation>,
 }
 
+impl CompiledPhase {
+    #[must_use]
+    pub fn new(
+        name: String,
+        depends_on: Vec<String>,
+        skip_when: Option<CompiledCondition>,
+        run_if: Option<CompiledRunIf>,
+        on_error: ErrorStrategy,
+        composition: CompiledPhaseComposition,
+        operations: Vec<CompiledOperation>,
+    ) -> Self {
+        Self {
+            name,
+            depends_on,
+            skip_when,
+            run_if,
+            on_error,
+            composition,
+            operations,
+        }
+    }
+}
+
 /// Compiled phase provenance for policy composition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -196,6 +242,21 @@ impl Default for CompiledPhaseComposition {
             kind: PhaseCompositionKind::Local,
             source: None,
             added_operations: 0,
+        }
+    }
+}
+
+impl CompiledPhaseComposition {
+    #[must_use]
+    pub fn new(
+        kind: PhaseCompositionKind,
+        source: Option<String>,
+        added_operations: usize,
+    ) -> Self {
+        Self {
+            kind,
+            source,
+            added_operations,
         }
     }
 }
