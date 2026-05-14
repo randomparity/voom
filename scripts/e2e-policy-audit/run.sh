@@ -74,7 +74,7 @@ repo_root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 lib_dir="${repo_root}/scripts/e2e-policy-audit/lib"
 voom_bin="${repo_root}/target/release/voom"
 
-mkdir -p "${run_dir}"/{pre,post,logs,reports,db-export,web-smoke,diffs}
+mkdir -p "${run_dir}"/{pre,post,logs,reports,db-export,web-smoke,diffs,runtime} "${run_dir}/logs/env-check"
 echo "Run dir: ${run_dir}"
 
 stage_start() { date +%s.%N; }
@@ -99,6 +99,30 @@ log_run() {
     "$@" >"${run_dir}/logs/${name}.log" 2>&1 || rc=$?
     echo "${rc}" >"${run_dir}/logs/${name}.log.rc"
     return 0
+}
+
+runtime_sampler_pid=""
+env_check_sampler_pid=""
+
+stop_process_samplers() {
+    if [[ -n "${runtime_sampler_pid}" ]] && kill -0 "${runtime_sampler_pid}" 2>/dev/null; then
+        kill "${runtime_sampler_pid}" 2>/dev/null || true
+        wait "${runtime_sampler_pid}" 2>/dev/null || true
+    fi
+    runtime_sampler_pid=""
+
+    if [[ -n "${env_check_sampler_pid}" ]] && kill -0 "${env_check_sampler_pid}" 2>/dev/null; then
+        kill "${env_check_sampler_pid}" 2>/dev/null || true
+        wait "${env_check_sampler_pid}" 2>/dev/null || true
+    fi
+    env_check_sampler_pid=""
+}
+
+start_process_samplers() {
+    "${lib_dir}/runtime-sampler.sh" "${run_dir}" 300 &
+    runtime_sampler_pid=$!
+    "${lib_dir}/env-check-sampler.sh" "${run_dir}" "${voom_bin}" 3600 &
+    env_check_sampler_pid=$!
 }
 
 # ---- Preflight ----
@@ -162,8 +186,16 @@ cp "${run_dir}/logs/plans-preview.log" "${run_dir}/reports/plans.json"
 run_start=$(date -Iseconds)
 echo "==> voom process (long run starts at ${run_start})"
 t=$(stage_start)
+start_process_samplers
+trap 'stop_process_samplers' EXIT
+trap 'stop_process_samplers; trap - EXIT INT TERM; exit 130' INT
+trap 'stop_process_samplers; trap - EXIT INT TERM; exit 143' TERM
 log_run process "${voom_bin}" process -y --on-error continue --policy "${policy}" "${library}"
+stop_process_samplers
+trap - EXIT INT TERM
 stage_end process "$t"
+"${lib_dir}/capture-host-journal.sh" "${run_dir}" "${run_start}" ||
+    echo "host journal capture failed (continuing)" >&2
 log_run jobs-list "${voom_bin}" jobs list
 cp "${run_dir}/logs/jobs-list.log" "${run_dir}/reports/jobs.txt"
 
@@ -248,6 +280,18 @@ if ((do_probe)); then
                 echo "diff class summary failed for ${diff_name} (continuing)" >&2
         fi
     done
+fi
+if compgen -G "${run_dir}/runtime/*.txt" >/dev/null; then
+    "${lib_dir}/runtime-timeline.py" \
+        "${run_dir}/runtime" \
+        "${run_dir}/diffs/runtime-timeline.md" ||
+        echo "runtime timeline generation failed (continuing)" >&2
+fi
+if compgen -G "${run_dir}/logs/env-check/[0-9][0-9][0-9][0-9].log" >/dev/null; then
+    "${lib_dir}/env-check-timeline.py" \
+        "${run_dir}/logs/env-check" \
+        "${run_dir}/diffs/env-check-timeline.md" ||
+        echo "env check timeline generation failed (continuing)" >&2
 fi
 stage_end diff "$t"
 
