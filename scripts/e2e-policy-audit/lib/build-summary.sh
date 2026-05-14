@@ -21,16 +21,30 @@ note_warn() {
   [[ "${verdict}" == "PASS" ]] && verdict="WARN"
 }
 
-# Hard checks on logged exit codes
-for log_name in doctor policy-validate scan; do
-  rc_file="${run}/logs/${log_name}.log.rc"
+check_log_rc() {
+  local log_name="$1"
+  local fallback_name="${2:-}"
+  local rc_file="${run}/logs/${log_name}.log.rc"
+  local rc
+
+  if [[ ! -f "${rc_file}" && -n "${fallback_name}" ]]; then
+    rc_file="${run}/logs/${fallback_name}.log.rc"
+  fi
+
   if [[ ! -f "${rc_file}" ]]; then
     note_fail "missing ${log_name}.log.rc"
-    continue
+    return
   fi
+
   rc=$(cat "${rc_file}")
   [[ "${rc}" != "0" ]] && note_fail "${log_name} exit code ${rc}"
-done
+  return 0
+}
+
+# Hard checks on logged exit codes
+check_log_rc env-check doctor
+check_log_rc policy-validate
+check_log_rc scan
 
 # diff-snapshots data-loss check
 diff_md="${run}/diffs/files-summary.md"

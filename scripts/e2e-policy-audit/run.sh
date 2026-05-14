@@ -121,7 +121,7 @@ fi
 }
 
 log_run version "${voom_bin}" --version
-log_run doctor "${voom_bin}" doctor
+log_run env-check "${voom_bin}" env check
 log_run policy-validate "${voom_bin}" policy validate "${policy}"
 
 # ---- Pre snapshot + probe ----
