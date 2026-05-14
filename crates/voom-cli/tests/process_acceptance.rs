@@ -475,4 +475,148 @@ mod acceptance {
         // assertion flaky in CI. The timing assertion above captures the same
         // safety invariant with deterministic event timestamps.
     }
+
+    // ─── Issue #377 regression tests ────────────────────────────────────────
+
+    /// `voom process` against a populated library must NOT mark any
+    /// pre-existing file as missing — `finish_scan_session` is now wired
+    /// through ingest_discovered_file, so files that were both registered
+    /// and present this session must remain `Active`.
+    #[tokio::test]
+    async fn process_does_not_mark_existing_files_missing() {
+        use voom_domain::storage::FileFilters;
+        use voom_domain::transition::FileStatus;
+
+        let _lock = TEST_LOCK.lock().await;
+        let mut env = TestEnv::new().await;
+        let root = env.add_root("a");
+        env.write_media_in(&root, "alpha.mkv", 1024);
+        env.write_media_in(&root, "bravo.mkv", 1024);
+
+        // First run: registers both files via ingest_discovered_file +
+        // finish_scan_session. Use --dry-run so the run does not require
+        // ffmpeg/mkvmerge availability on the test host.
+        let out = env
+            .run_process(&[
+                root.to_str().unwrap(),
+                "--policy",
+                env.policy_path().to_str().unwrap(),
+                "--dry-run",
+            ])
+            .await;
+        assert!(
+            out.result.is_ok(),
+            "first process run failed: {:?}",
+            out.result.err()
+        );
+
+        // Pull every file row (include_missing=true). Pre-fix, every row
+        // would be Missing; post-fix, every row must be Active.
+        // FileFilters is #[non_exhaustive] so we build via default() +
+        // mutation rather than struct-literal.
+        let mut filters = FileFilters::default();
+        filters.include_missing = true;
+        let all_rows = out.store.list_files(&filters).expect("list all files");
+        let missing: Vec<_> = all_rows
+            .iter()
+            .filter(|f| f.status == FileStatus::Missing)
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "no files should be marked Missing after first run; got {missing:?}"
+        );
+        let active = all_rows
+            .iter()
+            .filter(|f| f.status == FileStatus::Active)
+            .count();
+        assert!(
+            active >= 2,
+            "expected at least 2 Active files after first run; got {active}"
+        );
+    }
+
+    /// After `voom process` populates the library, deleting one file and
+    /// running `voom process` again must mark the deleted file as
+    /// `Missing` — proves `finish_scan_session` is correctly reconciling
+    /// against ingest_discovered_file registrations.
+    #[tokio::test]
+    async fn process_marks_removed_files_missing_on_next_run() {
+        use voom_domain::transition::FileStatus;
+
+        let _lock = TEST_LOCK.lock().await;
+        let mut env = TestEnv::new().await;
+        let root = env.add_root("a");
+        let kept = root.join("kept.mkv");
+        let removed = root.join("removed.mkv");
+        env.write_media_in(&root, "kept.mkv", 1024);
+        env.write_media_in(&root, "removed.mkv", 1024);
+
+        // Initial run: registers both files.
+        let out1 = env
+            .run_process(&[
+                root.to_str().unwrap(),
+                "--policy",
+                env.policy_path().to_str().unwrap(),
+                "--dry-run",
+            ])
+            .await;
+        assert!(
+            out1.result.is_ok(),
+            "first run failed: {:?}",
+            out1.result.err()
+        );
+
+        // Delete one file under the root.
+        std::fs::remove_file(&removed).expect("remove media file");
+
+        // Second run: should mark the deleted file as Missing.
+        let out2 = env
+            .run_process(&[
+                root.to_str().unwrap(),
+                "--policy",
+                env.policy_path().to_str().unwrap(),
+                "--dry-run",
+            ])
+            .await;
+        assert!(
+            out2.result.is_ok(),
+            "second run failed: {:?}",
+            out2.result.err()
+        );
+
+        let removed_row = out2
+            .store
+            .file_by_path(&removed)
+            .expect("query removed file")
+            .expect("removed file row");
+        assert_eq!(
+            removed_row.status,
+            FileStatus::Missing,
+            "removed file must be marked Missing after second run"
+        );
+
+        let kept_row = out2
+            .store
+            .file_by_path(&kept)
+            .expect("query kept file")
+            .expect("kept file row");
+        assert_eq!(
+            kept_row.status,
+            FileStatus::Active,
+            "kept file must remain Active after second run; status={:?}",
+            kept_row.status
+        );
+    }
+
+    // NOTE: the `--no-backup` (path-only reconciliation via
+    // `mark_missing_paths`) branch is not exercised by an acceptance
+    // test here. The synthetic-media harness produces files that
+    // ffprobe rejects, so the `files` table is populated only by
+    // `ingest_discovered_file` (when hashing is on). Under `--no-backup`
+    // there is no hash and no ingest, so the test cannot observe the
+    // `mark_missing_paths` behaviour with this harness. The same
+    // reconciliation path is exercised by `voom scan` tests in
+    // `crates/voom-cli/src/commands/scan/pipeline.rs` and by the
+    // sqlite-store unit tests
+    // (`plugins/sqlite-store/src/store/file_storage.rs::mark_missing_paths_*`).
 }

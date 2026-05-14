@@ -319,17 +319,57 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
 
         heartbeat_handle.abort();
 
-        // Cancel rather than finish on success: finish_scan_session computes
-        // missing files as the set difference between the files table and
-        // files registered via ingest_discovered_file(session, df), but the
-        // streaming pipeline does not call that — it emits FileDiscovered
-        // events to the bus where sqlite-store uses upsert_discovered_file
-        // (no session registration). Calling finish here would mark every
-        // pre-existing file missing. The fail-closed safety properties this
-        // session enables (record_voom_mutation, SessionMutationSnapshot)
-        // do not depend on finish.
-        if let Err(e) = store.cancel_scan_session(scan_session) {
-            tracing::warn!(error = %e, "failed to cancel scan session");
+        // Session finalization:
+        //   - cancelled  → cancel_scan_session (never mark anything missing)
+        //   - no-backup  → mark_missing_paths (path-only reconciliation,
+        //                  mirroring voom scan's unhashed branch)
+        //   - hashed run → finish_scan_session (the canonical path)
+        //
+        // The streaming pipeline now calls `ingest_discovered_file` directly
+        // for every hashed FileDiscovered (see pipeline_streaming.rs), so
+        // `finish_scan_session` sees a fully registered session and only
+        // marks rows missing when they were genuinely absent from this
+        // walk. On `--no-backup` no hashes are available so we cannot
+        // ingest; `mark_missing_paths` performs path-only reconciliation
+        // against the deduped path set the ingest stage collected.
+        if token.is_cancelled() {
+            if let Err(e) = store.cancel_scan_session(scan_session) {
+                tracing::warn!(error = %e, "failed to cancel scan session");
+            }
+        } else if args.no_backup {
+            match store.mark_missing_paths(&outcome.discovered_paths, &paths) {
+                Ok(missing) => {
+                    tracing::info!(
+                        missing,
+                        "path-only reconciliation complete (--no-backup)"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "mark_missing_paths failed");
+                }
+            }
+            if let Err(e) = store.cancel_scan_session(scan_session) {
+                tracing::warn!(error = %e, "failed to cancel scan session after mark_missing_paths");
+            }
+        } else {
+            match store.finish_scan_session(scan_session) {
+                Ok(finish) => {
+                    tracing::info!(
+                        missing = finish.missing,
+                        promoted_moves = finish.promoted_moves,
+                        "scan session finished"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to finish scan session");
+                    if let Err(cancel_err) = store.cancel_scan_session(scan_session) {
+                        tracing::warn!(
+                            error = %cancel_err,
+                            "failed to cancel scan session after finish failure"
+                        );
+                    }
+                }
+            }
         }
 
         if outcome.discovery_errors > 0 {

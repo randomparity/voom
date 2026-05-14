@@ -707,6 +707,7 @@ mod tests {
             path: "/tmp/a.mkv".into(),
             size: 100,
             content_hash: None,
+            ..Default::default()
         };
         assert_eq!(state.on_job_start(job_id, &payload), "");
     }
@@ -725,11 +726,13 @@ mod tests {
             path: "/tmp/small-1.mkv".into(),
             size: 1,
             content_hash: None,
+            ..Default::default()
         };
         let second = crate::introspect::DiscoveredFilePayload {
             path: "/tmp/small-2.mkv".into(),
             size: 1,
             content_hash: None,
+            ..Default::default()
         };
         state.on_job_start(uuid::Uuid::new_v4(), &first);
         let first_id = *state.running_jobs.keys().next().unwrap();
@@ -785,11 +788,13 @@ mod tests {
             path: "/tmp/a.mkv".into(),
             size: 10,
             content_hash: None,
+            ..Default::default()
         };
         let payload_b = crate::introspect::DiscoveredFilePayload {
             path: "/tmp/b.mkv".into(),
             size: 10,
             content_hash: None,
+            ..Default::default()
         };
 
         state.on_job_start(uuid::Uuid::new_v4(), &payload_a);
@@ -818,11 +823,13 @@ mod tests {
             path: "/tmp/c.mkv".into(),
             size: 10,
             content_hash: None,
+            ..Default::default()
         };
         let payload_d = crate::introspect::DiscoveredFilePayload {
             path: "/tmp/d.mkv".into(),
             size: 10,
             content_hash: None,
+            ..Default::default()
         };
         state.on_job_start(uuid::Uuid::new_v4(), &payload_c);
         state.on_job_start(uuid::Uuid::new_v4(), &payload_d);
