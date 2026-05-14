@@ -32,7 +32,7 @@ run_summary_failed_phase_test() {
     "${actual}/db-export" \
     "${actual}/diffs"
 
-  for log_name in doctor policy-validate scan; do
+  for log_name in env-check policy-validate scan; do
     printf '0\n' >"${actual}/logs/${log_name}.log.rc"
   done
 
@@ -77,6 +77,44 @@ EOF
 }
 
 run_summary_failed_phase_test
+
+run_summary_doctor_log_rc_compat_test() {
+  local actual
+  local summary
+
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  mkdir -p \
+    "${actual}/logs" \
+    "${actual}/reports" \
+    "${actual}/db-export" \
+    "${actual}/diffs"
+
+  for log_name in doctor policy-validate scan; do
+    printf '0\n' >"${actual}/logs/${log_name}.log.rc"
+  done
+
+  cat >"${actual}/diffs/files-summary.md" <<'EOF'
+# Snapshot Diff Summary
+
+Disappeared paths: 0
+Missing backup post-run: 0
+EOF
+
+  "lib/build-summary.sh" "${actual}" 0 0
+
+  summary="${actual}/summary.md"
+  if ! grep -Fq "All passed." "${summary}"; then
+    echo "FAIL: doctor.log.rc compatibility did not satisfy hard criteria" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_summary_doctor_log_rc_compat_test
 
 run_failure_clusters_test() {
   local actual

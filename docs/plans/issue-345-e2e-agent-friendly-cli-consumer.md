@@ -81,7 +81,7 @@ run_summary_jobs_json_straggler_test() {
     "${actual}/db-export" \
     "${actual}/diffs"
 
-  for log_name in doctor policy-validate scan; do
+  for log_name in env-check policy-validate scan; do
     printf '0\n' >"${actual}/logs/${log_name}.log.rc"
   done
 
