@@ -108,7 +108,7 @@ pub fn evaluate_with_phase_outputs<'a>(
         plans.push(plan);
     }
 
-    EvaluationResult { plans }
+    EvaluationResult::new(plans)
 }
 
 /// Evaluate a single phase of a compiled policy against a media file.

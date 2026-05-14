@@ -23,6 +23,13 @@ pub struct EvaluationResult {
     pub plans: Vec<Plan>,
 }
 
+impl EvaluationResult {
+    #[must_use]
+    pub fn new(plans: Vec<Plan>) -> Self {
+        Self { plans }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
