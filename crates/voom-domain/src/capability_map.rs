@@ -6,7 +6,7 @@ use crate::events::ExecutorCapabilitiesEvent;
 ///
 /// Built from `ExecutorCapabilitiesEvent`s emitted during plugin init.
 /// Used by the policy evaluator to validate plans against real capabilities.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CapabilityMap {
     executors: HashMap<String, ExecutorCapabilitiesEvent>,
 }
@@ -304,6 +304,14 @@ mod tests {
             vec!["drm".into()],
         ));
         assert_eq!(map.best_hwaccel(), "none");
+    }
+
+    #[test]
+    fn empty_capability_map_roundtrips() {
+        let original = CapabilityMap::default();
+        let json = serde_json::to_string(&original).expect("ser");
+        let back: CapabilityMap = serde_json::from_str(&json).expect("de");
+        assert_eq!(format!("{back:?}"), format!("{original:?}"));
     }
 
     #[test]
