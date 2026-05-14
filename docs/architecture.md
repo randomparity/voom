@@ -214,9 +214,28 @@ Records carry `plugin_id`, `event_type`, `started_at`, `duration_ms`, and an
 written in background batches and dropped if the bounded channel overflows —
 the bus must not block.
 
-**Coverage:** the dispatcher only times handlers invoked through
-`Plugin::on_event`. Pure publishers (plugins that emit events but don't
-subscribe to any) are not represented in `plugin_stats`.
+#### Coverage: subscribers only
+
+The dispatcher instruments only plugins that subscribe to events through
+the bus. Pure publishers — `discovery` (walks filesystem and emits
+`FileDiscovered`), `phase-orchestrator` (CLI-called, emits phase events),
+and `policy-evaluator` (CLI-called, emits `Plan` events) — emit events
+but never have their work timed at the dispatcher boundary.
+
+This is intentional for Deliverable 1 (#92):
+
+- The dispatcher's natural instrumentation point is the
+  `handler.on_event(...)` invocation. Publishers do not pass through it.
+- A publish-side timer (timing `bus.publish(event)`) would measure the
+  cost of dispatching to *other* plugins, not the publisher's own work.
+- A plugin self-reporting host API (e.g.
+  `PluginStats::record(key, value)`) is the right long-term primitive
+  but requires kernel + WASM surface that is out of scope for #92.
+
+For end-to-end visibility across publishers and subscribers, use the
+Deliverable-2 (Prometheus `/metrics`) and Deliverable-3 (OpenTelemetry)
+exporters that #92 builds toward. Issue #378 records this decision and
+the deferred work; a future host-API issue can revisit the trade-offs.
 
 ### Retention invariants
 
