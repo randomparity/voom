@@ -115,30 +115,35 @@ impl SqliteStatsSink {
         self.evicted.clone()
     }
 
-    /// Test-only constructor allowing a custom channel capacity to
-    /// deterministically exercise the overflow path. `capacity=0` produces a
-    /// rendezvous channel where every `try_send` fails unless the writer is
-    /// actively in `recv`.
-    pub(crate) fn with_capacity_for_tests(store: Arc<SqliteStore>, capacity: usize) -> Self {
+    /// Test-only constructor that builds a sink with a bounded channel of
+    /// the given capacity and returns the receiver to the caller — **no
+    /// writer thread is spawned**. The caller is responsible for keeping
+    /// the returned `Receiver` alive (so the channel stays in the `Full`
+    /// state rather than transitioning to `Disconnected`). With no
+    /// consumer draining, sends past `capacity` deterministically return
+    /// `Err(SendError::Full)` and `dropped_count` increments by exactly
+    /// one per excess send.
+    ///
+    /// This is the seam used by
+    /// `overflow_increments_dropped_counter_when_channel_full` so that
+    /// the assertion does not depend on thread scheduling — it removes
+    /// the writer entirely. The production `Drop` impl already handles
+    /// `writer: None` (it conditionally joins).
+    pub(crate) fn with_held_receiver_for_tests(
+        capacity: usize,
+    ) -> (Self, Receiver<PluginStatRecord>) {
         let (tx, rx) = sync_channel::<PluginStatRecord>(capacity);
         let dropped = Arc::new(AtomicU64::new(0));
         let failed_flushes = Arc::new(AtomicU64::new(0));
         let evicted = Arc::new(AtomicU64::new(0));
-        let writer = std::thread::Builder::new()
-            .name("voom-stats-writer-test".into())
-            .spawn({
-                let failed_flushes = failed_flushes.clone();
-                let evicted = evicted.clone();
-                move || writer_loop(rx, store, failed_flushes, evicted)
-            })
-            .expect("spawn voom-stats-writer-test thread");
-        Self {
+        let sink = Self {
             tx: Some(tx),
             dropped,
             failed_flushes,
             evicted,
-            writer: Some(writer),
-        }
+            writer: None,
+        };
+        (sink, rx)
     }
 }
 
@@ -382,24 +387,54 @@ mod tests {
 
     #[test]
     fn overflow_increments_dropped_counter_when_channel_full() {
-        // capacity=0 makes the channel "rendezvous": try_send succeeds only
-        // when a receiver is actively in recv. The writer thread oscillates
-        // between recv_timeout and a tiny in-body slice (push + cap_buffer),
-        // so a flood of try_sends will see the channel full whenever the
-        // writer is mid-body. We only assert the *contract* — that overflow
-        // bumps the counter — not a specific ratio, because the exact number
-        // of drops is purely scheduler-dependent (and prior tighter bounds
-        // flaked on faster CI runners).
-        let store = Arc::new(SqliteStore::in_memory().unwrap());
-        let sink = SqliteStatsSink::with_capacity_for_tests(store, 0);
-        for i in 0..10_000u64 {
+        // Deterministic overflow test: build a sink with a small bounded
+        // channel and NO writer thread. Hold the receiver alive so the
+        // channel reports `Full` (not `Disconnected`) past capacity. Every
+        // send past `CAP` MUST return `Err(SendError::Full)` because there
+        // is no consumer draining and the channel is fixed-size.
+        //
+        // Both `Full` and `Disconnected` are handled identically by the
+        // `record` path (`tx.try_send(...).is_err()` → `fetch_add(1)`), so
+        // exercising the `Full` branch covers the same bookkeeping the
+        // production overflow path takes.
+        //
+        // No `std::thread::sleep`, no thresholds, no scheduling. Adversarial
+        // review trail: see #384 for the prior flaky implementation.
+        const CAP: usize = 4;
+        const EXTRA: u64 = 10;
+
+        let (sink, _rx) = SqliteStatsSink::with_held_receiver_for_tests(CAP);
+
+        // Fill the channel exactly to capacity. With no consumer draining
+        // every one of these MUST succeed because each occupies a buffer
+        // slot.
+        for i in 0..CAP as u64 {
             sink.record(rec(i));
         }
-        assert!(
-            sink.dropped_count() > 0,
-            "expected at least one drop with rendezvous channel and 10k tight sends, got {}",
+        assert_eq!(
+            sink.dropped_count(),
+            0,
+            "no drops expected while the channel still has free slots"
+        );
+
+        // Every further send must be dropped: the channel is full, the
+        // receiver is alive but never consuming, so try_send returns
+        // `Err(Full)` deterministically.
+        for i in 0..EXTRA {
+            sink.record(rec(CAP as u64 + i));
+        }
+        assert_eq!(
+            sink.dropped_count(),
+            EXTRA,
+            "expected exactly {EXTRA} drops with channel at capacity and no consumer; got {}",
             sink.dropped_count()
         );
+
+        // `_rx` was held alive for the entirety of the test on purpose:
+        // dropping it earlier would transition the channel to
+        // `Disconnected`, which is still counted as a drop but is no
+        // longer a true overflow test.
+        drop(_rx);
     }
 
     #[test]
