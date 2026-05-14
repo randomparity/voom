@@ -98,6 +98,38 @@ impl SqliteStatsSink {
     }
 }
 
+#[cfg(test)]
+impl SqliteStatsSink {
+    /// Test-only constructor allowing a custom channel capacity to
+    /// deterministically exercise the overflow path. `capacity=0` produces a
+    /// rendezvous channel where every `try_send` fails unless the writer is
+    /// actively in `recv`.
+    pub(crate) fn with_capacity_for_tests(store: Arc<SqliteStore>, capacity: usize) -> Self {
+        let (tx, rx) = sync_channel::<PluginStatRecord>(capacity);
+        let dropped = Arc::new(AtomicU64::new(0));
+        let failed_flushes = Arc::new(AtomicU64::new(0));
+        let evicted = Arc::new(AtomicU64::new(0));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let writer = std::thread::Builder::new()
+            .name("voom-stats-writer-test".into())
+            .spawn({
+                let shutdown = shutdown.clone();
+                let failed_flushes = failed_flushes.clone();
+                let evicted = evicted.clone();
+                move || writer_loop(rx, store, shutdown, failed_flushes, evicted)
+            })
+            .expect("spawn voom-stats-writer-test thread");
+        Self {
+            tx: Some(tx),
+            dropped,
+            failed_flushes,
+            evicted,
+            shutdown,
+            writer: Some(writer),
+        }
+    }
+}
+
 impl StatsSink for SqliteStatsSink {
     fn record(&self, record: PluginStatRecord) {
         if let Some(tx) = &self.tx {
@@ -311,22 +343,40 @@ mod tests {
     }
 
     #[test]
-    fn channel_overflow_increments_dropped_counter() {
-        // Build a sink whose writer thread can't keep up: use a custom
-        // sink with capacity=1 by wrapping `new` internals.
-        // For simplicity, just spam records and assume some get dropped
-        // because the channel cap is 4096. To force overflow, send 100k.
+    fn channel_overflow_does_not_panic() {
+        // Smoke test: spamming record() at saturating speed must never panic,
+        // even when the bounded channel overflows. We cannot deterministically
+        // assert `dropped_count > 0` here because the writer-thread drain rate
+        // varies with hardware. See `overflow_increments_dropped_counter_when_channel_full`
+        // for deterministic overflow coverage.
         let store = Arc::new(SqliteStore::in_memory().unwrap());
         let sink = SqliteStatsSink::new(store);
         for i in 0..50_000u64 {
             sink.record(rec(i));
         }
         std::thread::sleep(Duration::from_millis(200));
-        // With channel capacity 4096 and 50k records sent in a tight loop,
-        // drops are inevitable — the writer thread cannot drain fast enough.
+        // No assertion beyond no-panic: dropped_count() is informational only.
+        let _ = sink.dropped_count();
+    }
+
+    #[test]
+    fn overflow_increments_dropped_counter_when_channel_full() {
+        // capacity=0 makes the channel "rendezvous": try_send succeeds only when
+        // a receiver is actively recv'ing. The writer thread is parked in
+        // recv_timeout for up to 500ms between iterations, so the overwhelming
+        // majority of these try_send calls will see a full channel and drop.
+        let store = Arc::new(SqliteStore::in_memory().unwrap());
+        let sink = SqliteStatsSink::with_capacity_for_tests(store, 0);
+        for i in 0..200u64 {
+            sink.record(rec(i));
+        }
+        // Allow scheduler slack: with capacity=0 and a single writer parked in
+        // recv_timeout, ≥150 of 200 try_sends must fail. Concrete number tuned
+        // to be robust against scheduler noise without becoming vacuous.
         assert!(
-            sink.dropped_count() > 0,
-            "expected some records to be dropped due to channel overflow"
+            sink.dropped_count() >= 150,
+            "expected at least 150 drops with rendezvous channel, got {}",
+            sink.dropped_count()
         );
     }
 
