@@ -40,13 +40,10 @@ use voom_kernel::stats_sink::StatsSink;
 use voom_sqlite_store::stats_sink::SqliteStatsSink;
 use voom_sqlite_store::store::SqliteStore;
 
-/// Subscriber count for both bench variants.
+/// Subscribers and events per Criterion sample for the lossless variant.
+/// 750 × 4 = 3000 records, comfortably under the 4096 channel capacity.
 const FANOUT_LOSSLESS: usize = 4;
-const FANOUT_SATURATED: usize = 5;
-
-/// Events per Criterion sample.
 const EVENTS_LOSSLESS: usize = 750;
-const EVENTS_SATURATED: usize = 10_000;
 
 /// No-op subscriber identical to the kernel bench's NoopSubscriber.
 struct NoopSubscriber {
@@ -106,13 +103,23 @@ fn bench_sqlite_sink(c: &mut Criterion) {
     let mut group = c.benchmark_group("stats_sink");
     group.sample_size(10);
 
-    // ─── Lossless variant ────────────────────────────────────────────
+    // ─── Lossless full-path variant ──────────────────────────────────
     //
     // 750 × 4 = 3000 records < 4096 channel capacity. The bench keeps
-    // concrete handles to the sink and store, drops the sink to join
-    // the writer thread, then verifies that every record persisted
-    // with zero drops and zero failed flushes. This proves the bench
-    // is exercising the full happy path.
+    // concrete handles to the sink and store, drops the bus FIRST
+    // (releasing its Arc<dyn StatsSink>), then drops the sink (which
+    // releases the only remaining Arc, triggering SqliteStatsSink::Drop
+    // and joining the writer thread). After that the rollup is read
+    // and we verify every record persisted with zero drops, zero
+    // failed flushes, and zero evictions. This is the trustworthy
+    // measurement of the full happy path.
+    //
+    // The drop ordering is load-bearing: the bus holds its own
+    // `Arc<dyn StatsSink>` that points at the same `SqliteStatsSink`,
+    // so `drop(sink)` while the bus is alive would only decrement the
+    // Arc refcount — the writer would not join and the final batch
+    // would still be in flight when `count_persisted` runs. (Codex
+    // review, May 2026.)
     group.bench_function("sqlite_sink_lossless_3k_fanout4", |b| {
         b.iter_batched(
             || {
@@ -123,12 +130,15 @@ fn bench_sqlite_sink(c: &mut Criterion) {
             },
             |(bus, sink, store)| {
                 dispatch_batch(&bus, EVENTS_LOSSLESS);
-                // Read the live-side counters before drop.
+                // Read live-side counters before any drop.
                 let dropped_before = sink.dropped_count();
                 let failed_before = sink.failed_flush_count();
                 let evicted_before = sink.evicted_count();
-                // Force shutdown so the writer joins and the final
-                // flush is observed.
+                // Drop the bus FIRST so it releases its Arc<dyn StatsSink>.
+                drop(bus);
+                // Now `sink` is the sole owner of the SqliteStatsSink;
+                // dropping it triggers Drop → close channel → writer
+                // thread joins after flushing.
                 drop(sink);
                 let persisted = count_persisted(&store);
                 let expected = (EVENTS_LOSSLESS * FANOUT_LOSSLESS) as u64;
@@ -154,35 +164,15 @@ fn bench_sqlite_sink(c: &mut Criterion) {
         );
     });
 
-    // ─── Saturated variant ───────────────────────────────────────────
-    //
-    // 10000 × 5 = 50000 records ≫ 4096 channel capacity. The production
-    // drop path is exercised. This bench measures the cost of
-    // try_send + counter bookkeeping under sustained overflow — it
-    // does NOT measure end-to-end persistence and would mis-report if
-    // claimed to.
-    group.bench_function("sqlite_sink_saturated_10k_fanout5", |b| {
-        b.iter_batched(
-            || {
-                let store = Arc::new(SqliteStore::in_memory().expect("in-memory sqlite store"));
-                let sink = Arc::new(SqliteStatsSink::new(store));
-                let bus = build_bus(sink.clone() as Arc<dyn StatsSink>, FANOUT_SATURATED);
-                (bus, sink)
-            },
-            |(bus, sink)| {
-                dispatch_batch(&bus, EVENTS_SATURATED);
-                let dropped = sink.dropped_count();
-                drop(sink);
-                assert!(
-                    dropped > 0,
-                    "saturated variant is expected to overflow the channel; \
-                     got {dropped} drops with {EVENTS_SATURATED} × {FANOUT_SATURATED} \
-                     records vs 4096 channel capacity"
-                );
-            },
-            BatchSize::LargeInput,
-        );
-    });
+    // NOTE: a saturated-channel variant (50000 events ≫ 4096 capacity)
+    // was considered but dropped — the writer drains concurrently and
+    // assertions on `dropped > 0` are scheduler-dependent (see the
+    // existing `stats_sink.rs::channel_overflow_does_not_panic` smoke
+    // test and the #384 history). The lossless variant above covers
+    // the production happy path; the drop path is covered
+    // deterministically by the
+    // `overflow_increments_dropped_counter_when_channel_full` unit
+    // test (#384) using a held-receiver no-writer seam.
 
     group.finish();
 }
