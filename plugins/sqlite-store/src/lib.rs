@@ -1,7 +1,10 @@
 //! `SQLite` storage plugin: persistent storage for files, tracks, jobs, plans, and plugin data.
 
 pub mod schema;
+pub mod stats_sink;
 pub mod store;
+
+pub use stats_sink::SqliteStatsSink;
 
 use std::sync::Arc;
 
