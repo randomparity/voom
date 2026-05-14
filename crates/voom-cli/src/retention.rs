@@ -55,9 +55,10 @@ impl RetentionRunner {
         table_retention_to_policy(&self.config.jobs).is_disabled()
             && table_retention_to_policy(&self.config.event_log).is_disabled()
             && table_retention_to_policy(&self.config.file_transitions).is_disabled()
+            && table_retention_to_policy(&self.config.plugin_stats).is_disabled()
     }
 
-    /// Run all three table prunes, log results, and emit `RetentionCompletedEvent`.
+    /// Run all four table prunes, log results, and emit `RetentionCompletedEvent`.
     pub fn run_once(&self, trigger: RetentionTrigger) -> RetentionSummary {
         let start = Instant::now();
         let per_table: Vec<(String, anyhow::Result<PruneReport>)> = vec![
@@ -67,6 +68,7 @@ impl RetentionRunner {
                 "file_transitions".to_string(),
                 self.prune_file_transitions(),
             ),
+            ("plugin_stats".to_string(), self.prune_plugin_stats()),
         ];
 
         let duration = start.elapsed();
@@ -120,6 +122,7 @@ impl RetentionRunner {
                 "file_transitions".to_string(),
                 self.count_file_transitions(),
             ),
+            ("plugin_stats".to_string(), self.count_plugin_stats()),
         ];
         RetentionSummary {
             per_table,
@@ -155,6 +158,16 @@ impl RetentionRunner {
     fn count_file_transitions(&self) -> anyhow::Result<PruneReport> {
         let policy = table_retention_to_policy(&self.config.file_transitions);
         Ok(self.store.count_old_file_transitions(policy)?)
+    }
+
+    fn prune_plugin_stats(&self) -> anyhow::Result<PruneReport> {
+        let policy = table_retention_to_policy(&self.config.plugin_stats);
+        Ok(self.store.prune_old_plugin_stats(policy)?)
+    }
+
+    fn count_plugin_stats(&self) -> anyhow::Result<PruneReport> {
+        let policy = table_retention_to_policy(&self.config.plugin_stats);
+        Ok(self.store.count_old_plugin_stats(policy)?)
     }
 }
 
@@ -207,7 +220,7 @@ mod tests {
         let store: Arc<dyn voom_domain::storage::StorageTrait> = Arc::new(InMemoryStore::new());
         let runner = RetentionRunner::new(store, RetentionConfig::default(), None);
         let summary = runner.run_once(RetentionTrigger::OnDemand);
-        assert_eq!(summary.per_table.len(), 3);
+        assert_eq!(summary.per_table.len(), 4);
         assert!(summary.per_table.iter().all(|(_, r)| r.is_ok()));
     }
 
@@ -220,7 +233,8 @@ mod tests {
         let config = RetentionConfig {
             jobs: zero.clone(),
             event_log: zero.clone(),
-            file_transitions: zero,
+            file_transitions: zero.clone(),
+            plugin_stats: zero,
             ..RetentionConfig::default()
         };
         let store: Arc<dyn voom_domain::storage::StorageTrait> = Arc::new(InMemoryStore::new());
@@ -233,5 +247,33 @@ mod tests {
         let store: Arc<dyn voom_domain::storage::StorageTrait> = Arc::new(InMemoryStore::new());
         let runner = RetentionRunner::new(store, RetentionConfig::default(), None);
         assert!(!runner.is_fully_disabled());
+    }
+
+    #[test]
+    fn run_once_returns_four_table_results() {
+        let store: Arc<dyn voom_domain::storage::StorageTrait> = Arc::new(InMemoryStore::new());
+        let runner = RetentionRunner::new(store, RetentionConfig::default(), None);
+        let summary = runner.run_once(RetentionTrigger::OnDemand);
+        assert_eq!(summary.per_table.len(), 4);
+        let names: Vec<&str> = summary.per_table.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"plugin_stats"));
+    }
+
+    #[test]
+    fn is_fully_disabled_includes_plugin_stats() {
+        let zero = TableRetention {
+            keep_for_days: Some(0),
+            keep_last: Some(0),
+        };
+        let config = RetentionConfig {
+            jobs: zero.clone(),
+            event_log: zero.clone(),
+            file_transitions: zero.clone(),
+            plugin_stats: zero,
+            ..RetentionConfig::default()
+        };
+        let store: Arc<dyn voom_domain::storage::StorageTrait> = Arc::new(InMemoryStore::new());
+        let runner = RetentionRunner::new(store, config, None);
+        assert!(runner.is_fully_disabled());
     }
 }

@@ -273,21 +273,17 @@ mod tests {
         use std::sync::Arc;
         use voom_domain::test_support::InMemoryStore;
 
+        let zero = crate::config::TableRetention {
+            keep_for_days: Some(0),
+            keep_last: Some(0),
+        };
         let cfg = crate::config::RetentionConfig {
             schedule_interval_minutes: 60,
             run_after_cli: true,
-            jobs: crate::config::TableRetention {
-                keep_for_days: Some(0),
-                keep_last: Some(0),
-            },
-            event_log: crate::config::TableRetention {
-                keep_for_days: Some(0),
-                keep_last: Some(0),
-            },
-            file_transitions: crate::config::TableRetention {
-                keep_for_days: Some(0),
-                keep_last: Some(0),
-            },
+            jobs: zero.clone(),
+            event_log: zero.clone(),
+            file_transitions: zero.clone(),
+            plugin_stats: zero,
         };
 
         let store: Arc<dyn voom_domain::storage::StorageTrait> = Arc::new(InMemoryStore::new());

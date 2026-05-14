@@ -77,6 +77,12 @@ impl TableRetention {
             keep_last: Some(500_000),
         }
     }
+    fn for_plugin_stats() -> Self {
+        Self {
+            keep_for_days: Some(30),
+            keep_last: Some(100_000),
+        }
+    }
 }
 
 /// Top-level retention configuration.
@@ -92,6 +98,8 @@ pub struct RetentionConfig {
     pub event_log: TableRetention,
     #[serde(default = "TableRetention::for_file_transitions")]
     pub file_transitions: TableRetention,
+    #[serde(default = "TableRetention::for_plugin_stats")]
+    pub plugin_stats: TableRetention,
 }
 
 impl Default for RetentionConfig {
@@ -102,6 +110,7 @@ impl Default for RetentionConfig {
             jobs: TableRetention::for_jobs(),
             event_log: TableRetention::for_event_log(),
             file_transitions: TableRetention::for_file_transitions(),
+            plugin_stats: TableRetention::for_plugin_stats(),
         }
     }
 }
