@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import re
 from pathlib import Path
@@ -44,25 +43,44 @@ def normalized_result(result: str) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def split_line_ending(line: str) -> tuple[str, str]:
+    if line.endswith("\r\n"):
+        return line[:-2], "\r\n"
+    if line.endswith("\n"):
+        return line[:-1], "\n"
+    return line, ""
+
+
 def normalize_plans(input_path: Path, output_path: Path) -> None:
     with input_path.open(newline="") as src, output_path.open("w", newline="") as dst:
-        reader = csv.DictReader(src, delimiter="\t")
-        if reader.fieldnames is None:
-            dst.write("")
+        header = src.readline()
+        if not header:
             return
 
-        writer = csv.DictWriter(
-            dst,
-            fieldnames=reader.fieldnames,
-            delimiter="\t",
-            lineterminator="\n",
-        )
-        writer.writeheader()
+        dst.write(header)
+        header_body, _ = split_line_ending(header)
+        columns = header_body.split("\t")
+        try:
+            result_index = columns.index("result")
+        except ValueError:
+            for line in src:
+                dst.write(line)
+            return
 
-        for row in reader:
-            if "result" in row and row["result"] is not None:
-                row["result"] = normalized_result(row["result"])
-            writer.writerow(row)
+        for line in src:
+            body, ending = split_line_ending(line)
+            fields = body.split("\t")
+            if len(fields) <= result_index:
+                dst.write(line)
+                continue
+
+            normalized = normalized_result(fields[result_index])
+            if normalized == fields[result_index]:
+                dst.write(line)
+                continue
+
+            fields[result_index] = normalized
+            dst.write("\t".join(fields) + ending)
 
 
 def main() -> int:

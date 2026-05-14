@@ -617,6 +617,9 @@ run_ffmpeg_stderr_normalize_test() {
 id	file_id	phase_name	status	result	executed_at
 plan-1	file-1	transcode-video	failed	{"detail":{"stderr_tail":"frame= 1 fps=0.0 q=28.0 size=1k time=00:00:01 bitrate=8.0kbits/s speed=1x\rframe= 2 fps=1.0 q=28.0 size=2k time=00:00:02 bitrate=8.0kbits/s speed=1x\rCUDA_ERROR_OUT_OF_MEMORY\nConversion failed"},"error":"ffmpeg exited with exit status: 187"}	2026-05-14T10:00:00Z
 plan-2	file-2	transcode-video	completed	{"ok":true}	2026-05-14T10:01:00Z
+plan-3	file-3	transcode-video	failed	"not-json"	2026-05-14T10:02:00Z
+plan-4	file-4	transcode-video	failed	{"detail":{"other":"unchanged"}}	2026-05-14T10:03:00Z
+plan-5	file-5	transcode-video	failed	{"detail":{"stderr_tail":123}}	2026-05-14T10:04:00Z
 EOF
 
   "lib/ffmpeg-stderr-normalize.py" "${actual}/plans.tsv" "${actual}/plans-normalized.tsv"
@@ -629,6 +632,9 @@ EOF
     echo "FAIL: non-progress stderr lines were not preserved" >&2
     fail=1
   fi
+  sed -n '4,6p' "${actual}/plans.tsv" >"${actual}/expected-unchanged.tsv"
+  sed -n '4,6p' "${actual}/plans-normalized.tsv" >"${actual}/actual-unchanged.tsv"
+  assert_match "${actual}/actual-unchanged.tsv" "${actual}/expected-unchanged.tsv"
 
   rm -R "${actual}"
   trap - EXIT
