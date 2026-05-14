@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use tokio_util::sync::CancellationToken;
 
-use crate::app;
 use crate::cli::{ErrorHandling, EstimateArgs, ProcessArgs};
 
 pub async fn run(args: EstimateArgs, quiet: bool, token: CancellationToken) -> Result<()> {
@@ -46,8 +45,14 @@ impl EstimateArgs {
 }
 
 async fn calibrate(args: &EstimateArgs) -> Result<()> {
+    // Same anti-pattern fix as `voom plugin stats` (commit de69c75):
+    // `calibrate` only inserts cost-model samples; it does not dispatch
+    // events. Using `bootstrap_kernel_with_store` here would register
+    // plugins and fire init events through the bus, contaminating
+    // `plugin_stats` and `event_log` with bookkeeping from this
+    // read-mostly path.
     let config = crate::config::load_config()?;
-    let app::BootstrapResult { store, .. } = crate::app::bootstrap_kernel_with_store(&config)?;
+    let store = crate::app::open_store(&config)?;
     let completed_at = chrono::Utc::now();
     let samples = if let Some(corpus) = &args.benchmark_corpus {
         let result = benchmark_calibration_samples(corpus, args.max_fixtures)?;
