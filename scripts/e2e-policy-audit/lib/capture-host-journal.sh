@@ -24,5 +24,5 @@ capture_command() {
 
 capture_command "${out_dir}/journal.log" journalctl --since "${START_TS}" -p warning --no-pager
 capture_command "${out_dir}/dmesg.log" dmesg --time-format=iso
-capture_command "${out_dir}/dnf-history.txt" dnf history list --since "${START_DATE}"
+capture_command "${out_dir}/dnf-history.txt" dnf history list
 capture_command "${out_dir}/rpm-recently-changed.txt" bash -c 'rpm -qa --last | head -100'

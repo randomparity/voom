@@ -11,6 +11,7 @@ JOB_STATUS_RE = re.compile(
     r"(?<![\w-])(running|pending|completed|failed|cancelled|skipped)(?![\w-])",
     re.IGNORECASE,
 )
+JOBS_TOTAL_RE = re.compile(r"\bShowing\s+\d+\s+of\s+(\d+)\s+jobs\b", re.IGNORECASE)
 
 
 def jobs_section_lines(text: str) -> list[str]:
@@ -26,8 +27,14 @@ def jobs_section_lines(text: str) -> list[str]:
 
 
 def count_job_rows(text: str) -> int:
+    jobs_lines = jobs_section_lines(text)
+    for line in jobs_lines:
+        match = JOBS_TOTAL_RE.search(line)
+        if match:
+            return int(match.group(1))
+
     count = 0
-    for line in jobs_section_lines(text):
+    for line in jobs_lines:
         stripped = line.strip()
         if not stripped:
             continue

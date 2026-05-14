@@ -379,6 +379,55 @@ EOF
 
 run_runtime_timeline_zero_jobs_no_stall_test
 
+run_runtime_timeline_uses_jobs_total_footer_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/runtime" "${actual}/diffs"
+
+  cat >"${actual}/runtime/0001.txt" <<'EOF'
+timestamp: 2026-05-13T10:00:00-07:00
+
+## voom jobs list tail
+
+$ bash -c '/tmp/fake-voom jobs list 2>/dev/null | tail -20'
+
+job-a running
+job-b pending
+Showing 20 of 100 jobs. Use --limit, --offset, or --status to narrow results.
+EOF
+
+  cat >"${actual}/runtime/0002.txt" <<'EOF'
+timestamp: 2026-05-13T10:05:00-07:00
+
+## voom jobs list tail
+
+$ bash -c '/tmp/fake-voom jobs list 2>/dev/null | tail -20'
+
+job-a running
+job-b pending
+Showing 20 of 120 jobs. Use --limit, --offset, or --status to narrow results.
+EOF
+
+  "lib/runtime-timeline.py" "${actual}/runtime" "${actual}/diffs/runtime-timeline.md" \
+    --job-stall-samples 2
+
+  if grep -Fq "jobs list row count stalled" "${actual}/diffs/runtime-timeline.md"; then
+    echo "FAIL: increasing total job count should not emit a job stall transition" >&2
+    fail=1
+  fi
+  if ! grep -Fq "| 2 | 2026-05-13T10:05:00-07:00 | 0 | 0% | 120 |" \
+    "${actual}/diffs/runtime-timeline.md"; then
+    echo "FAIL: runtime timeline did not use jobs list total footer" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_runtime_timeline_uses_jobs_total_footer_test
+
 run_runtime_timeline_missing_dir_test() {
   local actual
   local stderr
