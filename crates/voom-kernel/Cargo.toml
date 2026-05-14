@@ -14,6 +14,7 @@ description = "Core kernel for VOOM — event bus, plugin registry, and capabili
 [dependencies]
 voom-domain = { workspace = true }
 voom-wit = { workspace = true }
+chrono = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }
@@ -39,5 +40,4 @@ tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
 tempfile = { workspace = true }
-chrono = { workspace = true }
 voom-domain = { workspace = true, features = ["testing"] }

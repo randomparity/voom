@@ -10,6 +10,7 @@ pub mod host_types;
 pub mod job;
 pub mod media;
 pub mod plan;
+pub mod plugin_stats;
 pub mod safeguard;
 pub mod scan_session_mutations;
 pub mod snapshot;

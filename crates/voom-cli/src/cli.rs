@@ -428,6 +428,21 @@ pub enum PluginCommands {
         /// Path to .wasm file
         path: PathBuf,
     },
+    /// Show per-plugin invocation rollup (p50/p95/p99, outcome counts).
+    Stats {
+        /// Filter to a single plugin by name.
+        #[arg(long)]
+        plugin: Option<String>,
+        /// Look back this far (e.g. "24h", "7d", "30m").
+        #[arg(long)]
+        since: Option<String>,
+        /// Show only the top N slowest plugins (by p95).
+        #[arg(long)]
+        top: Option<usize>,
+        /// Output format
+        #[arg(short, long, default_value = "table")]
+        format: OutputFormat,
+    },
 }
 
 // === Jobs ===

@@ -237,6 +237,19 @@ impl TestEnv {
         &self.primary_root
     }
 
+    /// Return the path to the SQLite database (`<data_dir>/voom.db`).
+    pub fn db_path(&self) -> PathBuf {
+        self.data_dir.join("voom.db")
+    }
+
+    /// Return the config home directory (`<tmp>/config`).
+    ///
+    /// Set `XDG_CONFIG_HOME` to this path to isolate a scan run that calls
+    /// `config::load_config` directly (e.g. `commands::scan::run`).
+    pub fn config_home(&self) -> &Path {
+        &self.config_home
+    }
+
     /// Write a synthetic media file at `<root>/<name>` with `size` bytes.
     ///
     /// Content is a repeating byte pattern derived from the file name so
@@ -500,13 +513,13 @@ fn path_from_payload(payload: Option<&serde_json::Value>) -> PathBuf {
 /// test must run with `--test-threads=1` or be wrapped in a per-test mutex.
 /// The acceptance tests call `run_process` sequentially within a single async
 /// test body, which is safe.
-struct EnvOverride {
+pub struct EnvOverride {
     key: &'static str,
     prior: Option<std::ffi::OsString>,
 }
 
 impl EnvOverride {
-    fn set(key: &'static str, value: &str) -> Self {
+    pub fn set(key: &'static str, value: &str) -> Self {
         let prior = std::env::var_os(key);
         // SAFETY: single-threaded test context; see struct-level note.
         #[allow(unused_unsafe)]

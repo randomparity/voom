@@ -77,6 +77,12 @@ impl TableRetention {
             keep_last: Some(500_000),
         }
     }
+    fn for_plugin_stats() -> Self {
+        Self {
+            keep_for_days: Some(30),
+            keep_last: Some(100_000),
+        }
+    }
 }
 
 /// Top-level retention configuration.
@@ -92,6 +98,8 @@ pub struct RetentionConfig {
     pub event_log: TableRetention,
     #[serde(default = "TableRetention::for_file_transitions")]
     pub file_transitions: TableRetention,
+    #[serde(default = "TableRetention::for_plugin_stats")]
+    pub plugin_stats: TableRetention,
 }
 
 impl Default for RetentionConfig {
@@ -102,6 +110,7 @@ impl Default for RetentionConfig {
             jobs: TableRetention::for_jobs(),
             event_log: TableRetention::for_event_log(),
             file_transitions: TableRetention::for_file_transitions(),
+            plugin_stats: TableRetention::for_plugin_stats(),
         }
     }
 }
@@ -388,9 +397,10 @@ mode = "always_recover"
 [pruning]
 retention_days = 30
 
-# Database retention. Bounds the size of jobs, event_log, and file_transitions
-# to keep the database from growing forever. Set keep_for_days = 0 and keep_last = 0
-# for any table to disable retention for that table.
+# Database retention. Bounds the size of jobs, event_log, file_transitions,
+# and plugin_stats to keep the database from growing forever. Set
+# keep_for_days = 0 and keep_last = 0 for any table to disable retention for
+# that table.
 #
 # Invariant: event_log must outlive jobs by ~10x on both axes. Each job row
 # produces ~7 event_log rows (file.discovered, file.introspected, three
@@ -417,6 +427,10 @@ keep_last = 500000
 [retention.file_transitions]
 keep_for_days = 90
 keep_last = 500000
+
+[retention.plugin_stats]
+keep_for_days = 30
+keep_last = 100000
 "#
     )
 }
@@ -650,6 +664,7 @@ mod tests {
         assert!(contents.contains("[retention.jobs]"));
         assert!(contents.contains("[retention.event_log]"));
         assert!(contents.contains("[retention.file_transitions]"));
+        assert!(contents.contains("[retention.plugin_stats]"));
     }
 
     // ── load_config with temp files ──────────────────────────

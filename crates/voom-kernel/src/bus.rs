@@ -1,10 +1,13 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use std::time::Instant;
 
 use parking_lot::RwLock;
 use voom_domain::events::{Event, EventResult, PluginErrorEvent};
+use voom_domain::plugin_stats::{PluginInvocationOutcome, PluginStatRecord};
 
 use crate::Plugin;
+use crate::stats_sink::{NoopStatsSink, StatsSink};
 
 /// Maximum recursion depth for event cascading to prevent infinite loops.
 const MAX_CASCADE_DEPTH: u8 = 8;
@@ -13,6 +16,35 @@ struct Subscriber {
     plugin_name: String,
     priority: i32,
     handler: Arc<dyn Plugin>,
+}
+
+/// Map a `VoomError` to a fixed low-cardinality label for stats recording.
+///
+/// Every match arm returns a `'static` string literal; the `.to_string()` call
+/// converts it to the `String` expected by `PluginInvocationOutcome::Err`.
+/// The catch-all `_ => "unknown"` handles future `#[non_exhaustive]` variants
+/// without breaking existing metrics pipelines.
+fn error_category(err: &voom_domain::errors::VoomError) -> String {
+    use voom_domain::errors::{StorageErrorKind, VoomError};
+    match err {
+        VoomError::Plugin { .. } => "plugin",
+        VoomError::Wasm(_) => "wasm",
+        VoomError::Storage { kind, .. } => match kind {
+            StorageErrorKind::ConstraintViolation => "storage.constraint",
+            StorageErrorKind::NotFound => "storage.not_found",
+            StorageErrorKind::Other => "storage.other",
+            _ => "storage.other",
+        },
+        VoomError::ToolNotFound { .. } => "tool_not_found",
+        VoomError::ToolExecution { .. } => "tool_execution",
+        VoomError::Validation(_) => "validation",
+        VoomError::Io(_) => "io",
+        VoomError::Other(_) => "other",
+        // `VoomError` is `#[non_exhaustive]`. Any new variant gets a stable
+        // bucket until someone adds a dedicated label here.
+        _ => "unknown",
+    }
+    .to_string()
 }
 
 /// Create an error `EventResult` for a plugin failure (error or panic).
@@ -38,14 +70,29 @@ fn make_error_result(plugin_name: String, event_type: &str, error: String) -> Ev
 /// a fixed depth limit to prevent infinite loops.
 pub struct EventBus {
     subscribers: RwLock<Vec<Subscriber>>,
+    stats_sink: RwLock<Arc<dyn StatsSink>>,
 }
 
 impl EventBus {
     #[must_use]
     pub fn new() -> Self {
+        Self::with_stats_sink(Arc::new(NoopStatsSink))
+    }
+
+    #[must_use]
+    pub fn with_stats_sink(sink: Arc<dyn StatsSink>) -> Self {
         Self {
             subscribers: RwLock::new(Vec::new()),
+            stats_sink: RwLock::new(sink),
         }
+    }
+
+    /// Replace the active stats sink. Intended for one-shot wiring at
+    /// bootstrap once the SQLite handle is available; callers may also
+    /// install a Noop sink to disable recording at runtime. Cheap to call
+    /// (one write lock acquisition); not a hot path.
+    pub fn set_stats_sink(&self, sink: Arc<dyn StatsSink>) {
+        *self.stats_sink.write() = sink;
     }
 
     /// Register a plugin at the given priority (lower = earlier dispatch).
@@ -102,9 +149,31 @@ impl EventBus {
                 .collect()
         };
 
+        // Snapshot the sink once per dispatch. Read-only access from this point on.
+        let sink: Arc<dyn StatsSink> = self.stats_sink.read().clone();
+
         let mut results = Vec::new();
         for (name, handler) in handlers {
+            let started_at = chrono::Utc::now();
+            let timer = Instant::now();
             let handler_result = catch_unwind(AssertUnwindSafe(|| handler.on_event(&event)));
+            let duration_ms = u64::try_from(timer.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+            let outcome = match &handler_result {
+                Ok(Ok(Some(_))) => PluginInvocationOutcome::Ok,
+                Ok(Ok(None)) => PluginInvocationOutcome::Skipped,
+                Ok(Err(e)) => PluginInvocationOutcome::Err {
+                    category: error_category(e),
+                },
+                Err(_) => PluginInvocationOutcome::Panic,
+            };
+            sink.record(PluginStatRecord {
+                plugin_id: name.clone(),
+                event_type: event_type.clone(),
+                started_at,
+                duration_ms,
+                outcome,
+            });
 
             match handler_result {
                 Ok(Ok(Some(result))) => {
@@ -684,6 +753,220 @@ mod tests {
         assert_eq!(results[0].plugin_name, "first");
         assert_eq!(results[1].plugin_name, "second");
         assert_eq!(results[2].plugin_name, "third");
+    }
+
+    // --- StatsSink instrumentation tests ---
+
+    use crate::stats_sink::StatsSink;
+    use std::sync::Mutex;
+    use voom_domain::plugin_stats::{PluginInvocationOutcome, PluginStatRecord};
+
+    #[derive(Default)]
+    struct RecordingSink {
+        records: Mutex<Vec<PluginStatRecord>>,
+    }
+
+    impl StatsSink for RecordingSink {
+        fn record(&self, record: PluginStatRecord) {
+            self.records.lock().unwrap().push(record);
+        }
+    }
+
+    #[test]
+    fn dispatcher_records_ok_outcome() {
+        let sink = Arc::new(RecordingSink::default());
+        let bus = EventBus::with_stats_sink(sink.clone());
+        bus.subscribe_plugin(
+            Arc::new(TestPlugin::new("ok-plugin", &[Event::FILE_DISCOVERED])),
+            0,
+        );
+
+        let event = Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            Some("abc".into()),
+        ));
+        bus.publish(event);
+
+        let recs = sink.records.lock().unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].plugin_id, "ok-plugin");
+        assert_eq!(recs[0].event_type, "file.discovered");
+        assert!(matches!(recs[0].outcome, PluginInvocationOutcome::Ok));
+    }
+
+    #[test]
+    fn dispatcher_records_skipped_outcome_when_plugin_returns_none() {
+        let sink = Arc::new(RecordingSink::default());
+        let bus = EventBus::with_stats_sink(sink.clone());
+
+        struct Decliner;
+        impl Plugin for Decliner {
+            fn name(&self) -> &str {
+                "decliner"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[]
+            }
+            fn handles(&self, event_type: &str) -> bool {
+                event_type == Event::FILE_DISCOVERED
+            }
+            fn on_event(&self, _event: &Event) -> voom_domain::errors::Result<Option<EventResult>> {
+                Ok(None)
+            }
+        }
+
+        bus.subscribe_plugin(Arc::new(Decliner), 0);
+        bus.publish(Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            Some("abc".into()),
+        )));
+
+        let recs = sink.records.lock().unwrap();
+        assert_eq!(recs.len(), 1);
+        assert!(matches!(recs[0].outcome, PluginInvocationOutcome::Skipped));
+    }
+
+    #[test]
+    fn dispatcher_records_err_outcome_with_category() {
+        let sink = Arc::new(RecordingSink::default());
+        let bus = EventBus::with_stats_sink(sink.clone());
+        bus.subscribe_plugin(
+            Arc::new(ErrorPlugin {
+                name: "bad".into(),
+                handled_types: vec![Event::FILE_DISCOVERED.into()],
+            }),
+            0,
+        );
+
+        bus.publish(Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            Some("abc".into()),
+        )));
+
+        let recs = sink.records.lock().unwrap();
+        assert_eq!(recs.len(), 1);
+        assert!(matches!(
+            &recs[0].outcome,
+            PluginInvocationOutcome::Err { category } if !category.is_empty()
+        ));
+    }
+
+    #[test]
+    fn dispatcher_records_panic_outcome() {
+        let sink = Arc::new(RecordingSink::default());
+        let bus = EventBus::with_stats_sink(sink.clone());
+        bus.subscribe_plugin(
+            Arc::new(PanickingPlugin::new("panicker", &[Event::FILE_DISCOVERED])),
+            0,
+        );
+
+        bus.publish(Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            Some("abc".into()),
+        )));
+
+        let recs = sink.records.lock().unwrap();
+        assert_eq!(recs.len(), 1);
+        assert!(matches!(recs[0].outcome, PluginInvocationOutcome::Panic));
+    }
+
+    #[test]
+    fn dispatcher_records_each_handler_separately() {
+        let sink = Arc::new(RecordingSink::default());
+        let bus = EventBus::with_stats_sink(sink.clone());
+        bus.subscribe_plugin(Arc::new(TestPlugin::new("a", &[Event::FILE_DISCOVERED])), 0);
+        bus.subscribe_plugin(
+            Arc::new(TestPlugin::new("b", &[Event::FILE_DISCOVERED])),
+            10,
+        );
+
+        bus.publish(Event::FileDiscovered(FileDiscoveredEvent::new(
+            "/test.mkv".into(),
+            1024,
+            Some("abc".into()),
+        )));
+
+        let recs = sink.records.lock().unwrap();
+        assert_eq!(recs.len(), 2);
+        assert_eq!(recs[0].plugin_id, "a");
+        assert_eq!(recs[1].plugin_id, "b");
+    }
+
+    // --- error_category unit tests ---
+
+    #[test]
+    fn error_category_returns_fixed_labels_for_each_variant() {
+        use std::io;
+        use voom_domain::errors::{StorageErrorKind, VoomError};
+
+        assert_eq!(
+            super::error_category(&VoomError::Plugin {
+                plugin: "x".into(),
+                message: "/secret/path leaked".into(),
+            }),
+            "plugin"
+        );
+        assert_eq!(
+            super::error_category(&VoomError::Wasm("/secret/path leaked".into())),
+            "wasm"
+        );
+        assert_eq!(
+            super::error_category(&VoomError::Storage {
+                kind: StorageErrorKind::ConstraintViolation,
+                message: "unique violation on /home/user/file.mkv".into(),
+            }),
+            "storage.constraint"
+        );
+        assert_eq!(
+            super::error_category(&VoomError::Storage {
+                kind: StorageErrorKind::NotFound,
+                message: "x".into(),
+            }),
+            "storage.not_found"
+        );
+        assert_eq!(
+            super::error_category(&VoomError::Storage {
+                kind: StorageErrorKind::Other,
+                message: "x".into(),
+            }),
+            "storage.other"
+        );
+        assert_eq!(
+            super::error_category(&VoomError::ToolNotFound {
+                tool: "ffprobe".into()
+            }),
+            "tool_not_found"
+        );
+        assert_eq!(
+            super::error_category(&VoomError::ToolExecution {
+                tool: "ffmpeg".into(),
+                message: "exit 1".into(),
+            }),
+            "tool_execution"
+        );
+        assert_eq!(
+            super::error_category(&VoomError::Validation("user typed bad input".into())),
+            "validation"
+        );
+        let io_err: VoomError = io::Error::new(io::ErrorKind::NotFound, "gone").into();
+        assert_eq!(super::error_category(&io_err), "io");
+    }
+
+    #[test]
+    fn error_category_label_does_not_contain_message_text() {
+        use voom_domain::errors::VoomError;
+        let secret = "/home/alice/private/diary.txt";
+        let err = VoomError::Validation(secret.into());
+        let cat = super::error_category(&err);
+        assert!(!cat.contains("alice"), "category leaks user input: {cat}");
+        assert!(!cat.contains("diary"), "category leaks filename: {cat}");
     }
 
     #[test]

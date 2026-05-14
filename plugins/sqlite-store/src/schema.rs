@@ -321,6 +321,21 @@ CREATE TABLE IF NOT EXISTS scan_session_mutations (
 
 CREATE INDEX IF NOT EXISTS idx_scan_session_mutations_session
     ON scan_session_mutations(session_id);
+
+CREATE TABLE IF NOT EXISTS plugin_stats (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    plugin_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    outcome TEXT NOT NULL,
+    error_category TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_stats_started
+    ON plugin_stats(started_at);
+CREATE INDEX IF NOT EXISTS idx_plugin_stats_plugin_started
+    ON plugin_stats(plugin_id, started_at);
 ";
 
 /// Initialize the database schema.
@@ -1621,5 +1636,39 @@ mod tests {
             )
             .unwrap();
         assert_eq!(heartbeat, "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn plugin_stats_table_and_indexes_exist() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        let table: String = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='plugin_stats'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("plugin_stats table must exist");
+        assert_eq!(table, "plugin_stats");
+
+        let idx_started: String = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='index' \
+                 AND name='idx_plugin_stats_started'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("idx_plugin_stats_started must exist");
+        assert_eq!(idx_started, "idx_plugin_stats_started");
+
+        let idx_plugin: String = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='index' \
+                 AND name='idx_plugin_stats_plugin_started'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("idx_plugin_stats_plugin_started must exist");
+        assert_eq!(idx_plugin, "idx_plugin_stats_plugin_started");
     }
 }
