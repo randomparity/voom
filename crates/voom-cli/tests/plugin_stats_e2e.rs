@@ -76,11 +76,7 @@ async fn scan_populates_plugin_stats_table() {
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
     let store = open_store(&env);
-    let filter = PluginStatsFilter {
-        plugin: None,
-        since: None,
-        top: None,
-    };
+    let filter = PluginStatsFilter::new(None, None, None);
     let rollups = store
         .rollup_plugin_stats(&filter)
         .expect("rollup_plugin_stats should succeed");

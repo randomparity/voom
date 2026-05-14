@@ -320,13 +320,7 @@ mod tests {
     use voom_domain::plugin_stats::PluginInvocationOutcome;
 
     fn rec(i: u64) -> PluginStatRecord {
-        PluginStatRecord {
-            plugin_id: "x".into(),
-            event_type: "y".into(),
-            started_at: Utc::now(),
-            duration_ms: i,
-            outcome: PluginInvocationOutcome::Ok,
-        }
+        PluginStatRecord::new("x", "y", Utc::now(), i, PluginInvocationOutcome::Ok)
     }
 
     #[test]

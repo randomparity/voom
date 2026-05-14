@@ -22,11 +22,7 @@ pub fn run(
     // plugin_stats just by running this command. See Codex adversarial
     // review (May 2026).
     let store = app::open_store(&cfg)?;
-    let filter = PluginStatsFilter {
-        plugin,
-        since: since_dt,
-        top,
-    };
+    let filter = PluginStatsFilter::new(plugin, since_dt, top);
     let rollups = store.rollup_plugin_stats(&filter)?;
     render(&rollups, format)
 }

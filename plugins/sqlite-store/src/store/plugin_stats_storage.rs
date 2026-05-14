@@ -16,6 +16,11 @@ fn outcome_to_sql(outcome: &PluginInvocationOutcome) -> (&'static str, Option<&s
         PluginInvocationOutcome::Skipped => ("skipped", None),
         PluginInvocationOutcome::Err { category } => ("err", Some(category.as_str())),
         PluginInvocationOutcome::Panic => ("panic", None),
+        // `PluginInvocationOutcome` is `#[non_exhaustive]`: future variants
+        // bucket to `unknown` until someone teaches `outcome_to_sql` about
+        // them. The retention queries already treat unknown labels the same
+        // as any string column, so this is safe.
+        _ => ("unknown", None),
     }
 }
 
@@ -117,19 +122,23 @@ impl PluginStatsStorage for SqliteStore {
         let mut out: Vec<PluginStatsRollup> = buckets
             .into_iter()
             .map(|(plugin_id, b)| {
-                // b.durs already sorted ASC by SQL ORDER BY
-                PluginStatsRollup {
+                // b.durs already sorted ASC by SQL ORDER BY.
+                // `PluginStatsRollup` is `#[non_exhaustive]`: struct-literal
+                // construction is rejected from outside the defining crate
+                // even with `..Default::default()`. Use the explicit
+                // constructor instead.
+                PluginStatsRollup::new(
                     plugin_id,
-                    invocation_count: b.durs.len() as u64,
-                    ok_count: b.ok,
-                    skipped_count: b.skipped,
-                    err_count: b.err,
-                    panic_count: b.panic,
-                    p50_ms: nearest_rank_percentile(&b.durs, 50),
-                    p95_ms: nearest_rank_percentile(&b.durs, 95),
-                    p99_ms: nearest_rank_percentile(&b.durs, 99),
-                    total_ms: b.total_ms,
-                }
+                    b.durs.len() as u64,
+                    b.ok,
+                    b.skipped,
+                    b.err,
+                    b.panic,
+                    nearest_rank_percentile(&b.durs, 50),
+                    nearest_rank_percentile(&b.durs, 95),
+                    nearest_rank_percentile(&b.durs, 99),
+                    b.total_ms,
+                )
             })
             .collect();
 
@@ -225,13 +234,7 @@ mod tests {
     }
 
     fn rec(plugin: &str, dur: u64, outcome: PluginInvocationOutcome) -> PluginStatRecord {
-        PluginStatRecord {
-            plugin_id: plugin.into(),
-            event_type: "file.discovered".into(),
-            started_at: Utc::now(),
-            duration_ms: dur,
-            outcome,
-        }
+        PluginStatRecord::new(plugin, "file.discovered", Utc::now(), dur, outcome)
     }
 
     #[test]
@@ -348,10 +351,7 @@ mod tests {
             .unwrap();
         s.insert_plugin_stat(&rec("b", 2, PluginInvocationOutcome::Ok))
             .unwrap();
-        let filter = PluginStatsFilter {
-            plugin: Some("a".into()),
-            ..Default::default()
-        };
+        let filter = PluginStatsFilter::new(Some("a".into()), None, None);
         let rollup = s.rollup_plugin_stats(&filter).unwrap();
         assert_eq!(rollup.len(), 1);
         assert_eq!(rollup[0].plugin_id, "a");
@@ -360,26 +360,18 @@ mod tests {
     #[test]
     fn rollup_filter_by_since() {
         let s = store();
-        let old = PluginStatRecord {
-            plugin_id: "a".into(),
-            event_type: "x".into(),
-            started_at: Utc::now() - chrono::Duration::hours(2),
-            duration_ms: 1,
-            outcome: PluginInvocationOutcome::Ok,
-        };
-        let new = PluginStatRecord {
-            plugin_id: "a".into(),
-            event_type: "x".into(),
-            started_at: Utc::now(),
-            duration_ms: 2,
-            outcome: PluginInvocationOutcome::Ok,
-        };
+        let old = PluginStatRecord::new(
+            "a",
+            "x",
+            Utc::now() - chrono::Duration::hours(2),
+            1,
+            PluginInvocationOutcome::Ok,
+        );
+        let new = PluginStatRecord::new("a", "x", Utc::now(), 2, PluginInvocationOutcome::Ok);
         s.insert_plugin_stat(&old).unwrap();
         s.insert_plugin_stat(&new).unwrap();
-        let filter = PluginStatsFilter {
-            since: Some(Utc::now() - chrono::Duration::hours(1)),
-            ..Default::default()
-        };
+        let filter =
+            PluginStatsFilter::new(None, Some(Utc::now() - chrono::Duration::hours(1)), None);
         let rollup = s.rollup_plugin_stats(&filter).unwrap();
         assert_eq!(rollup[0].invocation_count, 1);
         assert_eq!(rollup[0].p50_ms, 2);
@@ -394,10 +386,7 @@ mod tests {
             s.insert_plugin_stat(&rec("slow", 100 + i, PluginInvocationOutcome::Ok))
                 .unwrap();
         }
-        let filter = PluginStatsFilter {
-            top: Some(1),
-            ..Default::default()
-        };
+        let filter = PluginStatsFilter::new(None, None, Some(1));
         let rollup = s.rollup_plugin_stats(&filter).unwrap();
         assert_eq!(rollup.len(), 1);
         assert_eq!(rollup[0].plugin_id, "slow");
@@ -406,20 +395,14 @@ mod tests {
     #[test]
     fn prune_with_max_age_deletes_old_rows() {
         let s = store();
-        let old = PluginStatRecord {
-            plugin_id: "a".into(),
-            event_type: "x".into(),
-            started_at: Utc::now() - chrono::Duration::days(60),
-            duration_ms: 1,
-            outcome: PluginInvocationOutcome::Ok,
-        };
-        let recent = PluginStatRecord {
-            plugin_id: "a".into(),
-            event_type: "x".into(),
-            started_at: Utc::now(),
-            duration_ms: 2,
-            outcome: PluginInvocationOutcome::Ok,
-        };
+        let old = PluginStatRecord::new(
+            "a",
+            "x",
+            Utc::now() - chrono::Duration::days(60),
+            1,
+            PluginInvocationOutcome::Ok,
+        );
+        let recent = PluginStatRecord::new("a", "x", Utc::now(), 2, PluginInvocationOutcome::Ok);
         s.insert_plugin_stat(&old).unwrap();
         s.insert_plugin_stat(&recent).unwrap();
 
@@ -452,13 +435,13 @@ mod tests {
     fn count_old_matches_actual_prune() {
         let s = store();
         for _ in 0..5 {
-            let old = PluginStatRecord {
-                plugin_id: "a".into(),
-                event_type: "x".into(),
-                started_at: Utc::now() - chrono::Duration::days(60),
-                duration_ms: 1,
-                outcome: PluginInvocationOutcome::Ok,
-            };
+            let old = PluginStatRecord::new(
+                "a",
+                "x",
+                Utc::now() - chrono::Duration::days(60),
+                1,
+                PluginInvocationOutcome::Ok,
+            );
             s.insert_plugin_stat(&old).unwrap();
         }
         for _ in 0..3 {

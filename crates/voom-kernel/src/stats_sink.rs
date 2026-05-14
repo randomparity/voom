@@ -33,12 +33,12 @@ mod tests {
     #[test]
     fn noop_sink_does_not_panic() {
         let sink = NoopStatsSink;
-        sink.record(PluginStatRecord {
-            plugin_id: "x".into(),
-            event_type: "y".into(),
-            started_at: Utc::now(),
-            duration_ms: 0,
-            outcome: PluginInvocationOutcome::Ok,
-        });
+        sink.record(PluginStatRecord::new(
+            "x",
+            "y",
+            Utc::now(),
+            0,
+            PluginInvocationOutcome::Ok,
+        ));
     }
 }

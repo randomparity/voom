@@ -167,13 +167,13 @@ impl EventBus {
                 },
                 Err(_) => PluginInvocationOutcome::Panic,
             };
-            sink.record(PluginStatRecord {
-                plugin_id: name.clone(),
-                event_type: event_type.clone(),
+            sink.record(PluginStatRecord::new(
+                name.clone(),
+                event_type.clone(),
                 started_at,
                 duration_ms,
                 outcome,
-            });
+            ));
 
             match handler_result {
                 Ok(Ok(Some(result))) => {
