@@ -13,8 +13,12 @@ FFMPEG_PROGRESS_RE = re.compile(r"^\s*frame=\s*\d+\s+fps=")
 
 
 def normalized_stderr_tail(stderr_tail: str) -> str:
-    lines = re.split(r"[\r\n]", stderr_tail)
-    kept = [line for line in lines if not FFMPEG_PROGRESS_RE.match(line)]
+    lines = re.split(r"\r\n|\r|\n", stderr_tail)
+    kept = [
+        line
+        for line in lines
+        if line and not FFMPEG_PROGRESS_RE.match(line)
+    ]
     return "\n".join(kept)
 
 
