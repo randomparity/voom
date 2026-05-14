@@ -123,22 +123,22 @@ impl PluginStatsStorage for SqliteStore {
             .into_iter()
             .map(|(plugin_id, b)| {
                 // b.durs already sorted ASC by SQL ORDER BY.
-                // Use `..Default::default()` because `PluginStatsRollup`
-                // is `#[non_exhaustive]`: struct-literal construction
-                // from outside its defining crate requires it.
-                PluginStatsRollup {
+                // `PluginStatsRollup` is `#[non_exhaustive]`: struct-literal
+                // construction is rejected from outside the defining crate
+                // even with `..Default::default()`. Use the explicit
+                // constructor instead.
+                PluginStatsRollup::new(
                     plugin_id,
-                    invocation_count: b.durs.len() as u64,
-                    ok_count: b.ok,
-                    skipped_count: b.skipped,
-                    err_count: b.err,
-                    panic_count: b.panic,
-                    p50_ms: nearest_rank_percentile(&b.durs, 50),
-                    p95_ms: nearest_rank_percentile(&b.durs, 95),
-                    p99_ms: nearest_rank_percentile(&b.durs, 99),
-                    total_ms: b.total_ms,
-                    ..Default::default()
-                }
+                    b.durs.len() as u64,
+                    b.ok,
+                    b.skipped,
+                    b.err,
+                    b.panic,
+                    nearest_rank_percentile(&b.durs, 50),
+                    nearest_rank_percentile(&b.durs, 95),
+                    nearest_rank_percentile(&b.durs, 99),
+                    b.total_ms,
+                )
             })
             .collect();
 
@@ -351,10 +351,7 @@ mod tests {
             .unwrap();
         s.insert_plugin_stat(&rec("b", 2, PluginInvocationOutcome::Ok))
             .unwrap();
-        let filter = PluginStatsFilter {
-            plugin: Some("a".into()),
-            ..Default::default()
-        };
+        let filter = PluginStatsFilter::new(Some("a".into()), None, None);
         let rollup = s.rollup_plugin_stats(&filter).unwrap();
         assert_eq!(rollup.len(), 1);
         assert_eq!(rollup[0].plugin_id, "a");
@@ -370,13 +367,7 @@ mod tests {
             1,
             PluginInvocationOutcome::Ok,
         );
-        let new = PluginStatRecord::new(
-            "a",
-            "x",
-            Utc::now(),
-            2,
-            PluginInvocationOutcome::Ok,
-        );
+        let new = PluginStatRecord::new("a", "x", Utc::now(), 2, PluginInvocationOutcome::Ok);
         s.insert_plugin_stat(&old).unwrap();
         s.insert_plugin_stat(&new).unwrap();
         let filter =
@@ -411,13 +402,7 @@ mod tests {
             1,
             PluginInvocationOutcome::Ok,
         );
-        let recent = PluginStatRecord::new(
-            "a",
-            "x",
-            Utc::now(),
-            2,
-            PluginInvocationOutcome::Ok,
-        );
+        let recent = PluginStatRecord::new("a", "x", Utc::now(), 2, PluginInvocationOutcome::Ok);
         s.insert_plugin_stat(&old).unwrap();
         s.insert_plugin_stat(&recent).unwrap();
 

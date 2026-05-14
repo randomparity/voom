@@ -89,6 +89,38 @@ pub struct PluginStatsRollup {
     pub total_ms: u64,
 }
 
+impl PluginStatsRollup {
+    /// Construct a `PluginStatsRollup`. Use this from outside the crate to
+    /// avoid struct-literal construction, which `#[non_exhaustive]` blocks.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        plugin_id: String,
+        invocation_count: u64,
+        ok_count: u64,
+        skipped_count: u64,
+        err_count: u64,
+        panic_count: u64,
+        p50_ms: u64,
+        p95_ms: u64,
+        p99_ms: u64,
+        total_ms: u64,
+    ) -> Self {
+        Self {
+            plugin_id,
+            invocation_count,
+            ok_count,
+            skipped_count,
+            err_count,
+            panic_count,
+            p50_ms,
+            p95_ms,
+            p99_ms,
+            total_ms,
+        }
+    }
+}
+
 /// Query parameters for selecting which [`PluginStatRecord`]s to roll up.
 ///
 /// Passed to the in-memory and SQLite rollup APIs. Intentionally omits Serde
@@ -106,11 +138,7 @@ impl PluginStatsFilter {
     /// avoid struct-literal construction, which `#[non_exhaustive]` blocks.
     #[must_use]
     pub fn new(plugin: Option<String>, since: Option<DateTime<Utc>>, top: Option<usize>) -> Self {
-        Self {
-            plugin,
-            since,
-            top,
-        }
+        Self { plugin, since, top }
     }
 }
 
