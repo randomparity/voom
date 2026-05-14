@@ -214,9 +214,36 @@ Records carry `plugin_id`, `event_type`, `started_at`, `duration_ms`, and an
 written in background batches and dropped if the bounded channel overflows —
 the bus must not block.
 
-**Coverage:** the dispatcher only times handlers invoked through
-`Plugin::on_event`. Pure publishers (plugins that emit events but don't
-subscribe to any) are not represented in `plugin_stats`.
+#### Coverage: subscribers only
+
+The dispatcher instruments only plugins that subscribe to events
+through the bus — its instrumentation point is the
+`Plugin::on_event(...)` invocation. Two distinct kinds of code emit
+events but never enter that path, and their absence from
+`plugin_stats` is for two different reasons:
+
+- **Kernel-registered no-subscriber plugins.** `discovery` is a
+  registered plugin whose `handles()` returns `false` for every event,
+  so the dispatcher never calls `on_event` on it. It emits
+  `FileDiscovered` events via `kernel.dispatch(...)` from within its
+  own scan loop. This is the textbook "publisher-only plugin" case:
+  the work *is* a plugin invocation, just not one the dispatcher
+  observes.
+- **Library-only callees.** `phase-orchestrator` and `policy-evaluator`
+  are not registered with the kernel at all (see
+  [Two-Tier Plugin Model](#two-tier-plugin-model)). The CLI calls them
+  directly; the corresponding `PlanCreated` / `PlanExecuting` /
+  `PlanCompleted` events are dispatched by the CLI's `PlanDispatcher`,
+  not by the libraries themselves. There is no plugin invocation to
+  attribute time to.
+
+For end-to-end visibility across both kinds of gap, use the
+Deliverable-2 (Prometheus `/metrics`) and Deliverable-3
+(OpenTelemetry) exporters that #92 builds toward. Issue #378 records
+the decision to leave Deliverable 1 scoped to dispatcher-observed
+subscribers; a future host-API issue can revisit a plugin
+self-reporting primitive if `discovery`-class coverage gaps become a
+measured operational pain point.
 
 ### Retention invariants
 
