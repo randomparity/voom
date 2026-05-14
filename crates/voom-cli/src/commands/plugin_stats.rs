@@ -29,10 +29,15 @@ pub fn run(
 
 fn parse_since(s: &str) -> Result<DateTime<Utc>> {
     // Accept "24h", "7d", "30m" — number + unit (s/m/h/d).
-    let (num_str, unit) = s.split_at(s.len().saturating_sub(1));
+    // Split on a char boundary so multi-byte trailing chars don't panic.
+    let split = s.char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
+    let (num_str, unit) = s.split_at(split);
     let n: i64 = num_str
         .parse()
         .map_err(|_| anyhow!("invalid --since value: {s}"))?;
+    if n <= 0 {
+        return Err(anyhow!("--since must be a positive duration, got: {s}"));
+    }
     let d = match unit {
         "s" => Duration::seconds(n),
         "m" => Duration::minutes(n),
@@ -44,11 +49,20 @@ fn parse_since(s: &str) -> Result<DateTime<Utc>> {
 }
 
 fn render(rollups: &[PluginStatsRollup], format: OutputFormat) -> Result<()> {
-    if matches!(format, OutputFormat::Json) {
-        let json = serde_json::to_string_pretty(rollups)?;
-        println!("{json}");
-        return Ok(());
+    match format {
+        OutputFormat::Json => {
+            let json = serde_json::to_string_pretty(rollups)?;
+            println!("{json}");
+            Ok(())
+        }
+        OutputFormat::Table => render_table(rollups),
+        OutputFormat::Plain | OutputFormat::Csv => Err(anyhow!(
+            "--format {format:?} is not supported for `voom plugin stats`; use table or json"
+        )),
     }
+}
+
+fn render_table(rollups: &[PluginStatsRollup]) -> Result<()> {
     if rollups.is_empty() {
         println!("No plugin invocations recorded.");
         return Ok(());
@@ -100,5 +114,23 @@ mod tests {
     #[test]
     fn parse_since_rejects_non_numeric() {
         assert!(parse_since("abh").is_err());
+    }
+
+    #[test]
+    fn parse_since_rejects_negative() {
+        assert!(parse_since("-1h").is_err());
+    }
+
+    #[test]
+    fn parse_since_rejects_zero() {
+        assert!(parse_since("0h").is_err());
+    }
+
+    #[test]
+    fn parse_since_multibyte_does_not_panic() {
+        // Returns Err because "⏱" is not a valid unit; the important property
+        // is that we do not panic on the byte split.
+        let r = parse_since("24⏱");
+        assert!(r.is_err());
     }
 }
