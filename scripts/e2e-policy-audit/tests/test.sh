@@ -608,6 +608,34 @@ EOF
 
 run_plugin_error_dedupe_test
 
+run_ffmpeg_stderr_normalize_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  cat >"${actual}/plans.tsv" <<'EOF'
+id	file_id	phase_name	status	result	executed_at
+plan-1	file-1	transcode-video	failed	{"detail":{"stderr_tail":"frame= 1 fps=0.0 q=28.0 size=1k time=00:00:01 bitrate=8.0kbits/s speed=1x\rframe= 2 fps=1.0 q=28.0 size=2k time=00:00:02 bitrate=8.0kbits/s speed=1x\rCUDA_ERROR_OUT_OF_MEMORY\nConversion failed"},"error":"ffmpeg exited with exit status: 187"}	2026-05-14T10:00:00Z
+plan-2	file-2	transcode-video	completed	{"ok":true}	2026-05-14T10:01:00Z
+EOF
+
+  "lib/ffmpeg-stderr-normalize.py" "${actual}/plans.tsv" "${actual}/plans-normalized.tsv"
+
+  if grep -Fq 'frame= 1 fps=' "${actual}/plans-normalized.tsv"; then
+    echo "FAIL: ffmpeg progress line was not stripped" >&2
+    fail=1
+  fi
+  if ! grep -Fq 'CUDA_ERROR_OUT_OF_MEMORY\nConversion failed' "${actual}/plans-normalized.tsv"; then
+    echo "FAIL: non-progress stderr lines were not preserved" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_ffmpeg_stderr_normalize_test
+
 raw_actual=$(mktemp -d)
 trap 'rm -rf "${raw_actual}"' EXIT
 
