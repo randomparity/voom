@@ -621,6 +621,7 @@ plan-3	file-3	transcode-video	failed	"not-json"	2026-05-14T10:02:00Z
 plan-4	file-4	transcode-video	failed	{"detail":{"other":"unchanged"}}	2026-05-14T10:03:00Z
 plan-5	file-5	transcode-video	failed	{"detail":{"stderr_tail":123}}	2026-05-14T10:04:00Z
 plan-6	file-6	transcode-video	failed	{"detail":{"stderr_tail":"frame= 3 fps=2.0 q=28.0 size=3k time=00:00:03 bitrate=8.0kbits/s speed=1x\r\nreal error"}}	2026-05-14T10:05:00Z
+plan-7	file-7	transcode-video	failed	{"detail":{"stderr_tail":"frame= 4 fps=3.0 q=28.0 size=4k time=00:00:04 bitrate=8.0kbits/s speed=1x\rfirst error\n\nsecond error"}}	2026-05-14T10:06:00Z
 EOF
 
   "lib/ffmpeg-stderr-normalize.py" "${actual}/plans.tsv" "${actual}/plans-normalized.tsv"
@@ -635,6 +636,10 @@ EOF
   fi
   if ! grep -Fq '{"detail":{"stderr_tail":"real error"}}' "${actual}/plans-normalized.tsv"; then
     echo "FAIL: CRLF-separated progress line left a leading blank stderr line" >&2
+    fail=1
+  fi
+  if ! grep -Fq 'first error\n\nsecond error' "${actual}/plans-normalized.tsv"; then
+    echo "FAIL: meaningful blank stderr line was not preserved" >&2
     fail=1
   fi
   sed -n '4,6p' "${actual}/plans.tsv" >"${actual}/expected-unchanged.tsv"
