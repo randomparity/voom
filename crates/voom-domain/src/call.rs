@@ -14,7 +14,7 @@ use crate::capability_map::CapabilityMap;
 use crate::compiled::CompiledPolicy;
 use crate::evaluation::EvaluationOutcome;
 use crate::media::MediaFile;
-use crate::plan::PhaseOutput;
+use crate::plan::{PhaseOutput, Plan};
 
 /// A request addressed to exactly one plugin via its capability.
 #[non_exhaustive]
@@ -28,6 +28,11 @@ pub enum Call {
         phase_outputs: Option<HashMap<String, PhaseOutput>>,
         phase_outcomes: Option<HashMap<String, EvaluationOutcome>>,
         capabilities_override: Option<CapabilityMap>,
+    },
+    /// Orchestrate phases from pre-evaluated plans. Unary Call.
+    Orchestrate {
+        plans: Vec<Plan>,
+        policy_name: String,
     },
 }
 
@@ -65,5 +70,15 @@ mod tests {
         };
         let dbg = format!("{call:?}");
         assert!(dbg.contains("EvaluatePolicy"));
+    }
+
+    #[test]
+    fn orchestrate_call_constructs() {
+        let call = Call::Orchestrate {
+            plans: vec![],
+            policy_name: "demo".into(),
+        };
+        let dbg = format!("{call:?}");
+        assert!(dbg.contains("Orchestrate"));
     }
 }
