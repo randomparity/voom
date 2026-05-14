@@ -143,7 +143,9 @@ mod tests {
     #[test]
     fn discover_resolution_is_sharded() {
         use crate::capability_resolution::CapabilityResolution;
-        let cap = Capability::Discover { schemes: vec!["file".into()] };
+        let cap = Capability::Discover {
+            schemes: vec!["file".into()],
+        };
         assert_eq!(cap.resolution(), CapabilityResolution::Sharded);
     }
 
@@ -164,20 +166,26 @@ mod tests {
     #[test]
     fn introspect_resolution_is_competing() {
         use crate::capability_resolution::CapabilityResolution;
-        let cap = Capability::Introspect { formats: vec!["mkv".into()] };
+        let cap = Capability::Introspect {
+            formats: vec!["mkv".into()],
+        };
         assert_eq!(cap.resolution(), CapabilityResolution::Competing);
     }
 
     #[test]
     fn store_resolution_is_exclusive() {
         use crate::capability_resolution::CapabilityResolution;
-        let cap = Capability::Store { backend: "sqlite".into() };
+        let cap = Capability::Store {
+            backend: "sqlite".into(),
+        };
         assert_eq!(cap.resolution(), CapabilityResolution::Exclusive);
     }
 
     #[test]
     fn capability_query_matches_discover_by_scheme() {
-        let plugin_cap = Capability::Discover { schemes: vec!["file".into(), "smb".into()] };
+        let plugin_cap = Capability::Discover {
+            schemes: vec!["file".into(), "smb".into()],
+        };
         assert!(plugin_cap.matches_query(&CapabilityQuery::Sharded {
             kind: "discover".into(),
             key: "file".into(),
@@ -194,12 +202,16 @@ mod tests {
 
     #[test]
     fn capability_query_matches_exclusive() {
-        assert!(Capability::EvaluatePolicy.matches_query(&CapabilityQuery::Exclusive {
-            kind: "evaluate_policy".into(),
-        }));
-        assert!(!Capability::EvaluatePolicy.matches_query(&CapabilityQuery::Exclusive {
-            kind: "orchestrate_phases".into(),
-        }));
+        assert!(
+            Capability::EvaluatePolicy.matches_query(&CapabilityQuery::Exclusive {
+                kind: "evaluate_policy".into(),
+            })
+        );
+        assert!(
+            !Capability::EvaluatePolicy.matches_query(&CapabilityQuery::Exclusive {
+                kind: "orchestrate_phases".into(),
+            })
+        );
     }
 
     // rev-3: matches_query must enforce resolution class, not just kind.

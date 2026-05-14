@@ -167,7 +167,9 @@ mod tests {
         }
 
         let registry = PluginRegistry::new();
-        registry.register(Arc::new(AlphaPlugin { value: 42 })).unwrap();
+        registry
+            .register(Arc::new(AlphaPlugin { value: 42 }))
+            .unwrap();
         let retrieved = registry
             .get_typed::<AlphaPlugin>("alpha")
             .expect("typed retrieval should succeed");

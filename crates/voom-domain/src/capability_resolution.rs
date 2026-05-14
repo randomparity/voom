@@ -20,8 +20,17 @@ mod tests {
 
     #[test]
     fn distinct_variants_are_not_equal() {
-        assert_ne!(CapabilityResolution::Exclusive, CapabilityResolution::Sharded);
-        assert_ne!(CapabilityResolution::Sharded, CapabilityResolution::Competing);
-        assert_ne!(CapabilityResolution::Exclusive, CapabilityResolution::Competing);
+        assert_ne!(
+            CapabilityResolution::Exclusive,
+            CapabilityResolution::Sharded
+        );
+        assert_ne!(
+            CapabilityResolution::Sharded,
+            CapabilityResolution::Competing
+        );
+        assert_ne!(
+            CapabilityResolution::Exclusive,
+            CapabilityResolution::Competing
+        );
     }
 }

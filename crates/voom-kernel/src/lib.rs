@@ -464,9 +464,8 @@ impl Kernel {
 
         let started_at = chrono::Utc::now();
         let timer = std::time::Instant::now();
-        let handler_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            plugin.on_call(&call)
-        }));
+        let handler_result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| plugin.on_call(&call)));
         let duration_ms = u64::try_from(timer.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         let outcome = match &handler_result {
@@ -903,19 +902,34 @@ mod tests {
         struct A;
         struct B;
         impl Plugin for A {
-            fn name(&self) -> &str { "a" }
-            fn version(&self) -> &str { "0.1.0" }
-            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+            fn name(&self) -> &str {
+                "a"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
         }
         impl Plugin for B {
-            fn name(&self) -> &str { "b" }
-            fn version(&self) -> &str { "0.1.0" }
-            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+            fn name(&self) -> &str {
+                "b"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
         }
         let mut kernel = Kernel::new();
         kernel.register_plugin(Arc::new(A), 10).unwrap();
         let err = kernel.register_plugin(Arc::new(B), 20).unwrap_err();
-        assert!(err.to_string().contains("a"), "error should name prior claimant: {err}");
+        assert!(
+            err.to_string().contains("a"),
+            "error should name prior claimant: {err}"
+        );
     }
 
     #[test]
@@ -923,20 +937,35 @@ mod tests {
         struct A;
         struct B;
         impl Plugin for A {
-            fn name(&self) -> &str { "a" }
-            fn version(&self) -> &str { "0.1.0" }
-            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+            fn name(&self) -> &str {
+                "a"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
         }
         impl Plugin for B {
-            fn name(&self) -> &str { "b" }
-            fn version(&self) -> &str { "0.1.0" }
-            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+            fn name(&self) -> &str {
+                "b"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
         }
         let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
         let mut kernel = Kernel::new();
         kernel.init_and_register(Arc::new(A), 10, &ctx).unwrap();
         let err = kernel.init_and_register(Arc::new(B), 20, &ctx).unwrap_err();
-        assert!(err.to_string().contains("a"), "error should name prior claimant: {err}");
+        assert!(
+            err.to_string().contains("a"),
+            "error should name prior claimant: {err}"
+        );
     }
 
     #[test]
@@ -946,9 +975,15 @@ mod tests {
             init_called: Arc<AtomicBool>,
         }
         impl Plugin for ConflictingPlugin {
-            fn name(&self) -> &str { "conflicting" }
-            fn version(&self) -> &str { "0.1.0" }
-            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+            fn name(&self) -> &str {
+                "conflicting"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
             fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
                 self.init_called.store(true, Ordering::SeqCst);
                 Ok(vec![])
@@ -960,16 +995,24 @@ mod tests {
 
         struct FirstClaimant;
         impl Plugin for FirstClaimant {
-            fn name(&self) -> &str { "first" }
-            fn version(&self) -> &str { "0.1.0" }
-            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+            fn name(&self) -> &str {
+                "first"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
         }
         kernel.register_plugin(Arc::new(FirstClaimant), 10).unwrap();
 
         let init_flag = Arc::new(AtomicBool::new(false));
         let err = kernel
             .init_and_register_shared(
-                ConflictingPlugin { init_called: init_flag.clone() },
+                ConflictingPlugin {
+                    init_called: init_flag.clone(),
+                },
                 20,
                 &ctx,
             )
@@ -990,27 +1033,44 @@ mod tests {
         struct D1;
         struct D2;
         impl Plugin for D1 {
-            fn name(&self) -> &str { "d1" }
-            fn version(&self) -> &str { "0.1.0" }
+            fn name(&self) -> &str {
+                "d1"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
             fn capabilities(&self) -> &[Capability] {
-                static C: LazyLock<Vec<Capability>> =
-                    LazyLock::new(|| vec![Capability::Discover { schemes: vec!["file".into()] }]);
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Discover {
+                        schemes: vec!["file".into()],
+                    }]
+                });
                 &C
             }
         }
         impl Plugin for D2 {
-            fn name(&self) -> &str { "d2" }
-            fn version(&self) -> &str { "0.1.0" }
+            fn name(&self) -> &str {
+                "d2"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
             fn capabilities(&self) -> &[Capability] {
-                static C: LazyLock<Vec<Capability>> =
-                    LazyLock::new(|| vec![Capability::Discover { schemes: vec!["file".into()] }]);
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Discover {
+                        schemes: vec!["file".into()],
+                    }]
+                });
                 &C
             }
         }
         let mut kernel = Kernel::new();
         kernel.register_plugin(Arc::new(D1), 10).unwrap();
         let err = kernel.register_plugin(Arc::new(D2), 20).unwrap_err();
-        assert!(err.to_string().contains("file"), "error should name colliding scheme: {err}");
+        assert!(
+            err.to_string().contains("file"),
+            "error should name colliding scheme: {err}"
+        );
     }
 
     #[test]
@@ -1019,26 +1079,42 @@ mod tests {
         struct DFile;
         struct DS3;
         impl Plugin for DFile {
-            fn name(&self) -> &str { "dfile" }
-            fn version(&self) -> &str { "0.1.0" }
+            fn name(&self) -> &str {
+                "dfile"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
             fn capabilities(&self) -> &[Capability] {
-                static C: LazyLock<Vec<Capability>> =
-                    LazyLock::new(|| vec![Capability::Discover { schemes: vec!["file".into()] }]);
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Discover {
+                        schemes: vec!["file".into()],
+                    }]
+                });
                 &C
             }
         }
         impl Plugin for DS3 {
-            fn name(&self) -> &str { "ds3" }
-            fn version(&self) -> &str { "0.1.0" }
+            fn name(&self) -> &str {
+                "ds3"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
             fn capabilities(&self) -> &[Capability] {
-                static C: LazyLock<Vec<Capability>> =
-                    LazyLock::new(|| vec![Capability::Discover { schemes: vec!["s3".into()] }]);
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Discover {
+                        schemes: vec!["s3".into()],
+                    }]
+                });
                 &C
             }
         }
         let mut kernel = Kernel::new();
         kernel.register_plugin(Arc::new(DFile), 10).unwrap();
-        kernel.register_plugin(Arc::new(DS3), 20).expect("disjoint schemes allowed");
+        kernel
+            .register_plugin(Arc::new(DS3), 20)
+            .expect("disjoint schemes allowed");
     }
 
     #[test]
@@ -1047,26 +1123,42 @@ mod tests {
         struct I1;
         struct I2;
         impl Plugin for I1 {
-            fn name(&self) -> &str { "i1" }
-            fn version(&self) -> &str { "0.1.0" }
+            fn name(&self) -> &str {
+                "i1"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
             fn capabilities(&self) -> &[Capability] {
-                static C: LazyLock<Vec<Capability>> =
-                    LazyLock::new(|| vec![Capability::Introspect { formats: vec!["mkv".into()] }]);
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Introspect {
+                        formats: vec!["mkv".into()],
+                    }]
+                });
                 &C
             }
         }
         impl Plugin for I2 {
-            fn name(&self) -> &str { "i2" }
-            fn version(&self) -> &str { "0.1.0" }
+            fn name(&self) -> &str {
+                "i2"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
             fn capabilities(&self) -> &[Capability] {
-                static C: LazyLock<Vec<Capability>> =
-                    LazyLock::new(|| vec![Capability::Introspect { formats: vec!["mp4".into()] }]);
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Introspect {
+                        formats: vec!["mp4".into()],
+                    }]
+                });
                 &C
             }
         }
         let mut kernel = Kernel::new();
         kernel.register_plugin(Arc::new(I1), 10).unwrap();
-        kernel.register_plugin(Arc::new(I2), 20).expect("Competing allows co-claim");
+        kernel
+            .register_plugin(Arc::new(I2), 20)
+            .expect("Competing allows co-claim");
     }
 
     fn minimal_policy_for_test() -> voom_domain::compiled::CompiledPolicy {
@@ -1092,9 +1184,15 @@ mod tests {
 
         struct E;
         impl Plugin for E {
-            fn name(&self) -> &str { "e" }
-            fn version(&self) -> &str { "0.1.0" }
-            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+            fn name(&self) -> &str {
+                "e"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
             fn on_call(&self, _: &Call) -> Result<CallResponse> {
                 Ok(CallResponse::EvaluatePolicy(EvaluationResult::new(vec![])))
             }
@@ -1112,7 +1210,9 @@ mod tests {
         };
         let response = kernel
             .dispatch_to_capability(
-                CapabilityQuery::Exclusive { kind: "evaluate_policy".into() },
+                CapabilityQuery::Exclusive {
+                    kind: "evaluate_policy".into(),
+                },
                 call,
             )
             .expect("dispatch");
@@ -1139,7 +1239,9 @@ mod tests {
         };
         let err = kernel
             .dispatch_to_capability(
-                CapabilityQuery::Exclusive { kind: "evaluate_policy".into() },
+                CapabilityQuery::Exclusive {
+                    kind: "evaluate_policy".into(),
+                },
                 call,
             )
             .unwrap_err();
@@ -1166,9 +1268,15 @@ mod tests {
 
         struct E;
         impl Plugin for E {
-            fn name(&self) -> &str { "e" }
-            fn version(&self) -> &str { "0.1.0" }
-            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+            fn name(&self) -> &str {
+                "e"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
             fn on_call(&self, _: &Call) -> Result<CallResponse> {
                 Ok(CallResponse::EvaluatePolicy(EvaluationResult::new(vec![])))
             }
@@ -1188,7 +1296,9 @@ mod tests {
         };
         kernel
             .dispatch_to_capability(
-                CapabilityQuery::Exclusive { kind: "evaluate_policy".into() },
+                CapabilityQuery::Exclusive {
+                    kind: "evaluate_policy".into(),
+                },
                 call,
             )
             .unwrap();
@@ -1218,9 +1328,15 @@ mod tests {
 
         struct P;
         impl Plugin for P {
-            fn name(&self) -> &str { "p" }
-            fn version(&self) -> &str { "0.1.0" }
-            fn capabilities(&self) -> &[Capability] { &[Capability::EvaluatePolicy] }
+            fn name(&self) -> &str {
+                "p"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
             fn on_call(&self, _: &Call) -> Result<voom_domain::call::CallResponse> {
                 panic!("intentional");
             }
@@ -1239,7 +1355,9 @@ mod tests {
             capabilities_override: None,
         };
         let result = kernel.dispatch_to_capability(
-            CapabilityQuery::Exclusive { kind: "evaluate_policy".into() },
+            CapabilityQuery::Exclusive {
+                kind: "evaluate_policy".into(),
+            },
             call,
         );
         assert!(result.is_err());
@@ -1252,7 +1370,9 @@ mod tests {
     fn on_call_default_returns_error() {
         use std::path::PathBuf;
         use voom_domain::call::Call;
-        use voom_domain::compiled::{CompiledConfig, CompiledMetadata, CompiledPolicy, ErrorStrategy};
+        use voom_domain::compiled::{
+            CompiledConfig, CompiledMetadata, CompiledPolicy, ErrorStrategy,
+        };
         use voom_domain::media::MediaFile;
 
         struct MinimalPlugin;

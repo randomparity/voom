@@ -6,13 +6,13 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use regex::Regex;
-use serde::{Deserialize, Serialize};
 pub use crate::media::Container;
 pub use crate::plan::{
     CropSettings, LoudnessNormalization, LoudnessPreset, SampleStrategy, TranscodeChannels,
     TranscodeFallback,
 };
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 /// A pre-compiled regex that supports `Clone`, `Debug`, `Serialize`, and `Deserialize`.
 ///
