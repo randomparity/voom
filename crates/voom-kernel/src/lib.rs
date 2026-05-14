@@ -41,7 +41,11 @@ macro_rules! plugin_cargo_metadata {
 }
 
 /// Universal plugin interface. All native plugins implement this.
-pub trait Plugin: Send + Sync {
+///
+/// `Plugin: Any + 'static` allows `Registry::get_typed::<P>` to recover the
+/// concrete plugin type by TypeId match. The `'static` bound is implied by
+/// `Any` and is satisfied by every plugin in this workspace.
+pub trait Plugin: Any + Send + Sync {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
 

@@ -1,3 +1,4 @@
+use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -57,6 +58,46 @@ impl PluginRegistry {
     pub fn contains(&self, name: &str) -> bool {
         self.plugins.read().contains_key(name)
     }
+
+    /// Snapshot of all currently-registered (name, plugin) pairs.
+    ///
+    /// Returns clones (the registry holds plugins behind `Arc`s, so cloning is
+    /// cheap). The result is a `Vec` rather than an iterator to release the
+    /// internal `RwLock` immediately.
+    #[must_use]
+    pub fn iter_all(&self) -> Vec<(String, Arc<dyn Plugin>)> {
+        self.plugins
+            .read()
+            .iter()
+            .map(|(n, p)| (n.clone(), p.clone()))
+            .collect()
+    }
+
+    /// Retrieve a plugin by name, downcasting to the concrete type.
+    ///
+    /// Returns `None` if not registered, or if registered under a different
+    /// concrete type. Use sparingly — the canonical addressing scheme for
+    /// cross-plugin invocation is `Kernel::dispatch_to_capability`.
+    #[must_use]
+    pub fn get_typed<P: Plugin>(&self, name: &str) -> Option<Arc<P>> {
+        let arc_dyn = self.get(name)?;
+        // Verify the dynamic type matches before reconstructing the typed Arc.
+        // `Plugin: Any` (supertrait) makes the per-impl `type_id` method
+        // available via the trait object's vtable.
+        if Any::type_id(&*arc_dyn) != TypeId::of::<P>() {
+            return None;
+        }
+        // SAFETY: TypeId equality proves the underlying value is `P`. The Arc
+        // was originally constructed as `Arc::new(p)` where `p: P`, so the
+        // ArcInner allocation has the layout of `ArcInner<P>`. Casting the
+        // wide pointer's data part to `*const P` and reconstructing via
+        // `Arc::from_raw` is sound because (a) the data pointer is valid
+        // `*const P`, and (b) Arc reference counts are tracked in the
+        // ArcInner header, independent of the type parameter, so the strong
+        // count remains correct across the type change.
+        let raw: *const P = Arc::into_raw(arc_dyn).cast::<P>();
+        Some(unsafe { Arc::from_raw(raw) })
+    }
 }
 
 impl Default for PluginRegistry {
@@ -106,6 +147,81 @@ mod tests {
         assert!(registry.get("test-plugin").is_some());
         assert!(registry.get("nonexistent").is_none());
         assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn test_get_typed_returns_matching_plugin() {
+        struct AlphaPlugin {
+            value: u64,
+        }
+        impl Plugin for AlphaPlugin {
+            fn name(&self) -> &str {
+                "alpha"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[]
+            }
+        }
+
+        let registry = PluginRegistry::new();
+        registry.register(Arc::new(AlphaPlugin { value: 42 })).unwrap();
+        let retrieved = registry
+            .get_typed::<AlphaPlugin>("alpha")
+            .expect("typed retrieval should succeed");
+        assert_eq!(retrieved.value, 42);
+    }
+
+    #[test]
+    fn test_get_typed_returns_none_for_wrong_type() {
+        struct AlphaPlugin;
+        struct BetaPlugin;
+        impl Plugin for AlphaPlugin {
+            fn name(&self) -> &str {
+                "alpha"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[]
+            }
+        }
+        impl Plugin for BetaPlugin {
+            fn name(&self) -> &str {
+                "beta"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[]
+            }
+        }
+
+        let registry = PluginRegistry::new();
+        registry.register(Arc::new(AlphaPlugin)).unwrap();
+        assert!(registry.get_typed::<BetaPlugin>("alpha").is_none());
+    }
+
+    #[test]
+    fn test_get_typed_returns_none_for_missing_name() {
+        struct DummyPlugin;
+        impl Plugin for DummyPlugin {
+            fn name(&self) -> &str {
+                "dummy"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[]
+            }
+        }
+        let registry = PluginRegistry::new();
+        assert!(registry.get_typed::<DummyPlugin>("nonexistent").is_none());
     }
 
     #[test]
