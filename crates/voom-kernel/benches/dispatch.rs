@@ -88,11 +88,7 @@ fn build_bus(sink: Arc<dyn StatsSink>) -> EventBus {
 
 fn dispatch_batch(bus: &EventBus) {
     for _ in 0..EVENTS_PER_SAMPLE {
-        let ev = Event::FileDiscovered(FileDiscoveredEvent::new(
-            PathBuf::from("/x"),
-            0,
-            None,
-        ));
+        let ev = Event::FileDiscovered(FileDiscoveredEvent::new(PathBuf::from("/x"), 0, None));
         let _ = bus.publish(ev);
     }
 }

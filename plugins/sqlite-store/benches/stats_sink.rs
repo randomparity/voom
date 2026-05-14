@@ -61,11 +61,7 @@ fn build_bus(sink: Arc<dyn StatsSink>) -> EventBus {
 
 fn dispatch_batch(bus: &EventBus) {
     for _ in 0..EVENTS_PER_SAMPLE {
-        let ev = Event::FileDiscovered(FileDiscoveredEvent::new(
-            PathBuf::from("/x"),
-            0,
-            None,
-        ));
+        let ev = Event::FileDiscovered(FileDiscoveredEvent::new(PathBuf::from("/x"), 0, None));
         let _ = bus.publish(ev);
     }
 }
@@ -79,9 +75,7 @@ fn bench_sqlite_sink(c: &mut Criterion) {
     group.bench_function("sqlite_sink_10k_fanout5", |b| {
         b.iter_batched(
             || {
-                let store = Arc::new(
-                    SqliteStore::in_memory().expect("in-memory sqlite store"),
-                );
+                let store = Arc::new(SqliteStore::in_memory().expect("in-memory sqlite store"));
                 let sink: Arc<dyn StatsSink> = Arc::new(SqliteStatsSink::new(store));
                 build_bus(sink)
             },
