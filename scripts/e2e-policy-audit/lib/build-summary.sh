@@ -75,13 +75,15 @@ fi
 # Web smoke
 statuses="${run}/web-smoke/statuses.tsv"
 if [[ -f "${statuses}" ]]; then
-  while IFS=$'\t' read -r ep st; do
+  while IFS=$'\t' read -r ep st content; do
     [[ "${ep}" == "endpoint" ]] && continue
     if [[ "${ep}" == *"(sse)"* ]]; then
       [[ ! "${st}" =~ ^2[0-9][0-9]$ ]] && note_warn "SSE smoke ${ep} returned ${st}"
+      [[ "${content:-PASS}" != "PASS" ]] && note_warn "SSE smoke ${ep} content assertion failed"
       continue
     fi
     [[ ! "${st}" =~ ^2[0-9][0-9]$ ]] && note_fail "web smoke ${ep} returned ${st}"
+    [[ "${content:-PASS}" != "PASS" ]] && note_fail "web smoke ${ep} content assertion failed"
   done <"${statuses}"
 fi
 

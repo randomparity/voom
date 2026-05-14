@@ -127,6 +127,38 @@ EOF
 
 run_summary_doctor_log_rc_compat_test
 
+run_web_smoke_validation_helpers_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  cat >"${actual}/files.body" <<'EOF'
+{"files":[{"id":"file-1","path":"/lib/a.mkv","tracks":[]}],"total":1}
+EOF
+  cat >"${actual}/jobs.body" <<'EOF'
+{"jobs":[{"id":"job-1","status":"failed"}],"total":1}
+EOF
+  cat >"${actual}/events.body" <<'EOF'
+event: job-update
+data: {"JobProgress":{"job_id":"job-1","progress":0.5,"message":null}}
+
+EOF
+  cat >"${actual}/root.body" <<'EOF'
+<!doctype html><html><head><title>VOOM</title></head><body>VOOM</body></html>
+EOF
+
+  WEB_SMOKE_TEST_MODE=1 source "lib/web-smoke.sh"
+  validate_root_body "${actual}/root.body"
+  validate_files_body "${actual}/files.body"
+  validate_jobs_body "${actual}/jobs.body" 1
+  validate_sse_body "${actual}/events.body"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_web_smoke_validation_helpers_test
+
 run_failure_clusters_test() {
   local actual
   actual=$(mktemp -d)

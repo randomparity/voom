@@ -342,7 +342,7 @@ cp "${run_dir}/logs/report.log" "${run_dir}/reports/report.txt"
 # ---- Web smoke ----
 if ((do_web)); then
     echo "==> Web smoke"
-    "${lib_dir}/web-smoke.sh" "${voom_bin}" "${run_dir}/web-smoke" \
+    "${lib_dir}/web-smoke.sh" "${voom_bin}" "${run_dir}/web-smoke" "${db_path}" \
         2>&1 | tee "${run_dir}/logs/web-smoke.log" ||
         echo "web smoke failed; see logs/web-smoke.log"
 fi
