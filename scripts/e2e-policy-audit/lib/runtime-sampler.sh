@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Periodically capture host state while voom process is running.
-# Usage: runtime-sampler.sh <run-dir> [interval-seconds]
+# Usage: runtime-sampler.sh <run-dir> [interval-seconds] [voom-bin]
 set -euo pipefail
 
 run_dir="${1:?run dir required}"
 interval="${2:-300}"
+voom_bin="${3:-voom}"
 out_dir="${run_dir}/runtime"
 mkdir -p "${out_dir}"
 
@@ -48,7 +49,7 @@ while true; do
         capture_command "df -h" df -h /mnt/raid0 "${HOME}/.config/voom"
         capture_command "uptime" uptime
         capture_command "top rss processes" bash -lc 'ps -eo pid,user,%cpu,%mem,rss,cmd --sort=-rss | head -6'
-        capture_command "voom jobs list tail" bash -lc 'voom jobs list 2>/dev/null | tail -20'
+        capture_command "voom jobs list tail" bash -c '"$1" jobs list 2>/dev/null | tail -20' _ "${voom_bin}"
     } >"${out}"
     sleep "${interval}" &
     sleep_pid="$!"

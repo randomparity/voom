@@ -103,26 +103,127 @@ log_run() {
 
 runtime_sampler_pid=""
 env_check_sampler_pid=""
+runtime_sampler_uses_group=0
+env_check_sampler_uses_group=0
+active_process_pid=""
+active_process_uses_group=0
+
+start_background_session() {
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$@" &
+        return 0
+    fi
+    "$@" &
+    return 1
+}
+
+process_is_live() {
+    local pid="$1" uses_group="$2"
+    if ((uses_group)); then
+        kill -0 "-${pid}" 2>/dev/null
+    else
+        kill -0 "${pid}" 2>/dev/null
+    fi
+}
+
+signal_process() {
+    local pid="$1" uses_group="$2" signal="$3"
+    if [[ -z "${pid}" ]]; then
+        return 0
+    fi
+    if ((uses_group)); then
+        kill -"${signal}" "-${pid}" 2>/dev/null || true
+    else
+        kill -"${signal}" "${pid}" 2>/dev/null || true
+    fi
+}
+
+stop_process_tree() {
+    local pid="$1" uses_group="$2"
+    local i
+
+    if [[ -z "${pid}" ]]; then
+        return 0
+    fi
+
+    signal_process "${pid}" "${uses_group}" TERM
+    for _ in {1..5}; do
+        if ! process_is_live "${pid}" "${uses_group}"; then
+            wait "${pid}" 2>/dev/null || true
+            return 0
+        fi
+        sleep 1
+    done
+
+    signal_process "${pid}" "${uses_group}" KILL
+    for i in {1..5}; do
+        if ! process_is_live "${pid}" "${uses_group}"; then
+            break
+        fi
+        sleep 1
+    done
+    wait "${pid}" 2>/dev/null || true
+}
 
 stop_process_samplers() {
-    if [[ -n "${runtime_sampler_pid}" ]] && kill -0 "${runtime_sampler_pid}" 2>/dev/null; then
-        kill "${runtime_sampler_pid}" 2>/dev/null || true
-        wait "${runtime_sampler_pid}" 2>/dev/null || true
-    fi
+    stop_process_tree "${runtime_sampler_pid}" "${runtime_sampler_uses_group}"
     runtime_sampler_pid=""
+    runtime_sampler_uses_group=0
 
-    if [[ -n "${env_check_sampler_pid}" ]] && kill -0 "${env_check_sampler_pid}" 2>/dev/null; then
-        kill "${env_check_sampler_pid}" 2>/dev/null || true
-        wait "${env_check_sampler_pid}" 2>/dev/null || true
-    fi
+    stop_process_tree "${env_check_sampler_pid}" "${env_check_sampler_uses_group}"
     env_check_sampler_pid=""
+    env_check_sampler_uses_group=0
 }
 
 start_process_samplers() {
-    "${lib_dir}/runtime-sampler.sh" "${run_dir}" 300 &
+    if start_background_session "${lib_dir}/runtime-sampler.sh" "${run_dir}" 300 "${voom_bin}"; then
+        runtime_sampler_uses_group=1
+    else
+        runtime_sampler_uses_group=0
+    fi
     runtime_sampler_pid=$!
-    "${lib_dir}/env-check-sampler.sh" "${run_dir}" "${voom_bin}" 3600 &
+    if start_background_session "${lib_dir}/env-check-sampler.sh" "${run_dir}" "${voom_bin}" 3600; then
+        env_check_sampler_uses_group=1
+    else
+        env_check_sampler_uses_group=0
+    fi
     env_check_sampler_pid=$!
+}
+
+forward_process_signal() {
+    local signal="$1" exit_code="$2"
+    trap - EXIT INT TERM
+    signal_process "${active_process_pid}" "${active_process_uses_group}" "${signal}"
+    stop_process_samplers
+    if [[ ! -f "${run_dir}/logs/process.log.rc" ]]; then
+        echo "${exit_code}" >"${run_dir}/logs/process.log.rc"
+    fi
+    exit "${exit_code}"
+}
+
+run_process_command() {
+    local rc=0
+
+    active_process_pid=""
+    active_process_uses_group=0
+    rm -f "${run_dir}/logs/process.log.rc"
+
+    if start_background_session "$@"; then
+        active_process_uses_group=1
+    else
+        active_process_uses_group=0
+    fi >"${run_dir}/logs/process.log" 2>&1
+    active_process_pid=$!
+
+    trap 'stop_process_samplers' EXIT
+    trap 'forward_process_signal INT 130' INT
+    trap 'forward_process_signal TERM 143' TERM
+
+    wait "${active_process_pid}" || rc=$?
+    echo "${rc}" >"${run_dir}/logs/process.log.rc"
+    active_process_pid=""
+    active_process_uses_group=0
+    return 0
 }
 
 # ---- Preflight ----
@@ -187,10 +288,7 @@ run_start=$(date -Iseconds)
 echo "==> voom process (long run starts at ${run_start})"
 t=$(stage_start)
 start_process_samplers
-trap 'stop_process_samplers' EXIT
-trap 'stop_process_samplers; trap - EXIT INT TERM; exit 130' INT
-trap 'stop_process_samplers; trap - EXIT INT TERM; exit 143' TERM
-log_run process "${voom_bin}" process -y --on-error continue --policy "${policy}" "${library}"
+run_process_command "${voom_bin}" process -y --on-error continue --policy "${policy}" "${library}"
 stop_process_samplers
 trap - EXIT INT TERM
 stage_end process "$t"
