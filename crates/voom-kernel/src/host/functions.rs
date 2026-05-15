@@ -371,6 +371,124 @@ fn parse_response(response: ureq::http::Response<ureq::Body>) -> Result<HttpResp
     Ok(HttpResponse::with_headers(status, headers, body))
 }
 
+/// Pure function implementing the `emit-call-item` host fn semantics.
+/// Separated from the wasmtime binding so it can be unit-tested without
+/// a wasmtime `Caller`.
+#[cfg(feature = "wasm")]
+pub(crate) fn emit_call_item_impl(
+    state: &mut crate::host::HostState,
+    item_bytes: &[u8],
+) -> std::result::Result<(), String> {
+    use crate::loader::wasm::MAX_WASM_EVENT_PAYLOAD;
+
+    // rev-2 DoS guard: cap item bytes at MAX_WASM_EVENT_PAYLOAD before any
+    // decode work. Reuses the existing limit from on-event to keep the cap
+    // uniform across the entire WASM boundary.
+    if item_bytes.len() > MAX_WASM_EVENT_PAYLOAD {
+        return Err(format!(
+            "[{}] emit-call-item payload {} bytes exceeds MAX_WASM_EVENT_PAYLOAD ({})",
+            state.plugin_name,
+            item_bytes.len(),
+            MAX_WASM_EVENT_PAYLOAD,
+        ));
+    }
+
+    let ctx = state.streaming_call.as_ref().ok_or_else(|| {
+        format!(
+            "[{}] no active streaming call; emit-call-item invalid here",
+            state.plugin_name
+        )
+    })?;
+    match ctx {
+        crate::host::StreamingCallContext::ScanLibrary { sink, .. } => {
+            let event: voom_domain::events::FileDiscoveredEvent = rmp_serde::from_slice(item_bytes)
+                .map_err(|e| {
+                    format!(
+                        "[{}] failed to decode FileDiscoveredEvent: {e}",
+                        state.plugin_name
+                    )
+                })?;
+            // blocking_send: WASM plugin calls are synchronous from the host's
+            // perspective. The CALLER (dispatch_to_capability) MUST drive the
+            // receiver on a DIFFERENT thread than the one that invokes on-call —
+            // blocking_send will deadlock if the channel fills and the only
+            // receiver is on the same thread. Backpressure then propagates
+            // naturally as the WASM call blocks until the host caller drains.
+            sink.blocking_send(event).map_err(|e| {
+                format!(
+                    "[{}] failed to forward to per-call sink: {e}",
+                    state.plugin_name
+                )
+            })
+        }
+    }
+}
+
+/// Pure function implementing the `emit-root-walk-completed` host fn semantics.
+/// Routes to the per-call `root_done` sender. Errors if no active streaming
+/// call OR if the active call's root_done is None.
+#[cfg(feature = "wasm")]
+pub(crate) fn emit_root_walk_completed_impl(
+    state: &mut crate::host::HostState,
+    event_bytes: &[u8],
+) -> std::result::Result<(), String> {
+    use crate::loader::wasm::MAX_WASM_EVENT_PAYLOAD;
+
+    if event_bytes.len() > MAX_WASM_EVENT_PAYLOAD {
+        return Err(format!(
+            "[{}] emit-root-walk-completed payload {} bytes exceeds MAX_WASM_EVENT_PAYLOAD ({})",
+            state.plugin_name,
+            event_bytes.len(),
+            MAX_WASM_EVENT_PAYLOAD,
+        ));
+    }
+
+    let ctx = state.streaming_call.as_ref().ok_or_else(|| {
+        format!(
+            "[{}] no active streaming call; emit-root-walk-completed invalid here",
+            state.plugin_name
+        )
+    })?;
+    match ctx {
+        crate::host::StreamingCallContext::ScanLibrary { root_done, .. } => {
+            let sender = root_done.as_ref().ok_or_else(|| {
+                format!(
+                    "[{}] active streaming call has no root_done sender; emit-root-walk-completed cannot route",
+                    state.plugin_name
+                )
+            })?;
+            let event: voom_domain::events::RootWalkCompletedEvent =
+                rmp_serde::from_slice(event_bytes).map_err(|e| {
+                    format!(
+                        "[{}] failed to decode RootWalkCompletedEvent: {e}",
+                        state.plugin_name
+                    )
+                })?;
+            sender.blocking_send(event).map_err(|e| {
+                format!(
+                    "[{}] failed to forward to per-call root_done: {e}",
+                    state.plugin_name
+                )
+            })
+        }
+    }
+}
+
+/// Pure function implementing the `call-is-cancelled` host fn semantics.
+/// Returns false when no streaming Call is active (i.e. the WASM plugin
+/// shouldn't have called this outside a streaming Call context; we
+/// permissively report "not cancelled" rather than erroring, since polling
+/// is a benign read).
+#[cfg(feature = "wasm")]
+pub(crate) fn call_is_cancelled_impl(state: &crate::host::HostState) -> bool {
+    match &state.streaming_call {
+        None => false,
+        Some(crate::host::StreamingCallContext::ScanLibrary { cancel, .. }) => {
+            cancel.is_cancelled()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,5 +1012,202 @@ mod tests {
         let err = state.get_plugin_data("config").unwrap_err();
         assert!(err.contains("failed to read plugin data"));
         assert!(err.contains("backend unavailable"));
+    }
+}
+
+#[cfg(all(test, feature = "wasm"))]
+mod emit_call_item_tests {
+    use super::*;
+    use crate::host::{HostState, StreamingCallContext};
+    use std::path::PathBuf;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+    use voom_domain::events::FileDiscoveredEvent;
+
+    /// Helper: construct a HostState with a streaming ScanLibrary context
+    /// already installed; return the matching FileDiscovered receiver and the
+    /// cancellation token so tests can assert against them.
+    fn host_with_scan_context() -> (
+        HostState,
+        mpsc::Receiver<FileDiscoveredEvent>,
+        CancellationToken,
+    ) {
+        let mut state = HostState::new("test".into());
+        let (sink, rx) = mpsc::channel::<FileDiscoveredEvent>(8);
+        let cancel = CancellationToken::new();
+        state.install_streaming_context(StreamingCallContext::ScanLibrary {
+            sink,
+            root_done: None,
+            cancel: cancel.clone(),
+        });
+        (state, rx, cancel)
+    }
+
+    #[test]
+    fn emit_call_item_pushes_to_sink_when_context_installed() {
+        let (mut state, mut rx, _cancel) = host_with_scan_context();
+
+        let evt = FileDiscoveredEvent::new(PathBuf::from("/test.mkv"), 1024, None);
+        let bytes = rmp_serde::to_vec_named(&evt).expect("encode");
+
+        let result = emit_call_item_impl(&mut state, &bytes);
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+
+        let received = rx.try_recv().expect("event in receiver");
+        assert_eq!(received.path, PathBuf::from("/test.mkv"));
+    }
+
+    #[test]
+    fn emit_call_item_errors_when_no_context() {
+        let mut state = HostState::new("test".into());
+        let bytes = b"any";
+        let result = emit_call_item_impl(&mut state, bytes);
+        assert!(result.is_err(), "expected error outside streaming call");
+        let err = result.unwrap_err();
+        assert!(err.contains("no active streaming call"), "got: {err}");
+    }
+
+    #[test]
+    fn emit_call_item_errors_on_malformed_payload() {
+        let (mut state, _rx, _cancel) = host_with_scan_context();
+        let bytes = b"not valid messagepack";
+        let result = emit_call_item_impl(&mut state, bytes);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_lowercase();
+        assert!(
+            err.contains("decode") || err.contains("deserialize"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn emit_call_item_rejects_oversized_payload_without_decoding() {
+        use crate::loader::wasm::MAX_WASM_EVENT_PAYLOAD;
+        let (mut state, _rx, _cancel) = host_with_scan_context();
+        // Oversized payload — content doesn't need to be valid MessagePack;
+        // the size check must fire before any decode attempt.
+        let oversized = vec![0u8; MAX_WASM_EVENT_PAYLOAD + 1];
+        let result = emit_call_item_impl(&mut state, &oversized);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("exceeds MAX_WASM_EVENT_PAYLOAD"),
+            "size-limit error must be reported before decode attempt: {err}"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "wasm"))]
+mod emit_root_walk_completed_tests {
+    use super::*;
+    use crate::host::{HostState, StreamingCallContext};
+    use std::path::PathBuf;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+    use voom_domain::events::{FileDiscoveredEvent, RootWalkCompletedEvent};
+    use voom_domain::transition::ScanSessionId;
+
+    fn host_with_root_done() -> (HostState, mpsc::Receiver<RootWalkCompletedEvent>) {
+        let mut state = HostState::new("test".into());
+        let (sink, _rx) = mpsc::channel::<FileDiscoveredEvent>(8);
+        let (root_done, rx_root) = mpsc::channel::<RootWalkCompletedEvent>(8);
+        let cancel = CancellationToken::new();
+        state.install_streaming_context(StreamingCallContext::ScanLibrary {
+            sink,
+            root_done: Some(root_done),
+            cancel,
+        });
+        (state, rx_root)
+    }
+
+    #[test]
+    fn emit_root_walk_completed_pushes_to_root_done() {
+        let (mut state, mut rx_root) = host_with_root_done();
+        let session = ScanSessionId::new();
+        let evt = RootWalkCompletedEvent::new(PathBuf::from("/tmp"), session, 42);
+        let bytes = rmp_serde::to_vec_named(&evt).expect("encode");
+        let result = emit_root_walk_completed_impl(&mut state, &bytes);
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        let received = rx_root.try_recv().expect("event in receiver");
+        assert_eq!(received.root, PathBuf::from("/tmp"));
+    }
+
+    #[test]
+    fn emit_root_walk_completed_errors_when_no_root_done_sender() {
+        // Streaming context installed but with root_done: None.
+        let mut state = HostState::new("test".into());
+        let (sink, _rx) = mpsc::channel::<FileDiscoveredEvent>(8);
+        let cancel = CancellationToken::new();
+        state.install_streaming_context(StreamingCallContext::ScanLibrary {
+            sink,
+            root_done: None,
+            cancel,
+        });
+        let result = emit_root_walk_completed_impl(&mut state, b"any");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("no root_done sender"), "got: {err}");
+    }
+
+    #[test]
+    fn emit_root_walk_completed_errors_when_no_context() {
+        let mut state = HostState::new("test".into());
+        let result = emit_root_walk_completed_impl(&mut state, b"any");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("no active streaming call"), "got: {err}");
+    }
+
+    #[test]
+    fn emit_root_walk_completed_rejects_oversized_payload() {
+        use crate::loader::wasm::MAX_WASM_EVENT_PAYLOAD;
+        let (mut state, _rx_root) = host_with_root_done();
+        let oversized = vec![0u8; MAX_WASM_EVENT_PAYLOAD + 1];
+        let result = emit_root_walk_completed_impl(&mut state, &oversized);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("exceeds MAX_WASM_EVENT_PAYLOAD"), "got: {err}");
+    }
+}
+
+#[cfg(all(test, feature = "wasm"))]
+mod call_is_cancelled_tests {
+    use super::*;
+    use crate::host::{HostState, StreamingCallContext};
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+    use voom_domain::events::FileDiscoveredEvent;
+
+    #[test]
+    fn call_is_cancelled_returns_false_when_no_context() {
+        let state = HostState::new("test".into());
+        assert!(!call_is_cancelled_impl(&state));
+    }
+
+    #[test]
+    fn call_is_cancelled_returns_false_when_token_not_triggered() {
+        let mut state = HostState::new("test".into());
+        let (sink, _rx) = mpsc::channel::<FileDiscoveredEvent>(8);
+        let cancel = CancellationToken::new();
+        state.install_streaming_context(StreamingCallContext::ScanLibrary {
+            sink,
+            root_done: None,
+            cancel,
+        });
+        assert!(!call_is_cancelled_impl(&state));
+    }
+
+    #[test]
+    fn call_is_cancelled_returns_true_when_triggered() {
+        let mut state = HostState::new("test".into());
+        let (sink, _rx) = mpsc::channel::<FileDiscoveredEvent>(8);
+        let cancel = CancellationToken::new();
+        state.install_streaming_context(StreamingCallContext::ScanLibrary {
+            sink,
+            root_done: None,
+            cancel: cancel.clone(),
+        });
+        cancel.cancel();
+        assert!(call_is_cancelled_impl(&state));
     }
 }

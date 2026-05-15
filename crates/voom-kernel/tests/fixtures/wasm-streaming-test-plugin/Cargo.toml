@@ -1,0 +1,32 @@
+# An empty [workspace] table marks this crate as its own workspace root, so
+# even though the parent voom workspace excludes this path, cargo treats this
+# Cargo.toml as a standalone workspace.
+[workspace]
+
+[package]
+name = "wasm-streaming-test-plugin"
+version = "0.0.1"
+edition = "2024"
+publish = false
+description = "Test fixture for voom-kernel WASM streaming-dispatch e2e tests"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# This fixture is intentionally workspace-isolated (see workspace [exclude] in
+# the root Cargo.toml). We do not depend on voom-domain here because that crate
+# pulls in tokio/regex/etc., which complicate compiling to `wasm32-wasip2`.
+# Instead we mirror just the serde shapes we need (WasmCall, WasmScanOptions,
+# ScanSessionId, FileDiscoveredEvent, ScanSummary, CallResponse) — the host
+# encodes/decodes via `rmp_serde::to_vec_named` / `from_slice`, so as long as
+# field names and structure match, the bytes round-trip.
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1"
+wit-bindgen = "0.51"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1

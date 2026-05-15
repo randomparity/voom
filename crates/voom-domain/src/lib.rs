@@ -34,6 +34,7 @@ pub mod transcode;
 pub mod transition;
 pub mod utils;
 pub mod verification;
+pub mod wasm_call;
 
 pub use bad_file::{BadFile, BadFileSource};
 pub use capabilities::Capability;

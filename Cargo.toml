@@ -37,6 +37,10 @@ exclude = [
     "wasm-plugins/audio-language-detector",
     "wasm-plugins/subtitle-generator",
     "crates/voom-dsl/fuzz",
+    # WASM test fixture for the kernel's streaming-dispatch e2e tests.
+    # Builds independently via its own `build.sh`; excluded so its cdylib
+    # crate-type and `wasm32-wasip2`-only deps don't pollute workspace builds.
+    "crates/voom-kernel/tests/fixtures/wasm-streaming-test-plugin",
 ]
 
 [workspace.lints.clippy]

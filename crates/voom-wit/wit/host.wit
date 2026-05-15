@@ -41,4 +41,30 @@ interface host {
     /// Returns MessagePack-serialized list of file-transition records.
     /// See get-file-transitions note on serialization format.
     get-path-transitions: func(path: string) -> result<list<u8>, string>;
+
+    /// Emit a streaming item for the currently-active streaming Call (NOT a
+    /// broadcast). The host routes the payload to the per-call sender
+    /// associated with this WASM invocation. Calling this outside an active
+    /// streaming Call returns Err. The payload variant must match what the
+    /// current Call's sink type accepts (e.g. MessagePack-encoded
+    /// FileDiscoveredEvent for Call::ScanLibrary).
+    ///
+    /// Item-byte length is capped at MAX_WASM_EVENT_PAYLOAD (16 MiB); larger
+    /// items return Err without being decoded (DoS guard).
+    emit-call-item: func(item: list<u8>) -> result<_, string>;
+
+    /// Emit a root-completion event for the currently-active streaming Call.
+    /// The host routes the payload to the per-call `root_done` sender. The CLI
+    /// process pipeline opens its per-root gate when this event arrives —
+    /// streaming WASM discovery plugins MUST call this after each root
+    /// finishes, or the CLI will stall.
+    ///
+    /// Returns Err when no streaming Call is active OR when the active Call's
+    /// `root_done` sender is `None`. Same 16 MiB cap on payload size.
+    emit-root-walk-completed: func(event: list<u8>) -> result<_, string>;
+
+    /// Check whether the currently-active Call has been cancelled. Returns
+    /// false outside an active streaming Call. Streaming-Call WASM plugins
+    /// should poll this between items and exit early when true.
+    call-is-cancelled: func() -> bool;
 }

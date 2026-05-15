@@ -1,0 +1,8 @@
+name = "wasm-streaming-test-plugin"
+version = "0.0.1"
+description = "Test WASM plugin exercising Phase 2 streaming on-call surface"
+handles_events = []
+priority = 50
+
+[[capabilities]]
+Discover = { schemes = ["mock-fs"] }
