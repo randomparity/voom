@@ -326,9 +326,12 @@ fn spawn_discovery_stage(
                     kind: "discover".into(),
                     key: "file".into(),
                 };
-                kernel
-                    .dispatch_to_capability(query, call)
-                    .with_context(|| format!("filesystem scan failed for {}", path.display()))?;
+                let dispatch_result = kernel.dispatch_to_capability(query, call);
+                crate::commands::discovery_dispatch::handle_dispatch_result(
+                    dispatch_result,
+                    path,
+                    &discovery_errors,
+                )?;
 
                 let dir_count = cumulative_discovered.load(Ordering::Relaxed) - pre;
                 processing_base.fetch_add(dir_count, Ordering::Relaxed);

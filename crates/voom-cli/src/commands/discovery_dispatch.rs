@@ -26,10 +26,6 @@ use voom_domain::call::CallResponse;
 ///   doesn't match the request. The caller fails closed.
 /// - `Err(e)`: wraps with `"filesystem scan failed for {path}"` context and
 ///   returns `Err`.
-// Tasks 5 and 6 (PR #420 follow-up) wire this helper into scan/pipeline.rs
-// and process/pipeline_streaming.rs respectively; until then it is exercised
-// only by the unit tests in this module.
-#[allow(dead_code)]
 pub(crate) fn handle_dispatch_result(
     result: std::result::Result<CallResponse, voom_domain::errors::VoomError>,
     path: &Path,
