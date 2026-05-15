@@ -2,10 +2,16 @@
 //! must not proceed. Discovery must not silently fall through to "no
 //! exclusions" because that re-introduces the rediscovery race.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use voom_discovery::{ScanOptions, SessionMutationSnapshot, scan_directory_streaming};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use voom_discovery::{DiscoveryPlugin, ScanOptions, SessionMutationSnapshot};
+use voom_domain::call::Call;
 use voom_domain::errors::{StorageErrorKind, VoomError};
+use voom_domain::events::{FileDiscoveredEvent, RootWalkCompletedEvent};
+use voom_domain::transition::ScanSessionId;
+use voom_kernel::Plugin;
 
 #[test]
 fn scanner_aborts_when_snapshot_loader_errors() {
@@ -21,17 +27,35 @@ fn scanner_aborts_when_snapshot_loader_errors() {
         })
     }));
 
-    let emitted = Arc::new(Mutex::new(Vec::new()));
-    let sink = {
-        let emitted = emitted.clone();
-        Box::new(move |fd| emitted.lock().unwrap().push(fd))
+    let (sink, mut rx) = mpsc::channel::<FileDiscoveredEvent>(16);
+    let (root_done_tx, mut root_done_rx) = mpsc::channel::<RootWalkCompletedEvent>(1);
+    let cancel = CancellationToken::new();
+
+    let call = Call::ScanLibrary {
+        uri: format!("file://{}", tmp.path().display()),
+        options: opts,
+        scan_session: ScanSessionId::new(),
+        sink,
+        root_done: Some(root_done_tx),
+        cancel,
     };
-    let res = scan_directory_streaming(&opts, sink);
+
+    let plugin = DiscoveryPlugin::for_bootstrap();
+    let res = plugin.on_call(&call);
 
     assert!(res.is_err(), "scan must fail when snapshot load fails");
+
+    // No events must have been emitted from an aborted scan.
+    let mut emitted = 0;
+    while rx.try_recv().is_ok() {
+        emitted += 1;
+    }
+    assert_eq!(emitted, 0, "no events must be emitted from an aborted scan");
+
+    // root_done must NOT fire on failure.
     assert!(
-        emitted.lock().unwrap().is_empty(),
-        "no events must be emitted from an aborted scan"
+        root_done_rx.try_recv().is_err(),
+        "RootWalkCompletedEvent must NOT be emitted on scan failure",
     );
 }
 

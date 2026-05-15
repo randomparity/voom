@@ -279,13 +279,13 @@ fn report_walk_errors(options: &ScanOptions, walk_errors: &[DiscoveryWalkError])
 /// and must be `Send + Sync`. Implementations that need ordering or
 /// serialization (e.g. an mpsc sender that returns errors) should handle
 /// it themselves.
-pub type EventSink = Box<dyn Fn(FileDiscoveredEvent) + Send + Sync>;
+pub(crate) type EventSink = Box<dyn Fn(FileDiscoveredEvent) + Send + Sync>;
 
 /// Streaming variant of [`scan_directory`]. Emits each `FileDiscoveredEvent`
 /// via `on_event` as soon as its content hash is computed, rather than
 /// collecting into a `Vec`. Order is rayon-dependent — callers that need a
 /// deterministic order should sort downstream.
-pub fn scan_directory_streaming(options: &ScanOptions, on_event: EventSink) -> Result<()> {
+pub(crate) fn scan_directory_streaming(options: &ScanOptions, on_event: EventSink) -> Result<()> {
     if !options.root.exists() {
         return Err(VoomError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -359,10 +359,12 @@ pub fn scan_directory_streaming(options: &ScanOptions, on_event: EventSink) -> R
     Ok(())
 }
 
-/// Scan a directory for media files. Returns all discovered events in
-/// deterministic path order. Kept for callers (e.g. `voom process`) that
-/// expect a fully-collected list.
-pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>> {
+/// Test-only synchronous scan helper that collects all events in
+/// deterministic path order. Production code goes through
+/// `DiscoveryPlugin::on_call(Call::ScanLibrary)` which uses the streaming
+/// variant directly.
+#[cfg(test)]
+pub(crate) fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>> {
     let collected: Arc<Mutex<Vec<FileDiscoveredEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let collected_clone = collected.clone();
     scan_directory_streaming(

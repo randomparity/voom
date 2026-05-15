@@ -4,15 +4,12 @@ pub mod scanner;
 #[cfg(feature = "test-hooks")]
 pub mod test_hooks;
 
-pub use scanner::EventSink;
 pub use scanner::hash_file;
 pub use scanner::normalize_path;
-pub use scanner::scan_directory_streaming;
 
 use voom_domain::call::{Call, CallResponse, ScanSummary};
 use voom_domain::capabilities::Capability;
-use voom_domain::errors::Result;
-use voom_domain::events::{FileDiscoveredEvent, RootWalkCompletedEvent};
+use voom_domain::events::RootWalkCompletedEvent;
 pub use voom_domain::scan::{
     ErrorCallback, FingerprintLookup, MutationSnapshotLoader, ScanOptions, ScanProgress,
 };
@@ -41,7 +38,7 @@ impl DiscoveryPlugin {
     }
 
     #[must_use]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             capabilities: vec![Capability::Discover {
                 schemes: vec!["file".into()],
@@ -49,24 +46,14 @@ impl DiscoveryPlugin {
         }
     }
 
-    /// Scan a directory for media files and return discovery events.
-    pub fn scan(&self, options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>> {
-        scanner::scan_directory(options)
-    }
-
-    /// Streaming scan. See [`scanner::scan_directory_streaming`].
-    pub fn scan_streaming(
+    /// Test-only synchronous scan helper. Production code goes through
+    /// `Plugin::on_call(Call::ScanLibrary)`.
+    #[cfg(test)]
+    pub(crate) fn scan(
         &self,
         options: &ScanOptions,
-        on_event: scanner::EventSink,
-    ) -> Result<()> {
-        scanner::scan_directory_streaming(options, on_event)
-    }
-}
-
-impl Default for DiscoveryPlugin {
-    fn default() -> Self {
-        Self::new()
+    ) -> voom_domain::errors::Result<Vec<voom_domain::events::FileDiscoveredEvent>> {
+        scanner::scan_directory(options)
     }
 }
 
@@ -175,7 +162,7 @@ impl Plugin for DiscoveryPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use voom_domain::events::Event;
+    use voom_domain::events::{Event, FileDiscoveredEvent};
 
     #[test]
     fn test_plugin_metadata() {
