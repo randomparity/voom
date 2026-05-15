@@ -13,10 +13,11 @@
 //!
 //!     cargo test -p voom-kernel --test wasm_streaming_dispatch --features wasm
 //!
-//! The fixture-dependent tests panic with a clear "fixture not built"
-//! message when the `.wasm` is missing. The size-cap helper tests
-//! (`check_call_payload_size_*`) do not depend on the fixture and always
-//! run when the `wasm` feature is enabled.
+//! The fixture-dependent tests skip gracefully (printing a notice to
+//! stderr and returning early) when the `.wasm` is missing, so a fresh
+//! clone without a built fixture still has a green test run. The
+//! size-cap helper tests (`check_call_payload_size_*`) do not depend on
+//! the fixture and always run when the `wasm` feature is enabled.
 
 #![cfg(feature = "wasm")]
 
@@ -46,16 +47,21 @@ fn fixture_wasm_path() -> PathBuf {
 
 /// Build a kernel that has the fixture WASM plugin loaded and registered.
 ///
-/// Panics (with a helpful message) when the fixture isn't built.
-fn bootstrap_kernel_with_fixture() -> Kernel {
+/// Returns `None` (after printing a skip notice with the build command
+/// to stderr) when the fixture `.wasm` hasn't been built. Callers
+/// should early-return on `None` so the test passes as a skip rather
+/// than failing on first clones / dev workflows that haven't run the
+/// fixture's `build.sh` yet.
+fn bootstrap_kernel_with_fixture() -> Option<Kernel> {
     let wasm_path = fixture_wasm_path();
     if !wasm_path.exists() {
-        panic!(
+        eprintln!(
             "WASM test fixture not built. Run:\n  \
              ./crates/voom-kernel/tests/fixtures/wasm-streaming-test-plugin/build.sh\n\
-             (expected: {})",
+             (expected: {})\nSkipping this test.",
             wasm_path.display()
         );
+        return None;
     }
 
     // Leak the loader: its background epoch thread holds an Arc<Engine>, and
@@ -71,12 +77,14 @@ fn bootstrap_kernel_with_fixture() -> Kernel {
     kernel
         .register_plugin(plugin, 50)
         .expect("register fixture plugin");
-    kernel
+    Some(kernel)
 }
 
 #[test]
 fn wasm_plugin_streams_files_via_emit_call_item() {
-    let kernel = bootstrap_kernel_with_fixture();
+    let Some(kernel) = bootstrap_kernel_with_fixture() else {
+        return;
+    };
     let (sink, mut rx) = mpsc::channel::<FileDiscoveredEvent>(16);
     let cancel = CancellationToken::new();
 
@@ -133,7 +141,9 @@ fn wasm_plugin_streams_files_via_emit_call_item() {
 
 #[test]
 fn wasm_plugin_respects_cancellation() {
-    let kernel = bootstrap_kernel_with_fixture();
+    let Some(kernel) = bootstrap_kernel_with_fixture() else {
+        return;
+    };
     let (sink, mut rx) = mpsc::channel::<FileDiscoveredEvent>(16);
     let cancel = CancellationToken::new();
 
@@ -185,7 +195,9 @@ fn wasm_plugin_respects_cancellation() {
 
 #[test]
 fn wasm_plugin_emits_root_walk_completed() {
-    let kernel = bootstrap_kernel_with_fixture();
+    let Some(kernel) = bootstrap_kernel_with_fixture() else {
+        return;
+    };
     let (sink, _rx) = mpsc::channel::<FileDiscoveredEvent>(16);
     let (root_done, mut rx_root) = mpsc::channel::<RootWalkCompletedEvent>(8);
     let cancel = CancellationToken::new();

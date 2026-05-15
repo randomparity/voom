@@ -35,7 +35,11 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
+        with:
+          target: wasm32-wasip2
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: Build WASM streaming test fixture
+        run: bash crates/voom-kernel/tests/fixtures/wasm-streaming-test-plugin/build.sh
       - run: cargo build --workspace
       - run: cargo test --workspace
       - run: cargo run -q -- policy test docs/examples/tests
@@ -52,6 +56,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6  # v1.16.1
+        with:
+          target: wasm32-wasip2
+      - name: Build WASM streaming test fixture
+        run: bash crates/voom-kernel/tests/fixtures/wasm-streaming-test-plugin/build.sh
       - run: cargo build -p voom-kernel --features wasm
       - run: cargo test -p voom-kernel --features wasm
 
