@@ -1086,4 +1086,136 @@ mod tests {
             .count();
         assert_eq!(successes, 200, "expected all 200 jobs to succeed");
     }
+
+    /// Regression test for Codex round-3 finding #2 (PR #420).
+    ///
+    /// A discovery plugin that emits files on the sink but never sends to
+    /// `root_done` must make the process pipeline fail closed, not silently
+    /// drop the held items. Native discovery always sends root_done on
+    /// success; this test exercises the "broken plugin" path.
+    #[tokio::test]
+    async fn process_pipeline_fails_closed_when_discovery_omits_root_done() {
+        use std::sync::OnceLock;
+        use voom_domain::call::{Call, CallResponse, ScanSummary};
+        use voom_domain::capabilities::Capability;
+        use voom_kernel::Plugin;
+
+        // Custom discovery plugin: emits one FileDiscoveredEvent to the
+        // sink, then returns Ok WITHOUT sending RootWalkCompletedEvent
+        // to root_done. This is the contract violation Task 4 catches.
+        struct OmitsRootDonePlugin;
+
+        impl Plugin for OmitsRootDonePlugin {
+            fn name(&self) -> &'static str {
+                "test-omits-root-done"
+            }
+
+            fn version(&self) -> &'static str {
+                "0.0.0-test"
+            }
+
+            voom_kernel::plugin_cargo_metadata!();
+
+            fn capabilities(&self) -> &[Capability] {
+                static CAPS: OnceLock<Vec<Capability>> = OnceLock::new();
+                CAPS.get_or_init(|| {
+                    vec![Capability::Discover {
+                        schemes: vec!["file".into()],
+                    }]
+                })
+                .as_slice()
+            }
+
+            fn on_call(&self, call: &Call) -> voom_domain::errors::Result<CallResponse> {
+                let Call::ScanLibrary {
+                    options,
+                    sink,
+                    root_done: _intentionally_unused,
+                    cancel,
+                    ..
+                } = call
+                else {
+                    return Err(voom_domain::errors::VoomError::plugin(
+                        self.name(),
+                        "unexpected Call variant",
+                    ));
+                };
+
+                // Emit one fake file on the sink. content_hash = None so
+                // the ingest task's no-hash branch is taken. The path
+                // falls under options.root so root_for_path() returns
+                // Some — that's what puts the item in the holding buffer
+                // (gate is closed because we never send root_done).
+                if !cancel.is_cancelled() {
+                    let event = voom_domain::events::FileDiscoveredEvent::new(
+                        options.root.join("fake.mkv"),
+                        42,
+                        None,
+                    );
+                    let _ = sink.blocking_send(event);
+                }
+
+                // Return Ok WITHOUT sending root_done. This is the
+                // contract violation.
+                Ok(CallResponse::ScanLibrary(ScanSummary::new(1, vec![], 1)))
+            }
+        }
+
+        // Build a kernel with ONLY the broken plugin claiming
+        // discover/file. The real DiscoveryPlugin is not registered, so
+        // dispatch routes to ours. We can't use `make_pool` here because
+        // it always registers the real discovery plugin and Sharded
+        // capability keys must be unique.
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel
+            .register_plugin(Arc::new(OmitsRootDonePlugin), 10)
+            .expect("register test discovery plugin");
+        let kernel = Arc::new(kernel);
+
+        // Replicate the rest of `make_pool`'s scaffolding inline.
+        let token = CancellationToken::new();
+        let store: Arc<dyn StorageTrait> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let job_store: Arc<dyn voom_domain::storage::JobStorage> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let queue = Arc::new(JobQueue::new(job_store));
+        let mut config = WorkerPoolConfig::default();
+        config.max_workers = 2;
+        config.worker_prefix = "test".into();
+        let pool = Arc::new(WorkerPool::new(queue, config, token.clone()));
+
+        // execute_during_discovery = true exercises the holding-buffer
+        // path. Don't write any real fixtures — the fake plugin
+        // synthesizes a FileDiscoveredEvent referencing
+        // tmp.path().join("fake.mkv").
+        let tmp = TempDir::new().unwrap();
+        let mut args = make_test_args(vec![tmp.path().to_path_buf()]);
+        args.execute_during_discovery = true;
+
+        let outcome = run_streaming_pipeline(
+            &args,
+            &args.paths,
+            kernel,
+            store,
+            pool,
+            Arc::new(NoopReporter),
+            JobErrorStrategy::Continue,
+            HashSet::new(),
+            |_job| async { Ok(None) },
+            true, // quiet
+            true, // plan_only
+            token,
+            voom_domain::transition::ScanSessionId::new(),
+        )
+        .await;
+
+        let err = outcome
+            .err()
+            .expect("pipeline must fail closed when discovery omits RootWalkCompletedEvent");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("held") || msg.contains("RootWalkCompletedEvent"),
+            "error must name the failure mode (held items / missing root_done); got: {msg}"
+        );
+    }
 }
