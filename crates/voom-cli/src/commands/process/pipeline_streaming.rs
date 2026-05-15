@@ -604,11 +604,57 @@ fn spawn_ingest_stage(
         // Dropping tx_items signals "no more work" to the pool's enqueuer
         // (after the dispatcher is also done).
         if let Some(handle) = dispatcher_handle {
-            // Wait for the dispatcher to drain all buffered items before
-            // dropping tx_items. If cancelled, the holding buffer will still
-            // have items — just discard them (no SQL rows were created).
-            let _ = handle.await;
-            let _ = holding.drain_all(); // discard any leftover held items
+            // Wait for the dispatcher to finish. The dispatcher exits when
+            // its rx_root_done channel closes (all senders dropped — the
+            // discovery plugin's clone and the spawn_discovery_stage outer
+            // sender), or on cancellation. Propagate any JoinError (panic
+            // in the dispatcher) — silent swallowing would hide real bugs.
+            let dispatcher_result = handle.await;
+            if let Err(join_err) = dispatcher_result {
+                // Cancel the pipeline so workers exit promptly, then
+                // propagate the panic context.
+                token.cancel();
+                drop(tx_items);
+                return Err(anyhow::anyhow!(
+                    "root-walk dispatcher task panicked: {join_err}"
+                ));
+            }
+
+            // After dispatcher exit, check the holding buffer. Two cases:
+            //   (a) token cancelled — held items are meaningless because no
+            //       SQL rows were created for them yet; drop them.
+            //   (b) token NOT cancelled but holding is non-empty — discovery
+            //       returned Ok yet failed to emit RootWalkCompletedEvent for
+            //       every root that had files. The ingest dispatcher would
+            //       therefore never have opened those gates. Without this
+            //       check, the held items would be silently discarded, the
+            //       files would never be enqueued, and the run would finish
+            //       reporting success despite quietly dropping work.
+            //
+            // Codex's round-3 adversarial review (PR #420) flagged this
+            // exact path. Fail closed: emit an error naming the unprocessed
+            // count so the user can re-run.
+            let leftover = holding.drain_all();
+            if !token.is_cancelled() && !leftover.is_empty() {
+                tracing::error!(
+                    held_items = leftover.len(),
+                    "discovery dispatch returned Ok but did not emit \
+                     RootWalkCompletedEvent for every root with files; \
+                     {} item(s) were held and dropped",
+                    leftover.len()
+                );
+                token.cancel();
+                drop(tx_items);
+                return Err(anyhow::anyhow!(
+                    "process pipeline: {} discovered file(s) held against \
+                     un-opened root gates after discovery completed — likely \
+                     a discovery plugin that returned Ok without emitting \
+                     RootWalkCompletedEvent for every root. Re-run the \
+                     command; if the failure persists, the discovery plugin \
+                     is broken.",
+                    leftover.len()
+                ));
+            }
         }
         drop(tx_items);
 
