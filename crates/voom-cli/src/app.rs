@@ -80,6 +80,11 @@ pub fn bootstrap_kernel(config: &AppConfig) -> Result<Kernel> {
 // and the collected data through many extra parameters.
 #[allow(clippy::too_many_lines)]
 pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult> {
+    // Validate config before any plugin registration so the user sees a
+    // clear "required plugin disabled" error instead of an opaque "no
+    // handler for capability" failure deep inside dispatch.
+    config.validate()?;
+
     let mut kernel = Kernel::new();
     let data_dir = &config.data_dir;
 
@@ -504,6 +509,33 @@ mod tests {
         assert!(
             !registered.iter().any(|n| n == "capability-collector"),
             "capability-collector should not be registered when disabled (registered: {registered:?})"
+        );
+    }
+
+    #[test]
+    fn bootstrap_fails_when_discovery_is_disabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            plugins: crate::config::PluginsConfig {
+                disabled_plugins: vec!["discovery".into()],
+                ..crate::config::PluginsConfig::default()
+            },
+            ..AppConfig::default()
+        };
+
+        let err = match bootstrap_kernel_with_store(&config) {
+            Ok(_) => panic!("bootstrap must fail when discovery is disabled"),
+            Err(e) => e,
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("discovery"),
+            "error must name discovery; got: {msg}"
+        );
+        assert!(
+            msg.contains("disabled_plugins") || msg.contains("required"),
+            "error must explain the cause; got: {msg}"
         );
     }
 }
