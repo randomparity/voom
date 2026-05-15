@@ -213,8 +213,31 @@ pub mod wasm {
 
             let mut linker: wasmtime::component::Linker<HostState> =
                 wasmtime::component::Linker::new(&self.engine);
-            register_host_functions(&mut linker)
+
+            // Stub-out every component import as a trap FIRST. This covers
+            // WASI interfaces pulled in by `std`'s panic/stderr paths when a
+            // WASM plugin is built for `wasm32-wasip2`. A plugin that never
+            // actually exercises those imports loads and runs normally; one
+            // that does will trap at the call site, which wasmtime surfaces
+            // as a clean `ComponentCall` error.
+            //
+            // `define_unknown_imports_as_traps` walks the entire import graph,
+            // including instances the host fully implements (e.g.
+            // `voom:plugin/host@0.3.0`). Running it before our real host
+            // registration creates trap placeholders for every host function
+            // first; `register_host_functions` then overwrites those
+            // placeholders with the real implementations. Shadowing must be
+            // allowed for the overwrite step. We restore the strict default
+            // afterwards so accidental future double-registrations remain
+            // load-time errors.
+            linker
+                .define_unknown_imports_as_traps(&component)
                 .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+
+            linker.allow_shadowing(true);
+            let register_result = register_host_functions(&mut linker);
+            linker.allow_shadowing(false);
+            register_result.map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
             let plugin_name = plugin_name_from_manifest(manifest.as_ref(), wasm_path);
 
@@ -369,7 +392,10 @@ pub mod wasm {
     }
 
     /// Maximum size for WASM event payloads (16 MiB).
-    pub(crate) const MAX_WASM_EVENT_PAYLOAD: usize = 16 * 1024 * 1024;
+    /// Public so integration tests (`tests/wasm_streaming_dispatch.rs`) can
+    /// exercise `check_call_payload_size` against the same constant the
+    /// loader uses internally.
+    pub const MAX_WASM_EVENT_PAYLOAD: usize = 16 * 1024 * 1024;
 
     /// rev-2: shared size-cap check for WASM-boundary payloads. Used by
     /// `invoke_wasm_on_call` for both request and response directions. The
