@@ -127,6 +127,309 @@ EOF
 
 run_summary_doctor_log_rc_compat_test
 
+run_summary_jobs_json_straggler_test() {
+  local actual
+  local summary
+
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  mkdir -p \
+    "${actual}/logs" \
+    "${actual}/reports" \
+    "${actual}/db-export" \
+    "${actual}/diffs"
+
+  for log_name in env-check policy-validate scan; do
+    printf '0\n' >"${actual}/logs/${log_name}.log.rc"
+  done
+
+  cat >"${actual}/diffs/files-summary.md" <<'EOF'
+# Snapshot Diff Summary
+
+Disappeared paths: 0
+Missing backup post-run: 0
+EOF
+
+  cat >"${actual}/reports/jobs.json" <<'EOF'
+{
+  "jobs": [
+    {"id": "job-1", "status": "completed"},
+    {"id": "job-2", "status": "pending"}
+  ],
+  "counts": [],
+  "limit": 50,
+  "offset": 0
+}
+EOF
+
+  "lib/build-summary.sh" "${actual}" 0 0
+
+  summary="${actual}/summary.md"
+  if ! grep -Fq "FAIL: jobs report contains non-terminal states (running/pending)" "${summary}"; then
+    echo "FAIL: jobs.json non-terminal state did not fail summary" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_summary_jobs_json_straggler_test
+
+run_summary_deprecation_gate_test() {
+  local actual
+  local summary
+
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  mkdir -p "${actual}/logs" "${actual}/reports" "${actual}/db-export" "${actual}/diffs"
+
+  for log_name in env-check policy-validate scan; do
+    printf '0\n' >"${actual}/logs/${log_name}.log.rc"
+  done
+
+  cat >"${actual}/diffs/files-summary.md" <<'EOF'
+# Snapshot Diff Summary
+
+Disappeared paths: 0
+Missing backup post-run: 0
+EOF
+  cat >"${actual}/diffs/deprecations.md" <<'EOF'
+# Deprecation Warnings
+
+Warnings: 1
+
+| Log | Line | Warning |
+|---|---:|---|
+| doctor.log | 1 | warning: deprecated |
+EOF
+
+  VOOM_E2E_FAIL_ON_DEPRECATIONS=1 "lib/build-summary.sh" "${actual}" 0 0
+
+  summary="${actual}/summary.md"
+  if ! grep -Fq "FAIL: 1 deprecation warning(s)" "${summary}"; then
+    echo "FAIL: deprecation hard gate did not fail summary" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_summary_deprecation_gate_test
+
+run_replay_script_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/repro" "${actual}/env" "${actual}/reports"
+
+  cat >"${actual}/manifest.json" <<'EOF'
+{"library":"/lib","policy":"/policies/source.voom"}
+EOF
+  cat >"${actual}/env/policy.voom" <<'EOF'
+policy test {}
+EOF
+  cat >"${actual}/reports/process.json" <<'EOF'
+{"command":"process","status":"ok","session_id":"session-1","paths":["/lib"],"counts":{"failed_plans":1}}
+EOF
+  cat >"${actual}/repro/failed-plan-files.tsv" <<'EOF'
+path	phase	signature	exit_code	container	video_codec	resolution	plan_id	file_id
+/lib/show/S01E01.mkv	transcode-video	cuda-context-oom	187	mkv	h264	1920x1080	plan-1	file-1
+EOF
+
+  "lib/build-replay-script.py" "${actual}"
+  assert_match "${actual}/repro/replay.sh" "tests/expected/replay/replay.sh"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_replay_script_test
+
+run_plan_preview_vs_executed_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/reports" "${actual}/db-export" "${actual}/diffs"
+
+  cat >"${actual}/reports/plans.json" <<'EOF'
+[
+  {
+    "file": {"path": "/lib/a.mkv"},
+    "phase_name": "transcode-video",
+    "actions": [
+      {"operation": "transcode", "parameters": {"codec": "hevc", "crf": 23, "preset": "slow", "hw": "nvenc", "hw_fallback": true}}
+    ],
+    "skip_reason": null
+  },
+  {
+    "file": {"path": "/lib/b.mkv"},
+    "phase_name": "transcode-video",
+    "actions": [],
+    "skip_reason": "already-compatible"
+  },
+  {
+    "file": {"path": "/lib/c.mkv"},
+    "phase_name": "metadata",
+    "actions": [
+      {"operation": "set_language", "track_index": 1, "parameters": {"language": "eng"}}
+    ],
+    "skip_reason": null
+  }
+]
+EOF
+  cat >"${actual}/db-export/files.tsv" <<'EOF'
+id	path
+file-a	/lib/a.mkv
+file-b	/lib/b.mkv
+file-c	/lib/c.mkv
+EOF
+  cat >"${actual}/db-export/plans.tsv" <<'EOF'
+id	file_id	policy_name	phase_name	status	actions	warnings	skip_reason	policy_hash	evaluated_at	created_at	session_id	executed_at	result
+plan-a	file-a	p	transcode-video	completed	[{"operation":"transcode","parameters":{"codec":"hevc","crf":24,"preset":"slow","hw":"nvenc","hw_fallback":true}}]	[]		hash	t	t	s	t	{"ok":true}
+plan-b	file-b	p	transcode-video	skipped	[]	[]	already-compatible	hash	t	t	s	t	{}
+plan-c	file-c	p	metadata	completed	[{"operation":"set_language","track_index":1,"parameters":{"language":"jpn"}}]	[]		hash	t	t	s	t	{"ok":true}
+EOF
+
+  "lib/plan-preview-vs-executed.py" \
+    "${actual}/reports/plans.json" \
+    "${actual}/db-export/plans.tsv" \
+    "${actual}/db-export/files.tsv" \
+    "${actual}/diffs/plan-preview-vs-executed.tsv" \
+    "${actual}/diffs/plan-preview-vs-executed.md"
+
+  assert_match \
+    "${actual}/diffs/plan-preview-vs-executed.tsv" \
+    "tests/expected/plan-preview-vs-executed/plan-preview-vs-executed.tsv"
+  assert_match \
+    "${actual}/diffs/plan-preview-vs-executed.md" \
+    "tests/expected/plan-preview-vs-executed/plan-preview-vs-executed.md"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_plan_preview_vs_executed_test
+
+run_deprecations_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/logs" "${actual}/diffs"
+
+  cat >"${actual}/logs/doctor.log" <<'EOF'
+warning: `voom doctor` is deprecated; use `voom env check` instead
+ok
+EOF
+  cat >"${actual}/logs/process.log" <<'EOF'
+processing
+EOF
+
+  "lib/deprecations.py" "${actual}/logs" "${actual}/diffs/deprecations.md"
+  assert_match "${actual}/diffs/deprecations.md" "tests/expected/deprecations/deprecations.md"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_deprecations_test
+
+run_summary_web_smoke_fail_then_sse_warn_test() {
+  local actual
+  local summary
+
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  mkdir -p \
+    "${actual}/logs" \
+    "${actual}/reports" \
+    "${actual}/db-export" \
+    "${actual}/diffs" \
+    "${actual}/web-smoke"
+
+  for log_name in doctor policy-validate scan; do
+    printf '0\n' >"${actual}/logs/${log_name}.log.rc"
+  done
+
+  cat >"${actual}/diffs/files-summary.md" <<'EOF'
+# Snapshot Diff Summary
+
+Disappeared paths: 0
+Missing backup post-run: 0
+EOF
+
+  cat >"${actual}/web-smoke/statuses.tsv" <<'EOF'
+endpoint	status	content
+root	200	FAIL
+events(sse)	200	FAIL
+EOF
+
+  if ! "lib/build-summary.sh" "${actual}" 0 0; then
+    echo "FAIL: build-summary should exit 0 after hard web smoke failure followed by SSE warning" >&2
+    fail=1
+  fi
+
+  summary="${actual}/summary.md"
+  if ! grep -Fq "FAIL: web smoke root content assertion failed" "${summary}"; then
+    echo "FAIL: summary missing web smoke hard content failure" >&2
+    fail=1
+  fi
+  if ! grep -Fq "WARN: SSE smoke events(sse) content assertion failed" "${summary}"; then
+    echo "FAIL: summary missing SSE content warning" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_summary_web_smoke_fail_then_sse_warn_test
+
+run_web_smoke_validation_helpers_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  cat >"${actual}/files.body" <<'EOF'
+{"files":[{"id":"file-1","path":"/lib/a.mkv","tracks":[]}],"total":1}
+EOF
+  cat >"${actual}/jobs.body" <<'EOF'
+{"jobs":[{"id":"job-1","status":"failed"}],"total":1}
+EOF
+  cat >"${actual}/events.body" <<'EOF'
+event: job-update
+data: {"JobProgress":{"job_id":"job-1","progress":0.5,"message":null}}
+
+EOF
+  : >"${actual}/events-idle.body"
+  cat >"${actual}/root.body" <<'EOF'
+<!doctype html><html><head><title>VOOM</title></head><body>VOOM</body></html>
+EOF
+
+  WEB_SMOKE_TEST_MODE=1 source "lib/web-smoke.sh"
+  validate_root_body "${actual}/root.body"
+  validate_files_body "${actual}/files.body"
+  validate_jobs_body "${actual}/jobs.body" 1
+  validate_sse_body "${actual}/events.body"
+  if ! validate_sse_content "200" "${actual}/events.body"; then
+    echo "FAIL: populated SSE body should satisfy smoke content" >&2
+    fail=1
+  fi
+  if ! validate_sse_content "200" "${actual}/events-idle.body"; then
+    echo "FAIL: idle 2xx SSE body should satisfy smoke content" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_web_smoke_validation_helpers_test
+
 run_failure_clusters_test() {
   local actual
   actual=$(mktemp -d)
@@ -542,6 +845,139 @@ EOF
 }
 
 run_env_check_timeline_synthetic_lines_test
+
+run_plugin_error_dedupe_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/reports" "${actual}/diffs" "${actual}/logs/plugin-errors"
+
+  cat >"${actual}/reports/events.json" <<'EOF'
+[
+  {
+    "rowid": 1,
+    "event_type": "plugin.error",
+    "created_at": "2026-05-14T10:00:01Z",
+    "summary": "backup-manager: rclone failed",
+    "payload": {
+      "plugin_name": "backup-manager",
+      "error": "rclone copy failed\nTransferred: 0 / 1, 0%\nERROR : /lib/a.mkv: permission denied"
+    }
+  },
+  {
+    "rowid": 2,
+    "event_type": "plugin.error",
+    "created_at": "2026-05-14T10:00:02Z",
+    "summary": "backup-manager: rclone failed",
+    "payload": {
+      "plugin_name": "backup-manager",
+      "error": "rclone copy failed\nTransferred: 0 / 1, 0%\nERROR : /lib/b.mkv: permission denied"
+    }
+  },
+  {
+    "rowid": 3,
+    "event_type": "plan.completed",
+    "created_at": "2026-05-14T10:00:03Z",
+    "summary": "plan completed",
+    "payload": {"plan_id": "plan-1"}
+  },
+  {
+    "rowid": 4,
+    "event_type": "plugin.error",
+    "created_at": "2026-05-14T10:05:00Z",
+    "summary": "backup-manager: config missing",
+    "payload": {
+      "plugin": "backup-manager",
+      "message": "config missing\nrclone remote not configured"
+    }
+  }
+]
+EOF
+
+  "lib/plugin-error-dedupe.py" \
+    "${actual}/reports/events.json" \
+    "${actual}/reports/events-deduped.json" \
+    "${actual}/logs/plugin-errors" \
+    "${actual}/diffs/plugin-error-summary.md"
+
+  assert_match "${actual}/reports/events-deduped.json" "tests/expected/events-deduped.json"
+  assert_match "${actual}/diffs/plugin-error-summary.md" "tests/expected/plugin-error-summary.md"
+  assert_match "${actual}/logs/plugin-errors/backup-manager.log" \
+    "tests/expected/plugin-errors/backup-manager.log"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_plugin_error_dedupe_test
+
+run_ffmpeg_stderr_normalize_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  cat >"${actual}/plans.tsv" <<'EOF'
+id	file_id	phase_name	status	result	executed_at
+plan-1	file-1	transcode-video	failed	{"detail":{"stderr_tail":"frame= 1 fps=0.0 q=28.0 size=1k time=00:00:01 bitrate=8.0kbits/s speed=1x\rframe= 2 fps=1.0 q=28.0 size=2k time=00:00:02 bitrate=8.0kbits/s speed=1x\rCUDA_ERROR_OUT_OF_MEMORY\nConversion failed"},"error":"ffmpeg exited with exit status: 187"}	2026-05-14T10:00:00Z
+plan-2	file-2	transcode-video	completed	{"ok":true}	2026-05-14T10:01:00Z
+plan-3	file-3	transcode-video	failed	"not-json"	2026-05-14T10:02:00Z
+plan-4	file-4	transcode-video	failed	{"detail":{"other":"unchanged"}}	2026-05-14T10:03:00Z
+plan-5	file-5	transcode-video	failed	{"detail":{"stderr_tail":123}}	2026-05-14T10:04:00Z
+plan-6	file-6	transcode-video	failed	{"detail":{"stderr_tail":"frame= 3 fps=2.0 q=28.0 size=3k time=00:00:03 bitrate=8.0kbits/s speed=1x\r\nreal error"}}	2026-05-14T10:05:00Z
+plan-7	file-7	transcode-video	failed	{"detail":{"stderr_tail":"frame= 4 fps=3.0 q=28.0 size=4k time=00:00:04 bitrate=8.0kbits/s speed=1x\rfirst error\n\nsecond error"}}	2026-05-14T10:06:00Z
+EOF
+
+  "lib/ffmpeg-stderr-normalize.py" "${actual}/plans.tsv" "${actual}/plans-normalized.tsv"
+
+  if grep -Fq 'frame= 1 fps=' "${actual}/plans-normalized.tsv"; then
+    echo "FAIL: ffmpeg progress line was not stripped" >&2
+    fail=1
+  fi
+  if ! grep -Fq 'CUDA_ERROR_OUT_OF_MEMORY\nConversion failed' "${actual}/plans-normalized.tsv"; then
+    echo "FAIL: non-progress stderr lines were not preserved" >&2
+    fail=1
+  fi
+  if ! grep -Fq '{"detail":{"stderr_tail":"real error"}}' "${actual}/plans-normalized.tsv"; then
+    echo "FAIL: CRLF-separated progress line left a leading blank stderr line" >&2
+    fail=1
+  fi
+  if ! grep -Fq 'first error\n\nsecond error' "${actual}/plans-normalized.tsv"; then
+    echo "FAIL: meaningful blank stderr line was not preserved" >&2
+    fail=1
+  fi
+  sed -n '4,6p' "${actual}/plans.tsv" >"${actual}/expected-unchanged.tsv"
+  sed -n '4,6p' "${actual}/plans-normalized.tsv" >"${actual}/actual-unchanged.tsv"
+  assert_match "${actual}/actual-unchanged.tsv" "${actual}/expected-unchanged.tsv"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_ffmpeg_stderr_normalize_test
+
+run_failure_timeline_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  cat >"${actual}/plans.tsv" <<'EOF'
+id	file_id	phase_name	status	result	executed_at
+plan-1	file-1	transcode-video	failed	{"detail":{"stderr_tail":"CUDA_ERROR_OUT_OF_MEMORY"},"error":"ffmpeg exited with exit status: 187"}	2026-05-14T10:01:00Z
+plan-2	file-2	transcode-video	failed	{"detail":{"stderr_tail":"CUDA_ERROR_OUT_OF_MEMORY"},"error":"ffmpeg exited with exit status: 187"}	2026-05-14T10:15:00Z
+plan-3	file-3	transcode-video	failed	{"detail":{"stderr_tail":"No device available for decoder"},"error":"ffmpeg exited with exit status: 1"}	2026-05-14T11:00:00Z
+plan-4	file-4	transcode-video	failed	{"detail":{"stderr_tail":"Impossible to convert between the formats"},"error":"ffmpeg exited with exit status: 1"}	2026-05-14T11:05:00Z
+plan-5	file-5	transcode-video	failed	{"detail":{"stderr_tail":"unclassified failure"},"error":"executor failed"}	2026-05-14T11:10:00Z
+plan-6	file-6	transcode-video	completed	{"ok":true}	2026-05-14T11:15:00Z
+EOF
+
+  "lib/failure-timeline.py" "${actual}/plans.tsv" "${actual}/failure-timeline.md"
+  assert_match "${actual}/failure-timeline.md" "tests/expected/failure-timeline.md"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_failure_timeline_test
 
 raw_actual=$(mktemp -d)
 trap 'rm -rf "${raw_actual}"' EXIT

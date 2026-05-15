@@ -162,6 +162,19 @@ fn test_version() {
 }
 
 #[test]
+fn test_version_json() {
+    let json = assert_stdout_is_json(&["version", "--format", "json"]);
+
+    assert_eq!(json["command"], "version");
+    assert_eq!(json["package_version"], env!("CARGO_PKG_VERSION"));
+    assert!(
+        json["product_version"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+}
+
+#[test]
 fn test_no_args_shows_help() {
     voom()
         .assert()
@@ -313,7 +326,9 @@ fn test_existing_json_outputs_are_parseable() {
         "json",
         "--no-hash",
     ]);
-    assert_eq!(empty_scan, Value::Array(vec![]));
+    assert_eq!(empty_scan["command"], "scan");
+    assert_eq!(empty_scan["counts"]["files_discovered"], 0);
+    assert_eq!(empty_scan["files"], Value::Array(vec![]));
 
     let tools = assert_stdout_is_json(&["tools", "list", "--format", "json"]);
     assert!(tools.is_array());

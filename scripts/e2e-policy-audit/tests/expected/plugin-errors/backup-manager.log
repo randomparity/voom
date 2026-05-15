@@ -1,0 +1,3 @@
+2026-05-14T10:00:01Z	count=1	signature=rclone copy failed	rowid=1
+2026-05-14T10:00:02Z	count=2	signature=rclone copy failed	rowid=2
+2026-05-14T10:05:00Z	count=1	signature=config missing	rowid=4

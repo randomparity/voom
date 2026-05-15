@@ -74,7 +74,7 @@ repo_root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 lib_dir="${repo_root}/scripts/e2e-policy-audit/lib"
 voom_bin="${repo_root}/target/release/voom"
 
-mkdir -p "${run_dir}"/{pre,post,logs,reports,db-export,web-smoke,diffs,runtime} "${run_dir}/logs/env-check"
+mkdir -p "${run_dir}"/{pre,post,logs,reports,db-export,web-smoke,diffs,runtime} "${run_dir}/logs/env-check" "${run_dir}/logs/plugin-errors"
 echo "Run dir: ${run_dir}"
 
 stage_start() { date +%s.%N; }
@@ -97,6 +97,16 @@ log_run() {
     shift
     local rc=0
     "$@" >"${run_dir}/logs/${name}.log" 2>&1 || rc=$?
+    echo "${rc}" >"${run_dir}/logs/${name}.log.rc"
+    return 0
+}
+
+json_run() {
+    local name="$1"
+    local out="$2"
+    shift 2
+    local rc=0
+    "$@" >"${out}" 2>"${run_dir}/logs/${name}.log" || rc=$?
     echo "${rc}" >"${run_dir}/logs/${name}.log.rc"
     return 0
 }
@@ -141,7 +151,6 @@ signal_process() {
 stop_process_tree() {
     local pid="$1" uses_group="$2"
     local initial_signal="${3:-TERM}"
-    local i
 
     if [[ -z "${pid}" ]]; then
         return 0
@@ -157,7 +166,7 @@ stop_process_tree() {
     done
 
     signal_process "${pid}" "${uses_group}" KILL
-    for i in {1..5}; do
+    for _ in {1..5}; do
         if ! process_is_live "${pid}" "${uses_group}"; then
             break
         fi
@@ -215,7 +224,7 @@ run_process_command() {
         active_process_uses_group=1
     else
         active_process_uses_group=0
-    fi >"${run_dir}/logs/process.log" 2>&1
+    fi >"${run_dir}/reports/process.json" 2>"${run_dir}/logs/process.log"
     active_process_pid=$!
 
     trap 'stop_process_samplers' EXIT
@@ -248,9 +257,11 @@ fi
     exit 1
 }
 
+json_run version-json "${run_dir}/env/version.json" "${voom_bin}" version --format json
 log_run version "${voom_bin}" --version
-log_run env-check "${voom_bin}" env check
-log_run policy-validate "${voom_bin}" policy validate "${policy}"
+json_run env-check "${run_dir}/reports/env-check.json" "${voom_bin}" env check --format json
+json_run policy-validate "${run_dir}/reports/policy-validate.json" \
+    "${voom_bin}" policy validate "${policy}" --format json
 
 # ---- Pre snapshot + probe ----
 echo "==> Pre-snapshot"
@@ -269,7 +280,7 @@ fi
 # ---- Discover + introspect ----
 echo "==> voom scan"
 t=$(stage_start)
-log_run scan "${voom_bin}" scan -r -y "${library}"
+json_run scan "${run_dir}/reports/scan.json" "${voom_bin}" scan -r -y "${library}" --format json
 stage_end scan "$t"
 
 log_run files-list "${voom_bin}" files list -f csv
@@ -291,12 +302,13 @@ run_start=$(date -Iseconds)
 echo "==> voom process (long run starts at ${run_start})"
 t=$(stage_start)
 start_process_samplers
-run_process_command "${voom_bin}" process -y --on-error continue --policy "${policy}" "${library}"
+run_process_command "${voom_bin}" process -y --on-error continue --policy "${policy}" --format json "${library}"
 stop_process_samplers
 trap - EXIT INT TERM
 stage_end process "$t"
 "${lib_dir}/capture-host-journal.sh" "${run_dir}" "${run_start}" ||
     echo "host journal capture failed (continuing)" >&2
+json_run jobs-list-json "${run_dir}/reports/jobs.json" "${voom_bin}" jobs list --format json
 log_run jobs-list "${voom_bin}" jobs list
 cp "${run_dir}/logs/jobs-list.log" "${run_dir}/reports/jobs.txt"
 
@@ -319,17 +331,31 @@ if [[ -f "${db_path}" ]]; then
     "${lib_dir}/db-to-ndjson.sh" "${run_dir}/post/voom-db-tables" "${run_dir}/post/voom-db.ndjson"
     # The build-summary's longest-jobs query reads db-export/jobs.tsv.
     cp -r "${run_dir}/post/voom-db-tables/." "${run_dir}/db-export/"
+    if [[ -f "${run_dir}/db-export/plans.tsv" ]]; then
+        "${lib_dir}/ffmpeg-stderr-normalize.py" \
+            "${run_dir}/db-export/plans.tsv" \
+            "${run_dir}/db-export/plans.normalized.tsv" &&
+            mv "${run_dir}/db-export/plans.normalized.tsv" "${run_dir}/db-export/plans.tsv" ||
+            echo "ffmpeg stderr normalization failed (continuing)" >&2
+    fi
 fi
 
 log_run events "${voom_bin}" events -n 1000000 -f json
 cp "${run_dir}/logs/events.log" "${run_dir}/reports/events.json"
+"${lib_dir}/plugin-error-dedupe.py" \
+    "${run_dir}/reports/events.json" \
+    "${run_dir}/reports/events-deduped.json" \
+    "${run_dir}/logs/plugin-errors" \
+    "${run_dir}/diffs/plugin-error-summary.md" ||
+    echo "plugin error dedupe failed (continuing)" >&2
+json_run report-json "${run_dir}/reports/report.json" "${voom_bin}" report --all --format json
 log_run report "${voom_bin}" report --all
 cp "${run_dir}/logs/report.log" "${run_dir}/reports/report.txt"
 
 # ---- Web smoke ----
 if ((do_web)); then
     echo "==> Web smoke"
-    "${lib_dir}/web-smoke.sh" "${voom_bin}" "${run_dir}/web-smoke" \
+    "${lib_dir}/web-smoke.sh" "${voom_bin}" "${run_dir}/web-smoke" "${db_path}" \
         2>&1 | tee "${run_dir}/logs/web-smoke.log" ||
         echo "web smoke failed; see logs/web-smoke.log"
 fi
@@ -394,6 +420,31 @@ if compgen -G "${run_dir}/logs/env-check/[0-9][0-9][0-9][0-9].log" >/dev/null; t
         "${run_dir}/diffs/env-check-timeline.md" ||
         echo "env check timeline generation failed (continuing)" >&2
 fi
+if [[ -f "${run_dir}/db-export/plans.tsv" ]]; then
+    "${lib_dir}/failure-timeline.py" \
+        "${run_dir}/db-export/plans.tsv" \
+        "${run_dir}/diffs/failure-timeline.md" ||
+        echo "failure timeline generation failed (continuing)" >&2
+fi
+"${lib_dir}/build-repro-set.py" "${run_dir}" ||
+    echo "failed to build repro file set (continuing)" >&2
+"${lib_dir}/build-replay-script.py" "${run_dir}" ||
+    echo "failed to build replay script (continuing)" >&2
+if [[ -r "${run_dir}/reports/plans.json" &&
+    -r "${run_dir}/db-export/plans.tsv" &&
+    -r "${run_dir}/db-export/files.tsv" ]]; then
+    "${lib_dir}/plan-preview-vs-executed.py" \
+        "${run_dir}/reports/plans.json" \
+        "${run_dir}/db-export/plans.tsv" \
+        "${run_dir}/db-export/files.tsv" \
+        "${run_dir}/diffs/plan-preview-vs-executed.tsv" \
+        "${run_dir}/diffs/plan-preview-vs-executed.md" ||
+        echo "plan preview/executed diff failed (continuing)" >&2
+fi
+"${lib_dir}/deprecations.py" \
+    "${run_dir}/logs" \
+    "${run_dir}/diffs/deprecations.md" ||
+    echo "deprecation scan failed (continuing)" >&2
 stage_end diff "$t"
 
 # Mark completion timestamp

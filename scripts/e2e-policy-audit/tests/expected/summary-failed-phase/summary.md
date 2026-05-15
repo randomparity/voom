@@ -32,6 +32,18 @@ phase	signature	exit_code	container	video_codec	count	top_resolution	sample_path
 transcode-video	unknown				1			plan-4	encoder failed
 ```
 
+### Failure timeline
+(not generated)
+
+### Plugin error summary
+(not generated)
+
+### Plan preview vs executed
+(not generated)
+
+### Deprecation warnings
+(not generated)
+
 ### Failed plans (first 20)
 ```
 plan_id	file_id	phase	result

@@ -10,6 +10,7 @@ mod transitions;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use console::style;
@@ -20,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use pipeline::process_single_file;
 
 use crate::app;
-use crate::cli::{ErrorHandling, ProcessArgs};
+use crate::cli::{ErrorHandling, OutputFormat, ProcessArgs};
 use crate::config;
 use crate::paths::resolve_paths;
 use crate::policy_map::PolicyResolver;
@@ -74,6 +75,7 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
     let estimate_mode = args.estimate || args.estimate_only;
     let plan_only = args.plan_only;
     let dry_run = args.dry_run || plan_only || estimate_mode;
+    let started = Instant::now();
 
     let config = config::load_config()?;
     let app::BootstrapResult {
@@ -464,11 +466,13 @@ pub async fn run(args: ProcessArgs, quiet: bool, token: CancellationToken) -> Re
             store: store.as_ref(),
             plan_only,
             estimate_mode,
+            format: args.format,
             quiet,
             cancelled: token.is_cancelled(),
             pool: pool.as_ref(),
             file_count,
             effective_workers,
+            elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             dry_run,
             paths: &paths,
             all_phase_names: &all_phase_names,
@@ -512,11 +516,13 @@ struct RunResultsContext<'a> {
     store: &'a dyn voom_domain::storage::StorageTrait,
     plan_only: bool,
     estimate_mode: bool,
+    format: OutputFormat,
     quiet: bool,
     cancelled: bool,
     pool: &'a WorkerPool,
     file_count: usize,
     effective_workers: usize,
+    elapsed_ms: u64,
     dry_run: bool,
     paths: &'a [std::path::PathBuf],
     all_phase_names: &'a [String],
@@ -551,6 +557,10 @@ fn print_run_results(ctx: &RunResultsContext<'_>) -> Result<()> {
 
     let modified = ctx.counters.modified_count.load(AtomicOrdering::Relaxed);
     let backup_total = ctx.counters.backup_bytes.load(AtomicOrdering::Relaxed);
+    if matches!(ctx.format, OutputFormat::Json) {
+        crate::output::print_json(&process_run_summary_json(ctx, modified, backup_total))?;
+        return Ok(());
+    }
     if !ctx.quiet {
         if ctx.cancelled {
             print_interrupted_summary(ctx.pool, ctx.file_count, modified);
@@ -585,6 +595,55 @@ fn print_run_results(ctx: &RunResultsContext<'_>) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn process_run_summary_json(
+    ctx: &RunResultsContext<'_>,
+    modified: u64,
+    backup_bytes: u64,
+) -> serde_json::Value {
+    let phase_stats = ctx.counters.phase_stats.lock();
+    let phase_stats_json: BTreeMap<String, serde_json::Value> = phase_stats
+        .iter()
+        .map(|(phase, stats)| {
+            (
+                phase.clone(),
+                serde_json::json!({
+                    "completed": stats.completed,
+                    "skipped": stats.skipped,
+                    "failed": stats.failed,
+                    "skip_reasons": stats.skip_reasons,
+                }),
+            )
+        })
+        .collect();
+    let failed_plans: u64 = phase_stats.values().map(|stats| stats.failed).sum();
+    let completed = ctx.pool.completed_count();
+    let failed_files = ctx.pool.failed_count();
+    let skipped = (ctx.file_count as u64)
+        .saturating_sub(completed)
+        .saturating_sub(failed_files);
+
+    serde_json::json!({
+        "command": "process",
+        "status": if ctx.cancelled { "cancelled" } else { "ok" },
+        "session_id": ctx.counters.session_id,
+        "cancelled": ctx.cancelled,
+        "dry_run": ctx.dry_run,
+        "paths": ctx.paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "workers": ctx.effective_workers,
+        "elapsed_ms": ctx.elapsed_ms,
+        "counts": {
+            "files": ctx.file_count,
+            "processed": completed,
+            "modified": modified,
+            "skipped": skipped,
+            "failed_files": failed_files,
+            "failed_plans": failed_plans,
+            "backup_bytes": backup_bytes,
+        },
+        "phase_stats": phase_stats_json,
+    })
 }
 
 fn print_estimate(estimate: &voom_domain::EstimateRun) {
@@ -1037,6 +1096,68 @@ mod tests {
         );
         assert_eq!(hw_resource_for_backend("none"), None);
         assert_eq!(hw_resource_for_backend("unknown"), None);
+    }
+
+    #[test]
+    fn process_run_summary_json_includes_counts_and_phase_stats() {
+        let counters = RunCounters::new();
+        record_phase_stat(
+            &counters.phase_stats,
+            "transcode-video",
+            PhaseOutcomeKind::Completed,
+        );
+        record_phase_stat(
+            &counters.phase_stats,
+            "transcode-video",
+            PhaseOutcomeKind::Skipped("already-compatible".to_string()),
+        );
+        record_phase_stat(
+            &counters.phase_stats,
+            "transcode-video",
+            PhaseOutcomeKind::Failed,
+        );
+
+        let job_store: Arc<dyn voom_domain::storage::JobStorage> =
+            Arc::new(voom_domain::test_support::InMemoryStore::new());
+        let queue = Arc::new(voom_job_manager::queue::JobQueue::new(job_store));
+        let mut config = WorkerPoolConfig::default();
+        config.max_workers = 4;
+        let pool = WorkerPool::new(queue, config, CancellationToken::new());
+        let store = voom_domain::test_support::InMemoryStore::new();
+        let paths = vec![PathBuf::from("/media")];
+        let phases = vec!["transcode-video".to_string()];
+        let ctx = RunResultsContext {
+            counters: &counters,
+            store: &store,
+            plan_only: false,
+            estimate_mode: false,
+            format: OutputFormat::Json,
+            quiet: true,
+            cancelled: false,
+            pool: &pool,
+            file_count: 3,
+            effective_workers: 4,
+            elapsed_ms: 42,
+            dry_run: false,
+            paths: &paths,
+            all_phase_names: &phases,
+        };
+
+        let json = process_run_summary_json(&ctx, 2, 1024);
+
+        assert_eq!(json["command"], "process");
+        assert_eq!(json["elapsed_ms"], 42);
+        assert_eq!(json["counts"]["files"], 3);
+        assert_eq!(json["counts"]["modified"], 2);
+        assert_eq!(json["counts"]["failed_plans"], 1);
+        assert_eq!(json["counts"]["backup_bytes"], 1024);
+        assert_eq!(json["phase_stats"]["transcode-video"]["completed"], 1);
+        assert_eq!(json["phase_stats"]["transcode-video"]["skipped"], 1);
+        assert_eq!(json["phase_stats"]["transcode-video"]["failed"], 1);
+        assert_eq!(
+            json["phase_stats"]["transcode-video"]["skip_reasons"]["already-compatible"],
+            1
+        );
     }
 
     /// A test plugin that counts received plan lifecycle events.
