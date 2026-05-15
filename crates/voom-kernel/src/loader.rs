@@ -863,6 +863,39 @@ pub mod wasm {
         state.get_file_transitions(&file_id)
     }
 
+    fn register_streaming_call_funcs(
+        instance: &mut HostLinkerInstance<'_>,
+    ) -> Result<(), WasmLoadError> {
+        instance
+            .func_wrap(
+                "emit-call-item",
+                |mut ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (item,): (Vec<u8>,)|
+                 -> Result<(Result<(), String>,), wasmtime::Error> {
+                    let result = crate::host::functions::emit_call_item_impl(ctx.data_mut(), &item);
+                    Ok((result,))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+
+        instance
+            .func_wrap(
+                "emit-root-walk-completed",
+                |mut ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (event,): (Vec<u8>,)|
+                 -> Result<(Result<(), String>,), wasmtime::Error> {
+                    let result = crate::host::functions::emit_root_walk_completed_impl(
+                        ctx.data_mut(),
+                        &event,
+                    );
+                    Ok((result,))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+
+        Ok(())
+    }
+
     fn register_plugin_data_funcs(
         instance: &mut HostLinkerInstance<'_>,
     ) -> Result<(), WasmLoadError> {
@@ -1091,6 +1124,7 @@ pub mod wasm {
         register_http_funcs(&mut instance)?;
         register_filesystem_funcs(&mut instance)?;
         register_transition_funcs(&mut instance)?;
+        register_streaming_call_funcs(&mut instance)?;
 
         Ok(())
     }

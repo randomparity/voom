@@ -3,7 +3,7 @@
 //! Provides the host-side implementations of functions that WASM plugins
 //! can call: logging, plugin data storage, tool execution, and HTTP requests.
 
-mod functions;
+pub(crate) mod functions;
 mod store;
 
 pub use store::{
