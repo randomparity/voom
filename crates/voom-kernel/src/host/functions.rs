@@ -474,6 +474,21 @@ pub(crate) fn emit_root_walk_completed_impl(
     }
 }
 
+/// Pure function implementing the `call-is-cancelled` host fn semantics.
+/// Returns false when no streaming Call is active (i.e. the WASM plugin
+/// shouldn't have called this outside a streaming Call context; we
+/// permissively report "not cancelled" rather than erroring, since polling
+/// is a benign read).
+#[cfg(feature = "wasm")]
+pub(crate) fn call_is_cancelled_impl(state: &crate::host::HostState) -> bool {
+    match &state.streaming_call {
+        None => false,
+        Some(crate::host::StreamingCallContext::ScanLibrary { cancel, .. }) => {
+            cancel.is_cancelled()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1152,5 +1167,47 @@ mod emit_root_walk_completed_tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("exceeds MAX_WASM_EVENT_PAYLOAD"), "got: {err}");
+    }
+}
+
+#[cfg(all(test, feature = "wasm"))]
+mod call_is_cancelled_tests {
+    use super::*;
+    use crate::host::{HostState, StreamingCallContext};
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+    use voom_domain::events::FileDiscoveredEvent;
+
+    #[test]
+    fn call_is_cancelled_returns_false_when_no_context() {
+        let state = HostState::new("test".into());
+        assert!(!call_is_cancelled_impl(&state));
+    }
+
+    #[test]
+    fn call_is_cancelled_returns_false_when_token_not_triggered() {
+        let mut state = HostState::new("test".into());
+        let (sink, _rx) = mpsc::channel::<FileDiscoveredEvent>(8);
+        let cancel = CancellationToken::new();
+        state.install_streaming_context(StreamingCallContext::ScanLibrary {
+            sink,
+            root_done: None,
+            cancel,
+        });
+        assert!(!call_is_cancelled_impl(&state));
+    }
+
+    #[test]
+    fn call_is_cancelled_returns_true_when_triggered() {
+        let mut state = HostState::new("test".into());
+        let (sink, _rx) = mpsc::channel::<FileDiscoveredEvent>(8);
+        let cancel = CancellationToken::new();
+        state.install_streaming_context(StreamingCallContext::ScanLibrary {
+            sink,
+            root_done: None,
+            cancel: cancel.clone(),
+        });
+        cancel.cancel();
+        assert!(call_is_cancelled_impl(&state));
     }
 }

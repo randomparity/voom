@@ -893,6 +893,18 @@ pub mod wasm {
             )
             .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
 
+        instance
+            .func_wrap(
+                "call-is-cancelled",
+                |ctx: wasmtime::StoreContextMut<'_, HostState>,
+                 (): ()|
+                 -> Result<(bool,), wasmtime::Error> {
+                    let result = crate::host::functions::call_is_cancelled_impl(ctx.data());
+                    Ok((result,))
+                },
+            )
+            .map_err(|e| WasmLoadError::Linker(e.to_string()))?;
+
         Ok(())
     }
 
