@@ -9,9 +9,10 @@ pub use scanner::hash_file;
 pub use scanner::normalize_path;
 pub use scanner::scan_directory_streaming;
 
+use voom_domain::call::{Call, CallResponse, DiscoveryError, ScanSummary};
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
-use voom_domain::events::FileDiscoveredEvent;
+use voom_domain::events::{FileDiscoveredEvent, RootWalkCompletedEvent};
 pub use voom_domain::scan::{
     ErrorCallback, FingerprintLookup, MutationSnapshotLoader, ScanOptions, ScanProgress,
 };
@@ -70,6 +71,106 @@ impl Plugin for DiscoveryPlugin {
 
     fn capabilities(&self) -> &[Capability] {
         &self.capabilities
+    }
+
+    fn on_call(&self, call: &Call) -> voom_domain::errors::Result<CallResponse> {
+        let Call::ScanLibrary {
+            options,
+            scan_session,
+            sink,
+            root_done,
+            cancel,
+            uri: _,
+        } = call
+        else {
+            return Err(voom_domain::errors::VoomError::plugin(
+                self.name(),
+                format!(
+                    "DiscoveryPlugin only handles Call::ScanLibrary, got {:?}",
+                    std::mem::discriminant(call)
+                ),
+            ));
+        };
+
+        // Shared counters / error list — populated from inside the rayon
+        // worker callback.
+        let file_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let errors: std::sync::Arc<std::sync::Mutex<Vec<DiscoveryError>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let count_clone = file_count.clone();
+        let sink_clone = sink.clone();
+        let errors_clone = errors.clone();
+        let cancel_clone = cancel.clone();
+
+        let started = std::time::Instant::now();
+
+        // The scanner is synchronous and rayon-parallel. Forward each
+        // FileDiscoveredEvent into the caller's tokio mpsc via `try_send`.
+        // If the channel is full we record a DiscoveryError rather than
+        // blocking the scanner thread; Phase 3 will replace this with a
+        // proper async pump that respects back-pressure.
+        let on_event: scanner::EventSink = Box::new(move |event| {
+            if cancel_clone.is_cancelled() {
+                return;
+            }
+            let path_display = event.path.display().to_string();
+            match sink_clone.try_send(event) {
+                Ok(()) => {
+                    count_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    if let Ok(mut errs) = errors_clone.lock() {
+                        errs.push(DiscoveryError::new(
+                            path_display,
+                            "scan sink full; dropping event (caller draining too slowly)".into(),
+                        ));
+                    }
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    // Receiver dropped — caller no longer cares. Stop counting,
+                    // let the scanner finish naturally.
+                }
+            }
+        });
+
+        let scan_result = scanner::scan_directory_streaming(options, on_event);
+
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+        match scan_result {
+            Ok(()) => {
+                // Send the root-walk-completed signal *only* after a successful
+                // scan, mirroring the Call::ScanLibrary doc contract.
+                if let Some(done) = root_done {
+                    let _ = done.try_send(RootWalkCompletedEvent::new(
+                        options.root.clone(),
+                        *scan_session,
+                        duration_ms,
+                    ));
+                }
+                let collected_errors = match errors.lock() {
+                    Ok(guard) => guard.clone(),
+                    Err(poisoned) => {
+                        // A scanner worker panicked while holding the lock.
+                        // Surface the loss explicitly rather than returning an
+                        // empty error list (which would look like a clean run
+                        // to the caller).
+                        tracing::warn!(
+                            "scan error list mutex poisoned; partial error data discarded"
+                        );
+                        poisoned.into_inner().clone()
+                    }
+                };
+                let summary = ScanSummary::new(
+                    file_count.load(std::sync::atomic::Ordering::Relaxed),
+                    collected_errors,
+                    1,
+                );
+                Ok(CallResponse::ScanLibrary(summary))
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 

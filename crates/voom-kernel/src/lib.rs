@@ -499,19 +499,23 @@ impl Kernel {
         &self,
         query: &voom_domain::capabilities::CapabilityQuery,
     ) -> Result<Arc<dyn Plugin>> {
-        let mut matches: Vec<Arc<dyn Plugin>> = Vec::new();
-        for (_name, plugin) in self.registry.iter_all() {
+        // The bus is already authoritative for priority order — every
+        // register_plugin / init_and_register path calls bus.subscribe_plugin
+        // with the registration priority, and subscribers_ordered() returns
+        // plugins in ascending-priority order (with insertion-order
+        // tie-breaking for equal priorities, exercised by
+        // bus::tests::test_equal_priority_preserves_registration_order).
+        //
+        // Reusing it keeps the kernel from carrying a parallel priority map.
+        for (_name, plugin) in self.bus.subscribers_ordered() {
             if plugin.capabilities().iter().any(|c| c.matches_query(query)) {
-                matches.push(plugin);
+                return Ok(plugin);
             }
         }
-        if matches.is_empty() {
-            return Err(voom_domain::errors::VoomError::plugin(
-                format!("{query:?}"),
-                format!("no handler for capability {query:?}"),
-            ));
-        }
-        Ok(matches.into_iter().next().expect("non-empty checked above"))
+        Err(voom_domain::errors::VoomError::plugin(
+            format!("{query:?}"),
+            format!("no handler for capability {query:?}"),
+        ))
     }
 
     /// Dispatch an event through the bus to all matching subscribers.
@@ -1364,6 +1368,104 @@ mod tests {
         let records = sink.0.lock().unwrap();
         assert_eq!(records.len(), 1);
         assert!(matches!(records[0].outcome, PluginInvocationOutcome::Panic));
+    }
+
+    #[test]
+    fn dispatch_to_capability_competing_picks_lowest_priority() {
+        use std::sync::LazyLock;
+        use std::sync::atomic::{AtomicU8, Ordering};
+        use voom_domain::call::{Call, CallResponse};
+        use voom_domain::capabilities::CapabilityQuery;
+
+        /// Records which plugin's `on_call` ran. Stored in a global so both
+        /// concrete plugin types can update it.
+        static LAST_HANDLER: AtomicU8 = AtomicU8::new(0);
+
+        struct PluginLow; // priority 5 → should win
+        struct PluginHigh; // priority 50 → should lose
+
+        impl Plugin for PluginLow {
+            fn name(&self) -> &str {
+                "low"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Introspect {
+                        formats: vec!["mkv".into()],
+                    }]
+                });
+                &C
+            }
+            fn on_call(&self, _: &Call) -> Result<CallResponse> {
+                LAST_HANDLER.store(1, Ordering::SeqCst);
+                Ok(CallResponse::EvaluatePolicy(
+                    voom_domain::evaluation::EvaluationResult::new(vec![]),
+                ))
+            }
+        }
+
+        impl Plugin for PluginHigh {
+            fn name(&self) -> &str {
+                "high"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Introspect {
+                        formats: vec!["mkv".into()],
+                    }]
+                });
+                &C
+            }
+            fn on_call(&self, _: &Call) -> Result<CallResponse> {
+                LAST_HANDLER.store(2, Ordering::SeqCst);
+                Ok(CallResponse::EvaluatePolicy(
+                    voom_domain::evaluation::EvaluationResult::new(vec![]),
+                ))
+            }
+        }
+
+        // Register in DELIBERATE reverse priority order to defeat any naive
+        // "first registered wins" implementation.
+        let mut kernel = Kernel::new();
+        kernel.register_plugin(Arc::new(PluginHigh), 50).unwrap();
+        kernel.register_plugin(Arc::new(PluginLow), 5).unwrap();
+
+        LAST_HANDLER.store(0, Ordering::SeqCst);
+
+        let call = Call::EvaluatePolicy {
+            policy: Box::new(minimal_policy_for_test()),
+            file: Box::new(voom_domain::media::MediaFile::new(PathBuf::from("/x.mkv"))),
+            phase: None,
+            phase_outputs: None,
+            phase_outcomes: None,
+            capabilities_override: None,
+        };
+        kernel
+            .dispatch_to_capability(
+                CapabilityQuery::Competing {
+                    kind: "introspect".into(),
+                },
+                call,
+            )
+            .expect("dispatch");
+
+        let actual = LAST_HANDLER.load(Ordering::SeqCst);
+        assert_ne!(
+            actual, 0,
+            "neither plugin handled the call — dispatch never reached on_call"
+        );
+        assert_eq!(
+            actual, 1,
+            "lower priority (5) must win over higher (50); this exact test \
+             defeats any HashMap-iteration-order or registration-order \
+             implementation."
+        );
     }
 
     #[test]

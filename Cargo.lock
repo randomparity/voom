@@ -3823,6 +3823,8 @@ dependencies = [
  "chrono",
  "rayon",
  "tempfile",
+ "tokio",
+ "tokio-util",
  "tracing",
  "unicode-normalization",
  "voom-domain",
