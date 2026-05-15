@@ -28,6 +28,18 @@ pub struct DiscoveryPlugin {
 }
 
 impl DiscoveryPlugin {
+    /// Bootstrap-only constructor — the canonical public entry point.
+    ///
+    /// After Phase 3, all discovery work flows through
+    /// `Kernel::dispatch_to_capability(Discover, Call::ScanLibrary)`.
+    /// Constructing a `DiscoveryPlugin` instance directly is legitimate only
+    /// at kernel-bootstrap registration time; tests inside this crate use
+    /// `new()` for in-crate test setup.
+    #[must_use]
+    pub fn for_bootstrap() -> Self {
+        Self::new()
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self {

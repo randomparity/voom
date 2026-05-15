@@ -218,7 +218,7 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
     // Discovery
     register_if_enabled!(
         "discovery",
-        voom_discovery::DiscoveryPlugin::new(),
+        voom_discovery::DiscoveryPlugin::for_bootstrap(),
         PRIORITY_DISCOVERY,
         "discovery"
     );
