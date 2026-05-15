@@ -69,6 +69,29 @@ pub trait HostFunctions {
         Err("get_path_transitions not available".to_string())
     }
 
+    /// Emit a streaming item to the active streaming Call's per-call sink.
+    ///
+    /// Default: error (no streaming call is active or host doesn't implement
+    /// this fn). The kernel host implements this by routing to the per-call
+    /// `mpsc::Sender` installed by `dispatch_to_capability`.
+    fn emit_call_item(&self, item: &[u8]) -> Result<(), String> {
+        let _ = item;
+        Err("emit_call_item not available".to_string())
+    }
+
+    /// Emit a root-completion event to the active streaming Call's per-call
+    /// `root_done` sender. Default: error.
+    fn emit_root_walk_completed(&self, event: &[u8]) -> Result<(), String> {
+        let _ = event;
+        Err("emit_root_walk_completed not available".to_string())
+    }
+
+    /// Poll the active streaming Call's cancellation token. Default: false
+    /// (no streaming call active).
+    fn call_is_cancelled(&self) -> bool {
+        false
+    }
+
     /// Log a message at the given level via the host's logging system.
     fn log(&self, level: &str, message: &str);
 }
@@ -124,5 +147,30 @@ mod tests {
         let by_path = host.get_path_transitions("/media/movie.mkv");
         assert_eq!(by_id.unwrap_err(), "get_file_transitions not available");
         assert_eq!(by_path.unwrap_err(), "get_path_transitions not available");
+    }
+
+    #[test]
+    fn test_default_emit_call_item_returns_error() {
+        let host = TestHost;
+        let result = host.emit_call_item(b"any");
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "emit_call_item not available");
+    }
+
+    #[test]
+    fn test_default_emit_root_walk_completed_returns_error() {
+        let host = TestHost;
+        let result = host.emit_root_walk_completed(b"any");
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "emit_root_walk_completed not available"
+        );
+    }
+
+    #[test]
+    fn test_default_call_is_cancelled_returns_false() {
+        let host = TestHost;
+        assert!(!host.call_is_cancelled());
     }
 }

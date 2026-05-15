@@ -51,6 +51,7 @@
 //! export!(MyPlugin);
 //! ```
 
+pub mod call;
 pub mod event;
 pub mod host;
 pub mod types;
@@ -65,6 +66,12 @@ pub use types::{OnEventResult, PluginInfoData};
 pub use event::{
     deserialize_event, deserialize_json, load_plugin_config, load_plugin_config_named,
     serialize_event, serialize_json,
+};
+
+/// Typed Call/CallResponse helpers for `on-call` handlers and streaming Calls.
+pub use call::{
+    CallResponse, DiscoveryError, ScanSummary, WasmCall, WasmScanOptions, decode_call,
+    emit_file_discovered, emit_root_walk_completed, encode_response, is_cancelled,
 };
 
 /// Host function abstractions for calling back into the kernel from WASM.
