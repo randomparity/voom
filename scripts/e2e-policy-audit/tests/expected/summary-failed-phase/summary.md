@@ -38,6 +38,12 @@ transcode-video	unknown				1			plan-4	encoder failed
 ### Plugin error summary
 (not generated)
 
+### Plan preview vs executed
+(not generated)
+
+### Deprecation warnings
+(not generated)
+
 ### Failed plans (first 20)
 ```
 plan_id	file_id	phase	result

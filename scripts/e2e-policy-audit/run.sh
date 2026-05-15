@@ -151,7 +151,6 @@ signal_process() {
 stop_process_tree() {
     local pid="$1" uses_group="$2"
     local initial_signal="${3:-TERM}"
-    local i
 
     if [[ -z "${pid}" ]]; then
         return 0
@@ -167,7 +166,7 @@ stop_process_tree() {
     done
 
     signal_process "${pid}" "${uses_group}" KILL
-    for i in {1..5}; do
+    for _ in {1..5}; do
         if ! process_is_live "${pid}" "${uses_group}"; then
             break
         fi
@@ -427,6 +426,25 @@ if [[ -f "${run_dir}/db-export/plans.tsv" ]]; then
         "${run_dir}/diffs/failure-timeline.md" ||
         echo "failure timeline generation failed (continuing)" >&2
 fi
+"${lib_dir}/build-repro-set.py" "${run_dir}" ||
+    echo "failed to build repro file set (continuing)" >&2
+"${lib_dir}/build-replay-script.py" "${run_dir}" ||
+    echo "failed to build replay script (continuing)" >&2
+if [[ -r "${run_dir}/reports/plans.json" &&
+    -r "${run_dir}/db-export/plans.tsv" &&
+    -r "${run_dir}/db-export/files.tsv" ]]; then
+    "${lib_dir}/plan-preview-vs-executed.py" \
+        "${run_dir}/reports/plans.json" \
+        "${run_dir}/db-export/plans.tsv" \
+        "${run_dir}/db-export/files.tsv" \
+        "${run_dir}/diffs/plan-preview-vs-executed.tsv" \
+        "${run_dir}/diffs/plan-preview-vs-executed.md" ||
+        echo "plan preview/executed diff failed (continuing)" >&2
+fi
+"${lib_dir}/deprecations.py" \
+    "${run_dir}/logs" \
+    "${run_dir}/diffs/deprecations.md" ||
+    echo "deprecation scan failed (continuing)" >&2
 stage_end diff "$t"
 
 # Mark completion timestamp

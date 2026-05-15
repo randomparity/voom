@@ -177,6 +177,166 @@ EOF
 
 run_summary_jobs_json_straggler_test
 
+run_summary_deprecation_gate_test() {
+  local actual
+  local summary
+
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  mkdir -p "${actual}/logs" "${actual}/reports" "${actual}/db-export" "${actual}/diffs"
+
+  for log_name in env-check policy-validate scan; do
+    printf '0\n' >"${actual}/logs/${log_name}.log.rc"
+  done
+
+  cat >"${actual}/diffs/files-summary.md" <<'EOF'
+# Snapshot Diff Summary
+
+Disappeared paths: 0
+Missing backup post-run: 0
+EOF
+  cat >"${actual}/diffs/deprecations.md" <<'EOF'
+# Deprecation Warnings
+
+Warnings: 1
+
+| Log | Line | Warning |
+|---|---:|---|
+| doctor.log | 1 | warning: deprecated |
+EOF
+
+  VOOM_E2E_FAIL_ON_DEPRECATIONS=1 "lib/build-summary.sh" "${actual}" 0 0
+
+  summary="${actual}/summary.md"
+  if ! grep -Fq "FAIL: 1 deprecation warning(s)" "${summary}"; then
+    echo "FAIL: deprecation hard gate did not fail summary" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_summary_deprecation_gate_test
+
+run_replay_script_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/repro" "${actual}/env" "${actual}/reports"
+
+  cat >"${actual}/manifest.json" <<'EOF'
+{"library":"/lib","policy":"/policies/source.voom"}
+EOF
+  cat >"${actual}/env/policy.voom" <<'EOF'
+policy test {}
+EOF
+  cat >"${actual}/reports/process.json" <<'EOF'
+{"command":"process","status":"ok","session_id":"session-1","paths":["/lib"],"counts":{"failed_plans":1}}
+EOF
+  cat >"${actual}/repro/failed-plan-files.tsv" <<'EOF'
+path	phase	signature	exit_code	container	video_codec	resolution	plan_id	file_id
+/lib/show/S01E01.mkv	transcode-video	cuda-context-oom	187	mkv	h264	1920x1080	plan-1	file-1
+EOF
+
+  "lib/build-replay-script.py" "${actual}"
+  assert_match "${actual}/repro/replay.sh" "tests/expected/replay/replay.sh"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_replay_script_test
+
+run_plan_preview_vs_executed_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/reports" "${actual}/db-export" "${actual}/diffs"
+
+  cat >"${actual}/reports/plans.json" <<'EOF'
+[
+  {
+    "file": {"path": "/lib/a.mkv"},
+    "phase_name": "transcode-video",
+    "actions": [
+      {"operation": "transcode", "parameters": {"codec": "hevc", "crf": 23, "preset": "slow", "hw": "nvenc", "hw_fallback": true}}
+    ],
+    "skip_reason": null
+  },
+  {
+    "file": {"path": "/lib/b.mkv"},
+    "phase_name": "transcode-video",
+    "actions": [],
+    "skip_reason": "already-compatible"
+  },
+  {
+    "file": {"path": "/lib/c.mkv"},
+    "phase_name": "metadata",
+    "actions": [
+      {"operation": "set_language", "track_index": 1, "parameters": {"language": "eng"}}
+    ],
+    "skip_reason": null
+  }
+]
+EOF
+  cat >"${actual}/db-export/files.tsv" <<'EOF'
+id	path
+file-a	/lib/a.mkv
+file-b	/lib/b.mkv
+file-c	/lib/c.mkv
+EOF
+  cat >"${actual}/db-export/plans.tsv" <<'EOF'
+id	file_id	policy_name	phase_name	status	actions	warnings	skip_reason	policy_hash	evaluated_at	created_at	session_id	executed_at	result
+plan-a	file-a	p	transcode-video	completed	[{"operation":"transcode","parameters":{"codec":"hevc","crf":24,"preset":"slow","hw":"nvenc","hw_fallback":true}}]	[]		hash	t	t	s	t	{"ok":true}
+plan-b	file-b	p	transcode-video	skipped	[]	[]	already-compatible	hash	t	t	s	t	{}
+plan-c	file-c	p	metadata	completed	[{"operation":"set_language","track_index":1,"parameters":{"language":"jpn"}}]	[]		hash	t	t	s	t	{"ok":true}
+EOF
+
+  "lib/plan-preview-vs-executed.py" \
+    "${actual}/reports/plans.json" \
+    "${actual}/db-export/plans.tsv" \
+    "${actual}/db-export/files.tsv" \
+    "${actual}/diffs/plan-preview-vs-executed.tsv" \
+    "${actual}/diffs/plan-preview-vs-executed.md"
+
+  assert_match \
+    "${actual}/diffs/plan-preview-vs-executed.tsv" \
+    "tests/expected/plan-preview-vs-executed/plan-preview-vs-executed.tsv"
+  assert_match \
+    "${actual}/diffs/plan-preview-vs-executed.md" \
+    "tests/expected/plan-preview-vs-executed/plan-preview-vs-executed.md"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_plan_preview_vs_executed_test
+
+run_deprecations_test() {
+  local actual
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+  mkdir -p "${actual}/logs" "${actual}/diffs"
+
+  cat >"${actual}/logs/doctor.log" <<'EOF'
+warning: `voom doctor` is deprecated; use `voom env check` instead
+ok
+EOF
+  cat >"${actual}/logs/process.log" <<'EOF'
+processing
+EOF
+
+  "lib/deprecations.py" "${actual}/logs" "${actual}/diffs/deprecations.md"
+  assert_match "${actual}/diffs/deprecations.md" "tests/expected/deprecations/deprecations.md"
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_deprecations_test
+
 run_summary_web_smoke_fail_then_sse_warn_test() {
   local actual
   local summary
