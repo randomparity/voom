@@ -40,8 +40,46 @@ macro_rules! plugin_cargo_metadata {
     };
 }
 
+/// Stat-bucket label for a `Call` variant. Each variant has a stable
+/// `call.<snake>` label that's safe to embed in low-cardinality metrics.
+fn call_kind_str(call: &voom_domain::call::Call) -> &'static str {
+    use voom_domain::call::Call;
+    match call {
+        Call::EvaluatePolicy { .. } => "call.evaluate_policy",
+        Call::Orchestrate { .. } => "call.orchestrate",
+        Call::ScanLibrary { .. } => "call.scan_library",
+        // `Call` is `#[non_exhaustive]`; future variants land here until a
+        // dedicated label is added.
+        _ => "call.unknown",
+    }
+}
+
+/// If the two Sharded capabilities have a key in common, return the colliding
+/// key. Used by `check_capability_collisions` to surface the specific key
+/// that conflicts (e.g. scheme `"file"`) in the error message.
+fn sharded_collision_key(
+    a: &voom_domain::capabilities::Capability,
+    b: &voom_domain::capabilities::Capability,
+) -> Option<String> {
+    use voom_domain::capabilities::Capability;
+    match (a, b) {
+        (Capability::Discover { schemes: a_s }, Capability::Discover { schemes: b_s }) => {
+            a_s.iter().find(|s| b_s.contains(*s)).cloned()
+        }
+        (
+            Capability::EnrichMetadata { source: a_src },
+            Capability::EnrichMetadata { source: b_src },
+        ) => (a_src == b_src).then(|| a_src.clone()),
+        _ => None,
+    }
+}
+
 /// Universal plugin interface. All native plugins implement this.
-pub trait Plugin: Send + Sync {
+///
+/// `Plugin: Any + 'static` allows `Registry::get_typed::<P>` to recover the
+/// concrete plugin type by TypeId match. The `'static` bound is implied by
+/// `Any` and is satisfied by every plugin in this workspace.
+pub trait Plugin: Any + Send + Sync {
     fn name(&self) -> &str;
     fn version(&self) -> &str;
 
@@ -98,6 +136,20 @@ pub trait Plugin: Send + Sync {
     /// Called on application shutdown.
     fn shutdown(&self) -> Result<()> {
         Ok(())
+    }
+
+    /// Handle a unary or streaming Call dispatched via
+    /// `Kernel::dispatch_to_capability`. Default impl returns an error so a
+    /// plugin that does NOT claim any capability that expects calls compiles
+    /// without override but fails cleanly if invoked.
+    ///
+    /// Plugins that expose Call-handling capabilities (e.g. EvaluatePolicy,
+    /// OrchestratePhases, Discover) override this.
+    fn on_call(&self, _call: &voom_domain::call::Call) -> Result<voom_domain::call::CallResponse> {
+        Err(voom_domain::errors::VoomError::plugin(
+            self.name(),
+            "plugin does not handle calls (no on_call override)",
+        ))
     }
 }
 
@@ -221,12 +273,69 @@ impl Kernel {
 
     /// Register a native plugin, subscribing it to events it handles.
     ///
-    /// Returns an error if a plugin with the same name is already registered.
+    /// Returns an error if a plugin with the same name is already registered,
+    /// or if the new plugin's capabilities collide with an existing claim
+    /// (Exclusive: kind already taken; Sharded: a key overlaps).
     pub fn register_plugin(&mut self, plugin: Arc<dyn Plugin>, priority: i32) -> Result<()> {
+        self.verify_registration_invariants(&plugin)?;
         let name = plugin.name().to_string();
         self.registry.register(plugin.clone())?;
         self.bus.subscribe_plugin(plugin, priority);
         tracing::info!(plugin = %name, "plugin registered");
+        Ok(())
+    }
+
+    /// Pre-registration invariant check called by every registration entry
+    /// point before any plugin-side `init()` side effects can run on a doomed
+    /// plugin (rev-3). Today this only enforces capability-collision rules;
+    /// future invariants (manifest sanity checks, etc.) can plug in here
+    /// without re-wiring every entry point.
+    fn verify_registration_invariants(&self, new_plugin: &Arc<dyn Plugin>) -> Result<()> {
+        self.check_capability_collisions(new_plugin)
+    }
+
+    fn check_capability_collisions(&self, new_plugin: &Arc<dyn Plugin>) -> Result<()> {
+        use voom_domain::capability_resolution::CapabilityResolution;
+        let new_name = new_plugin.name().to_string();
+
+        for new_cap in new_plugin.capabilities() {
+            for (existing_name, existing_plugin) in self.registry.iter_all() {
+                if existing_name == new_name {
+                    continue;
+                }
+                for existing_cap in existing_plugin.capabilities() {
+                    if new_cap.kind() != existing_cap.kind() {
+                        continue;
+                    }
+                    match new_cap.resolution() {
+                        CapabilityResolution::Exclusive => {
+                            return Err(voom_domain::errors::VoomError::plugin(
+                                &new_name,
+                                format!(
+                                    "capability conflict: {} already claimed by '{}'",
+                                    new_cap.kind(),
+                                    existing_name,
+                                ),
+                            ));
+                        }
+                        CapabilityResolution::Sharded => {
+                            if let Some(key) = sharded_collision_key(new_cap, existing_cap) {
+                                return Err(voom_domain::errors::VoomError::plugin(
+                                    &new_name,
+                                    format!(
+                                        "capability conflict: {} key '{}' already claimed by '{}'",
+                                        new_cap.kind(),
+                                        key,
+                                        existing_name,
+                                    ),
+                                ));
+                            }
+                        }
+                        CapabilityResolution::Competing => {}
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -251,6 +360,8 @@ impl Kernel {
                 "a plugin with this name is already registered",
             ));
         }
+        // rev-3: collision check BEFORE init() side effects.
+        self.verify_registration_invariants(&plugin)?;
         let plugin_mut = Arc::get_mut(&mut plugin).ok_or_else(|| {
             voom_domain::errors::VoomError::plugin(
                 name.clone(),
@@ -283,6 +394,14 @@ impl Kernel {
                 name,
                 "a plugin with this name is already registered",
             ));
+        }
+        // rev-3: collision check BEFORE init() side effects. Cloning the typed
+        // Arc bumps the refcount to 2 just long enough to coerce it to a
+        // `&Arc<dyn Plugin>` for the invariant check; the clone is dropped
+        // before `Arc::get_mut` (which requires refcount-1) is called.
+        {
+            let arc_dyn: Arc<dyn Plugin> = arc.clone();
+            self.verify_registration_invariants(&arc_dyn)?;
         }
         let plugin_mut = Arc::get_mut(&mut arc).ok_or_else(|| {
             voom_domain::errors::VoomError::plugin(
@@ -322,6 +441,77 @@ impl Kernel {
     /// previous sink. Intended for one-shot wiring at bootstrap.
     pub fn set_stats_sink(&self, sink: Arc<dyn stats_sink::StatsSink>) {
         self.bus.set_stats_sink(sink);
+    }
+
+    /// Dispatch a unary or streaming `Call` to the plugin that owns the
+    /// matching capability, recording its outcome (Ok / Err / Panic) through
+    /// the installed `StatsSink`.
+    ///
+    /// Resolution rules:
+    /// - `CapabilityQuery::Exclusive` and `::Sharded` resolve to exactly one
+    ///   plugin (enforced at registration; see `verify_registration_invariants`).
+    /// - `CapabilityQuery::Competing` matches any plugin in the priority-ordered
+    ///   set; today returns the first hit (priority sorting can be added later).
+    /// - No match → `VoomError::Plugin` naming the query.
+    pub fn dispatch_to_capability(
+        &self,
+        query: voom_domain::capabilities::CapabilityQuery,
+        call: voom_domain::call::Call,
+    ) -> Result<voom_domain::call::CallResponse> {
+        let plugin = self.resolve_capability(&query)?;
+        let plugin_name = plugin.name().to_string();
+        let call_kind = call_kind_str(&call);
+
+        let started_at = chrono::Utc::now();
+        let timer = std::time::Instant::now();
+        let handler_result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| plugin.on_call(&call)));
+        let duration_ms = u64::try_from(timer.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+        let outcome = match &handler_result {
+            Ok(Ok(_)) => voom_domain::plugin_stats::PluginInvocationOutcome::Ok,
+            Ok(Err(e)) => voom_domain::plugin_stats::PluginInvocationOutcome::Err {
+                category: crate::bus::error_category(e),
+            },
+            Err(_) => voom_domain::plugin_stats::PluginInvocationOutcome::Panic,
+        };
+        self.bus
+            .stats_sink_snapshot()
+            .record(voom_domain::plugin_stats::PluginStatRecord::new(
+                plugin_name.clone(),
+                call_kind,
+                started_at,
+                duration_ms,
+                outcome,
+            ));
+
+        match handler_result {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(voom_domain::errors::VoomError::plugin(
+                plugin_name,
+                "panic during dispatch_to_capability",
+            )),
+        }
+    }
+
+    fn resolve_capability(
+        &self,
+        query: &voom_domain::capabilities::CapabilityQuery,
+    ) -> Result<Arc<dyn Plugin>> {
+        let mut matches: Vec<Arc<dyn Plugin>> = Vec::new();
+        for (_name, plugin) in self.registry.iter_all() {
+            if plugin.capabilities().iter().any(|c| c.matches_query(query)) {
+                matches.push(plugin);
+            }
+        }
+        if matches.is_empty() {
+            return Err(voom_domain::errors::VoomError::plugin(
+                format!("{query:?}"),
+                format!("no handler for capability {query:?}"),
+            ));
+        }
+        Ok(matches.into_iter().next().expect("non-empty checked above"))
     }
 
     /// Dispatch an event through the bus to all matching subscribers.
@@ -702,6 +892,521 @@ mod tests {
         );
         assert_eq!(kernel.registry.len(), 1);
         assert_eq!(kernel.subscriber_count(), 1);
+    }
+
+    // rev-3: capability collisions must be enforced at every registration
+    // entry point, and BEFORE init() side effects can fire.
+
+    #[test]
+    fn register_rejects_exclusive_collision() {
+        struct A;
+        struct B;
+        impl Plugin for A {
+            fn name(&self) -> &str {
+                "a"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
+        }
+        impl Plugin for B {
+            fn name(&self) -> &str {
+                "b"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
+        }
+        let mut kernel = Kernel::new();
+        kernel.register_plugin(Arc::new(A), 10).unwrap();
+        let err = kernel.register_plugin(Arc::new(B), 20).unwrap_err();
+        assert!(
+            err.to_string().contains("a"),
+            "error should name prior claimant: {err}"
+        );
+    }
+
+    #[test]
+    fn init_and_register_rejects_exclusive_collision() {
+        struct A;
+        struct B;
+        impl Plugin for A {
+            fn name(&self) -> &str {
+                "a"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
+        }
+        impl Plugin for B {
+            fn name(&self) -> &str {
+                "b"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
+        }
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+        let mut kernel = Kernel::new();
+        kernel.init_and_register(Arc::new(A), 10, &ctx).unwrap();
+        let err = kernel.init_and_register(Arc::new(B), 20, &ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("a"),
+            "error should name prior claimant: {err}"
+        );
+    }
+
+    #[test]
+    fn init_and_register_shared_rejects_exclusive_collision() {
+        #[derive(Debug)]
+        struct ConflictingPlugin {
+            init_called: Arc<AtomicBool>,
+        }
+        impl Plugin for ConflictingPlugin {
+            fn name(&self) -> &str {
+                "conflicting"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
+            fn init(&mut self, _ctx: &PluginContext) -> Result<Vec<Event>> {
+                self.init_called.store(true, Ordering::SeqCst);
+                Ok(vec![])
+            }
+        }
+
+        let ctx = PluginContext::new(serde_json::json!({}), PathBuf::from("/tmp"));
+        let mut kernel = Kernel::new();
+
+        struct FirstClaimant;
+        impl Plugin for FirstClaimant {
+            fn name(&self) -> &str {
+                "first"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
+        }
+        kernel.register_plugin(Arc::new(FirstClaimant), 10).unwrap();
+
+        let init_flag = Arc::new(AtomicBool::new(false));
+        let err = kernel
+            .init_and_register_shared(
+                ConflictingPlugin {
+                    init_called: init_flag.clone(),
+                },
+                20,
+                &ctx,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("first"),
+            "error should name prior claimant: {err}"
+        );
+        assert!(
+            !init_flag.load(Ordering::SeqCst),
+            "collision must be detected BEFORE init() side effects fire"
+        );
+    }
+
+    #[test]
+    fn register_rejects_sharded_same_key() {
+        use std::sync::LazyLock;
+        struct D1;
+        struct D2;
+        impl Plugin for D1 {
+            fn name(&self) -> &str {
+                "d1"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Discover {
+                        schemes: vec!["file".into()],
+                    }]
+                });
+                &C
+            }
+        }
+        impl Plugin for D2 {
+            fn name(&self) -> &str {
+                "d2"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Discover {
+                        schemes: vec!["file".into()],
+                    }]
+                });
+                &C
+            }
+        }
+        let mut kernel = Kernel::new();
+        kernel.register_plugin(Arc::new(D1), 10).unwrap();
+        let err = kernel.register_plugin(Arc::new(D2), 20).unwrap_err();
+        assert!(
+            err.to_string().contains("file"),
+            "error should name colliding scheme: {err}"
+        );
+    }
+
+    #[test]
+    fn register_allows_sharded_disjoint_keys() {
+        use std::sync::LazyLock;
+        struct DFile;
+        struct DS3;
+        impl Plugin for DFile {
+            fn name(&self) -> &str {
+                "dfile"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Discover {
+                        schemes: vec!["file".into()],
+                    }]
+                });
+                &C
+            }
+        }
+        impl Plugin for DS3 {
+            fn name(&self) -> &str {
+                "ds3"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Discover {
+                        schemes: vec!["s3".into()],
+                    }]
+                });
+                &C
+            }
+        }
+        let mut kernel = Kernel::new();
+        kernel.register_plugin(Arc::new(DFile), 10).unwrap();
+        kernel
+            .register_plugin(Arc::new(DS3), 20)
+            .expect("disjoint schemes allowed");
+    }
+
+    #[test]
+    fn register_allows_competing() {
+        use std::sync::LazyLock;
+        struct I1;
+        struct I2;
+        impl Plugin for I1 {
+            fn name(&self) -> &str {
+                "i1"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Introspect {
+                        formats: vec!["mkv".into()],
+                    }]
+                });
+                &C
+            }
+        }
+        impl Plugin for I2 {
+            fn name(&self) -> &str {
+                "i2"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                static C: LazyLock<Vec<Capability>> = LazyLock::new(|| {
+                    vec![Capability::Introspect {
+                        formats: vec!["mp4".into()],
+                    }]
+                });
+                &C
+            }
+        }
+        let mut kernel = Kernel::new();
+        kernel.register_plugin(Arc::new(I1), 10).unwrap();
+        kernel
+            .register_plugin(Arc::new(I2), 20)
+            .expect("Competing allows co-claim");
+    }
+
+    fn minimal_policy_for_test() -> voom_domain::compiled::CompiledPolicy {
+        use voom_domain::compiled::{
+            CompiledConfig, CompiledMetadata, CompiledPolicy, ErrorStrategy,
+        };
+        CompiledPolicy::new(
+            "demo".into(),
+            CompiledMetadata::default(),
+            CompiledConfig::new(vec![], vec![], ErrorStrategy::Abort, vec![], false),
+            vec![],
+            vec![],
+            String::new(),
+        )
+    }
+
+    #[test]
+    fn dispatch_to_capability_routes_to_matching_plugin() {
+        use voom_domain::call::{Call, CallResponse};
+        use voom_domain::capabilities::CapabilityQuery;
+        use voom_domain::evaluation::EvaluationResult;
+        use voom_domain::media::MediaFile;
+
+        struct E;
+        impl Plugin for E {
+            fn name(&self) -> &str {
+                "e"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
+            fn on_call(&self, _: &Call) -> Result<CallResponse> {
+                Ok(CallResponse::EvaluatePolicy(EvaluationResult::new(vec![])))
+            }
+        }
+
+        let mut kernel = Kernel::new();
+        kernel.register_plugin(Arc::new(E), 10).unwrap();
+        let call = Call::EvaluatePolicy {
+            policy: Box::new(minimal_policy_for_test()),
+            file: Box::new(MediaFile::new(PathBuf::from("/x.mkv"))),
+            phase: None,
+            phase_outputs: None,
+            phase_outcomes: None,
+            capabilities_override: None,
+        };
+        let response = kernel
+            .dispatch_to_capability(
+                CapabilityQuery::Exclusive {
+                    kind: "evaluate_policy".into(),
+                },
+                call,
+            )
+            .expect("dispatch");
+        match response {
+            CallResponse::EvaluatePolicy(r) => assert_eq!(r.plans.len(), 0),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_to_capability_no_handler_errors() {
+        use voom_domain::call::Call;
+        use voom_domain::capabilities::CapabilityQuery;
+        use voom_domain::media::MediaFile;
+
+        let kernel = Kernel::new();
+        let call = Call::EvaluatePolicy {
+            policy: Box::new(minimal_policy_for_test()),
+            file: Box::new(MediaFile::new(PathBuf::from("/x.mkv"))),
+            phase: None,
+            phase_outputs: None,
+            phase_outcomes: None,
+            capabilities_override: None,
+        };
+        let err = kernel
+            .dispatch_to_capability(
+                CapabilityQuery::Exclusive {
+                    kind: "evaluate_policy".into(),
+                },
+                call,
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("evaluate_policy"));
+    }
+
+    #[test]
+    fn dispatch_to_capability_records_ok_stats() {
+        use crate::stats_sink::StatsSink;
+        use std::sync::Mutex;
+        use voom_domain::call::{Call, CallResponse};
+        use voom_domain::capabilities::CapabilityQuery;
+        use voom_domain::evaluation::EvaluationResult;
+        use voom_domain::media::MediaFile;
+        use voom_domain::plugin_stats::{PluginInvocationOutcome, PluginStatRecord};
+
+        #[derive(Default)]
+        struct RecordingSink(Mutex<Vec<PluginStatRecord>>);
+        impl StatsSink for RecordingSink {
+            fn record(&self, r: PluginStatRecord) {
+                self.0.lock().unwrap().push(r);
+            }
+        }
+
+        struct E;
+        impl Plugin for E {
+            fn name(&self) -> &str {
+                "e"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
+            fn on_call(&self, _: &Call) -> Result<CallResponse> {
+                Ok(CallResponse::EvaluatePolicy(EvaluationResult::new(vec![])))
+            }
+        }
+
+        let sink = Arc::new(RecordingSink::default());
+        let mut kernel = Kernel::new();
+        kernel.set_stats_sink(sink.clone());
+        kernel.register_plugin(Arc::new(E), 10).unwrap();
+        let call = Call::EvaluatePolicy {
+            policy: Box::new(minimal_policy_for_test()),
+            file: Box::new(MediaFile::new(PathBuf::from("/x.mkv"))),
+            phase: None,
+            phase_outputs: None,
+            phase_outcomes: None,
+            capabilities_override: None,
+        };
+        kernel
+            .dispatch_to_capability(
+                CapabilityQuery::Exclusive {
+                    kind: "evaluate_policy".into(),
+                },
+                call,
+            )
+            .unwrap();
+        let records = sink.0.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].plugin_id, "e");
+        assert_eq!(records[0].event_type, "call.evaluate_policy");
+        assert!(matches!(records[0].outcome, PluginInvocationOutcome::Ok));
+    }
+
+    #[test]
+    fn dispatch_to_capability_records_panic_outcome() {
+        use crate::stats_sink::StatsSink;
+        use std::sync::Mutex;
+        use voom_domain::call::Call;
+        use voom_domain::capabilities::CapabilityQuery;
+        use voom_domain::media::MediaFile;
+        use voom_domain::plugin_stats::{PluginInvocationOutcome, PluginStatRecord};
+
+        #[derive(Default)]
+        struct RecordingSink(Mutex<Vec<PluginStatRecord>>);
+        impl StatsSink for RecordingSink {
+            fn record(&self, r: PluginStatRecord) {
+                self.0.lock().unwrap().push(r);
+            }
+        }
+
+        struct P;
+        impl Plugin for P {
+            fn name(&self) -> &str {
+                "p"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[Capability::EvaluatePolicy]
+            }
+            fn on_call(&self, _: &Call) -> Result<voom_domain::call::CallResponse> {
+                panic!("intentional");
+            }
+        }
+
+        let sink = Arc::new(RecordingSink::default());
+        let mut kernel = Kernel::new();
+        kernel.set_stats_sink(sink.clone());
+        kernel.register_plugin(Arc::new(P), 10).unwrap();
+        let call = Call::EvaluatePolicy {
+            policy: Box::new(minimal_policy_for_test()),
+            file: Box::new(MediaFile::new(PathBuf::from("/x.mkv"))),
+            phase: None,
+            phase_outputs: None,
+            phase_outcomes: None,
+            capabilities_override: None,
+        };
+        let result = kernel.dispatch_to_capability(
+            CapabilityQuery::Exclusive {
+                kind: "evaluate_policy".into(),
+            },
+            call,
+        );
+        assert!(result.is_err());
+        let records = sink.0.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(matches!(records[0].outcome, PluginInvocationOutcome::Panic));
+    }
+
+    #[test]
+    fn on_call_default_returns_error() {
+        use std::path::PathBuf;
+        use voom_domain::call::Call;
+        use voom_domain::compiled::{
+            CompiledConfig, CompiledMetadata, CompiledPolicy, ErrorStrategy,
+        };
+        use voom_domain::media::MediaFile;
+
+        struct MinimalPlugin;
+        impl Plugin for MinimalPlugin {
+            fn name(&self) -> &str {
+                "minimal"
+            }
+            fn version(&self) -> &str {
+                "0.1.0"
+            }
+            fn capabilities(&self) -> &[Capability] {
+                &[]
+            }
+        }
+
+        let plugin = MinimalPlugin;
+        let policy = CompiledPolicy::new(
+            "demo".into(),
+            CompiledMetadata::default(),
+            CompiledConfig::new(vec![], vec![], ErrorStrategy::Abort, vec![], false),
+            vec![],
+            vec![],
+            String::new(),
+        );
+        let call = Call::EvaluatePolicy {
+            policy: Box::new(policy),
+            file: Box::new(MediaFile::new(PathBuf::from("/x.mkv"))),
+            phase: None,
+            phase_outputs: None,
+            phase_outcomes: None,
+            capabilities_override: None,
+        };
+        let err = plugin.on_call(&call).unwrap_err();
+        assert!(err.to_string().contains("does not handle calls"));
     }
 }
 

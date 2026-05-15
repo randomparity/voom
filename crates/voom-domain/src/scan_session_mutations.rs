@@ -10,6 +10,41 @@ use serde::{Deserialize, Serialize};
 
 use crate::transition::ScanSessionId;
 
+/// Set of paths the active scan session has marked as VOOM-originated mutations.
+///
+/// Loaded as a single snapshot before the walker begins so lookup is infallible
+/// during the walk. Paths in the snapshot are stored in the form produced by
+/// the discovery scanner's `normalize_path` (NFC + canonicalized), so callers
+/// performing lookups must normalize each entry the same way before checking.
+#[derive(Debug, Default, Clone)]
+pub struct SessionMutationSnapshot {
+    paths: std::collections::HashSet<PathBuf>,
+}
+
+impl SessionMutationSnapshot {
+    #[must_use]
+    pub fn new(paths: impl IntoIterator<Item = PathBuf>) -> Self {
+        Self {
+            paths: paths.into_iter().collect(),
+        }
+    }
+
+    #[must_use]
+    pub fn contains(&self, path: &std::path::Path) -> bool {
+        self.paths.contains(path)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.paths.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+}
+
 /// What kind of filesystem mutation VOOM performed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

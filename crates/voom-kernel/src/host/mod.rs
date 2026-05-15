@@ -535,7 +535,7 @@ mod tests {
     #[test]
     fn test_run_tool_capability_enforcement() {
         let mut caps = std::collections::HashSet::new();
-        caps.insert("evaluate".to_string());
+        caps.insert("evaluate_policy".to_string());
         let state = HostState::new("test".into())
             .with_tools(vec!["echo".into()])
             .with_capabilities(caps);

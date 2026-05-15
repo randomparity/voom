@@ -24,7 +24,7 @@ struct Subscriber {
 /// converts it to the `String` expected by `PluginInvocationOutcome::Err`.
 /// The catch-all `_ => "unknown"` handles future `#[non_exhaustive]` variants
 /// without breaking existing metrics pipelines.
-fn error_category(err: &voom_domain::errors::VoomError) -> String {
+pub(crate) fn error_category(err: &voom_domain::errors::VoomError) -> String {
     use voom_domain::errors::{StorageErrorKind, VoomError};
     match err {
         VoomError::Plugin { .. } => "plugin",
@@ -93,6 +93,14 @@ impl EventBus {
     /// (one write lock acquisition); not a hot path.
     pub fn set_stats_sink(&self, sink: Arc<dyn StatsSink>) {
         *self.stats_sink.write() = sink;
+    }
+
+    /// Snapshot the currently installed `StatsSink`. Mirrors the inline read
+    /// inside `publish_recursive`; exposed `pub(crate)` so
+    /// `Kernel::dispatch_to_capability` can record invocations through the
+    /// same sink that the bus uses for `on_event`.
+    pub(crate) fn stats_sink_snapshot(&self) -> Arc<dyn StatsSink> {
+        self.stats_sink.read().clone()
     }
 
     /// Register a plugin at the given priority (lower = earlier dispatch).

@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use voom_domain::capability_map::CapabilityMap;
 use voom_domain::errors::VoomError;
+pub use voom_domain::evaluation::{EvaluationOutcome, EvaluationResult};
 use voom_domain::media::{Container, MediaFile, Track, TrackType};
 use voom_domain::plan::{
     ActionParams, OperationType, Plan, PlannedAction, TranscodeSettings, VerifyMediaParams,
@@ -50,26 +51,6 @@ fn transcode_settings_from(s: &CompiledTranscodeSettings) -> TranscodeSettings {
         .with_tune(s.tune.clone())
         .with_crop(s.crop.as_deref().cloned())
         .with_loudness(s.loudness.clone())
-}
-
-/// Result of evaluating a full policy against a file.
-#[non_exhaustive]
-#[derive(Debug)]
-pub struct EvaluationResult {
-    pub plans: Vec<Plan>,
-}
-
-/// Outcome of a single phase evaluation.
-///
-/// This is internal to the evaluator and distinct from `voom_domain::plan::PhaseOutcome`,
-/// which represents execution outcomes. This type tracks evaluation-time outcomes
-/// (e.g., whether a phase produced modifications) for dependency resolution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EvaluationOutcome {
-    Executed { modified: bool },
-    Skipped,
-    SafeguardFailed,
-    ExecutionFailed,
 }
 
 /// Evaluate a compiled policy against a media file, producing plans for all phases.
@@ -127,7 +108,7 @@ pub fn evaluate_with_phase_outputs<'a>(
         plans.push(plan);
     }
 
-    EvaluationResult { plans }
+    EvaluationResult::new(plans)
 }
 
 /// Evaluate a single phase of a compiled policy against a media file.

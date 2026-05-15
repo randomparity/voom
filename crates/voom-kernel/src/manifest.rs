@@ -103,7 +103,7 @@ mod tests {
             author: String::new(),
             license: String::new(),
             homepage: String::new(),
-            capabilities: vec![Capability::Evaluate],
+            capabilities: vec![Capability::EvaluatePolicy],
             handles_events: vec!["plan.created".into()],
             dependencies: vec![],
             config_schema: None,
@@ -170,7 +170,7 @@ description = "A test plugin"
 handles_events = ["file.discovered"]
 
 [[capabilities]]
-Evaluate = {}
+EvaluatePolicy = {}
 "#;
         let manifest: PluginManifest = toml::from_str(toml_str).unwrap();
         assert!(manifest.protocol_version.is_none());

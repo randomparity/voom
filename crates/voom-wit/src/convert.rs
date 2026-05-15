@@ -118,7 +118,7 @@ pub fn capability_from_wit(cap_str: &str) -> Result<Option<Capability>> {
         "introspect" => Ok(Some(Capability::Introspect {
             formats: split_comma_list(params),
         })),
-        "evaluate" => Ok(Some(Capability::Evaluate)),
+        "evaluate_policy" => Ok(Some(Capability::EvaluatePolicy)),
         "execute" => {
             // Format: "execute:op1+op2:fmt1,fmt2"
             let mut parts = params.splitn(2, ':');
@@ -136,7 +136,7 @@ pub fn capability_from_wit(cap_str: &str) -> Result<Option<Capability>> {
         "detect_tools" => Ok(Some(Capability::DetectTools)),
         "manage_jobs" => Ok(Some(Capability::ManageJobs)),
         "serve_http" => Ok(Some(Capability::ServeHttp)),
-        "plan" => Ok(Some(Capability::Plan)),
+        "orchestrate_phases" => Ok(Some(Capability::OrchestratePhases)),
         "backup" => Ok(Some(Capability::Backup)),
         "enrich_metadata" | "enrich-metadata" => Ok(Some(Capability::EnrichMetadata {
             source: params.to_string(),
@@ -211,7 +211,7 @@ pub fn capability_to_wit(cap: &Capability) -> String {
                 format!("introspect:{}", formats.join(","))
             }
         }
-        Capability::Evaluate => "evaluate".to_string(),
+        Capability::EvaluatePolicy => "evaluate_policy".to_string(),
         Capability::Execute {
             operations,
             formats,
@@ -234,7 +234,7 @@ pub fn capability_to_wit(cap: &Capability) -> String {
         Capability::DetectTools => "detect_tools".to_string(),
         Capability::ManageJobs => "manage_jobs".to_string(),
         Capability::ServeHttp => "serve_http".to_string(),
-        Capability::Plan => "plan".to_string(),
+        Capability::OrchestratePhases => "orchestrate_phases".to_string(),
         Capability::Backup => "backup".to_string(),
         Capability::EnrichMetadata { source } => format!("enrich_metadata:{source}"),
         Capability::Transcribe => "transcribe".to_string(),
@@ -317,9 +317,9 @@ mod tests {
 
     #[test]
     fn test_capability_roundtrip_evaluate() {
-        let cap = Capability::Evaluate;
+        let cap = Capability::EvaluatePolicy;
         let s = capability_to_wit(&cap);
-        assert_eq!(s, "evaluate");
+        assert_eq!(s, "evaluate_policy");
         let restored = parse_capability(&s);
         assert_eq!(restored, cap);
     }
@@ -389,12 +389,12 @@ mod tests {
             (Capability::DetectTools, "detect_tools"),
             (Capability::ManageJobs, "manage_jobs"),
             (Capability::ServeHttp, "serve_http"),
-            (Capability::Plan, "plan"),
+            (Capability::OrchestratePhases, "orchestrate_phases"),
             (Capability::Backup, "backup"),
             (Capability::Transcribe, "transcribe"),
             (Capability::Synthesize, "synthesize"),
             (Capability::HealthCheck, "health_check"),
-            (Capability::Evaluate, "evaluate"),
+            (Capability::EvaluatePolicy, "evaluate_policy"),
         ] {
             let s = capability_to_wit(&cap);
             assert_eq!(s, expected_str);

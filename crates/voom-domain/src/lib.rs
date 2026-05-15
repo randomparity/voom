@@ -1,17 +1,23 @@
 //! Shared domain types for VOOM: media files, tracks, plans, events, and capabilities.
 
 pub mod bad_file;
+pub mod call;
 pub mod capabilities;
 pub mod capability_map;
+pub mod capability_resolution;
+pub mod compiled;
 pub mod errors;
 pub mod estimate;
+pub mod evaluation;
 pub mod events;
 pub mod host_types;
 pub mod job;
 pub mod media;
+pub mod orchestration;
 pub mod plan;
 pub mod plugin_stats;
 pub mod safeguard;
+pub mod scan;
 pub mod scan_session_mutations;
 pub mod snapshot;
 pub mod stats;
