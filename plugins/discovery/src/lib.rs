@@ -516,4 +516,165 @@ mod tests {
         let events = plugin.scan(&opts).unwrap();
         assert_eq!(events.len(), extensions.len());
     }
+
+    #[test]
+    fn on_call_backpressures_when_sink_is_saturated() {
+        use std::time::Duration;
+        use tokio::sync::mpsc;
+        use tokio_util::sync::CancellationToken;
+        use voom_domain::call::{Call, CallResponse};
+        use voom_domain::events::FileDiscoveredEvent;
+
+        // Three files, but a bounded channel of capacity 1.
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..3 {
+            std::fs::write(dir.path().join(format!("f{i}.mkv")), b"x").unwrap();
+        }
+
+        let (sink, mut rx) = mpsc::channel::<FileDiscoveredEvent>(1);
+        let cancel = CancellationToken::new();
+        let mut options = ScanOptions::new(dir.path());
+        options.hash_files = false;
+        let call = Call::ScanLibrary {
+            uri: format!("file://{}", dir.path().display()),
+            options,
+            scan_session: voom_domain::transition::ScanSessionId::new(),
+            sink,
+            root_done: None,
+            cancel,
+        };
+
+        let plugin = DiscoveryPlugin::new();
+
+        // Run on_call on a separate thread so we can drain at our pace from the
+        // test thread. on_call is synchronous and will block on blocking_send
+        // when the sink saturates.
+        let handle = std::thread::spawn(move || plugin.on_call(&call));
+
+        // Give the plugin a moment to start.
+        std::thread::sleep(Duration::from_millis(100));
+
+        // Drain the events as they arrive. The plugin's blocking_send will
+        // unblock as we drain; eventually the scan completes.
+        let mut total = 0;
+        while let Some(_e) = rx.blocking_recv() {
+            total += 1;
+            if total >= 3 {
+                break;
+            }
+        }
+
+        // Plugin should have completed. join() returns the CallResponse.
+        let response = handle.join().unwrap().expect("on_call");
+        match response {
+            CallResponse::ScanLibrary(summary) => assert_eq!(summary.file_count, 3),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn on_call_respects_mid_scan_cancellation() {
+        use tokio::sync::mpsc;
+        use tokio_util::sync::CancellationToken;
+        use voom_domain::call::Call;
+        use voom_domain::events::FileDiscoveredEvent;
+
+        // Many files; we cancel after a few are emitted.
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..50 {
+            std::fs::write(dir.path().join(format!("f{i:03}.mkv")), b"x").unwrap();
+        }
+
+        let (sink, mut rx) = mpsc::channel::<FileDiscoveredEvent>(8);
+        let cancel = CancellationToken::new();
+        let mut options = ScanOptions::new(dir.path());
+        options.hash_files = false;
+        let call = Call::ScanLibrary {
+            uri: format!("file://{}", dir.path().display()),
+            options,
+            scan_session: voom_domain::transition::ScanSessionId::new(),
+            sink,
+            root_done: None,
+            cancel: cancel.clone(),
+        };
+
+        let plugin = DiscoveryPlugin::new();
+        let handle = std::thread::spawn(move || plugin.on_call(&call));
+
+        // Drain a few events, then cancel.
+        let mut drained = 0;
+        while drained < 3 {
+            if rx.blocking_recv().is_some() {
+                drained += 1;
+            } else {
+                // Scan finished before we got 3 events — unlikely with 50 files,
+                // but bail gracefully so the test doesn't hang.
+                break;
+            }
+        }
+        cancel.cancel();
+
+        // Drain whatever's still buffered or trickles in until the sender closes.
+        while let Some(_e) = rx.blocking_recv() {
+            drained += 1;
+        }
+
+        // The plugin should have returned. Cancel is not an error condition,
+        // so on_call returns Ok with whatever events made it through.
+        let _response = handle
+            .join()
+            .unwrap()
+            .expect("on_call (cancel is not an error)");
+
+        // The interesting invariant: cancellation actually stopped the scan
+        // before all 50 files were emitted.
+        assert!(
+            drained < 50,
+            "cancellation should stop the scan before emitting all 50 files (got {drained})"
+        );
+    }
+
+    #[test]
+    fn on_call_emits_one_root_done_per_call() {
+        use tokio::sync::mpsc;
+        use tokio_util::sync::CancellationToken;
+        use voom_domain::call::Call;
+        use voom_domain::events::{FileDiscoveredEvent, RootWalkCompletedEvent};
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.mkv"), b"x").unwrap();
+        std::fs::write(dir.path().join("b.mkv"), b"x").unwrap();
+
+        let (sink, mut rx) = mpsc::channel::<FileDiscoveredEvent>(16);
+        let (root_done, mut rx_root) = mpsc::channel::<RootWalkCompletedEvent>(8);
+        let cancel = CancellationToken::new();
+        let mut options = ScanOptions::new(dir.path());
+        options.hash_files = false;
+
+        let call = Call::ScanLibrary {
+            uri: format!("file://{}", dir.path().display()),
+            options,
+            scan_session: voom_domain::transition::ScanSessionId::new(),
+            sink,
+            root_done: Some(root_done),
+            cancel,
+        };
+
+        let plugin = DiscoveryPlugin::new();
+        let _response = plugin.on_call(&call).expect("on_call");
+
+        // Drain files.
+        let mut file_count = 0;
+        while let Ok(_e) = rx.try_recv() {
+            file_count += 1;
+        }
+        assert_eq!(file_count, 2);
+
+        // Exactly one RootWalkCompletedEvent.
+        let _root1 = rx_root.try_recv().expect("one root event");
+        assert!(
+            rx_root.try_recv().is_err(),
+            "no second root event for a single Call"
+        );
+    }
 }
