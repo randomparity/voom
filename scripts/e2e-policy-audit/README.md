@@ -30,10 +30,22 @@ All flags have defaults (see `run.sh --help`):
 | `--probe-workers` | `8` | Parallelism for `ffprobe` sweep |
 | `--no-build` | (off) | Skip `cargo build --release` |
 | `--no-web` | (off) | Skip the `voom serve` smoke-test |
-| `--no-probe` | (off) | Skip the independent `ffprobe` sweep (DB-only diffs) |
+| `--no-probe` | (off) | Skip the independent `ffprobe` sweep and ffprobe-backed metadata diffs |
 
-After a failed run, inspect `diffs/failure-clusters.md` first. To materialize a
-small library containing representative problem files:
+### Long-run sidecar intervals
+
+The long-run sidecars default to issue #402's production cadence:
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| `VOOM_E2E_DMON_INTERVAL_SECONDS` | `30` | GPU power/clock/utilization sample interval |
+| `VOOM_E2E_DB_CHECKPOINT_INTERVAL_SECONDS` | `21600` | DB checkpoint interval, six hours |
+| `VOOM_E2E_WATCHDOG_INTERVAL_SECONDS` | `600` | Jobs-list poll interval |
+| `VOOM_E2E_WATCHDOG_STUCK_POLLS` | `12` | Consecutive unchanged polls before `USR1` |
+
+After a failed run, inspect `summary.md` first. For failed-plan runs,
+`diffs/failure-clusters.md` groups representative problem files; to materialize
+a small library containing them:
 
 ```bash
 ~/voom-e2e-runs/<run>/repro/copy-repro-set.sh /tmp/voom-repro-library
@@ -68,6 +80,7 @@ BUILD=target/release/voom POLICY=/path/to/policy.voom ~/voom-e2e-runs/<run>/repr
 ├── pre/, post/                   library snapshots (find manifest + ffprobe NDJSON + DB NDJSON)
 │   └── voom-db-tables/           raw SQLite export (per-table TSV) post-scan / post-process
 ├── runtime/                      5-minute host state samples during voom process
+│   └── nvidia-dmon.csv           nvidia-smi dmon power/clock/utilization timeseries
 ├── env/                          tool versions, GPU state, policy copy, redacted config
 │   ├── version.json              structured VOOM build/version metadata
 │   ├── journal.log               host journal captured after voom process
@@ -76,8 +89,10 @@ BUILD=target/release/voom POLICY=/path/to/policy.voom ~/voom-e2e-runs/<run>/repr
 │   └── rpm-recently-changed.txt  recently changed installed RPMs
 ├── logs/                         one file per CLI invocation, plus *.rc exit-code sidecars
 │   ├── plugin-errors/            compact repeated plugin.error signature logs
-│   └── env-check/                hourly voom env check snapshots during process
+│   ├── env-check/                hourly voom env check snapshots during process
+│   └── watchdog.log              forward-progress watchdog polls and timeout reason
 ├── db-export/                    raw SQLite tables (post-process; consumed by build-summary)
+│   └── checkpoint-NNNN/          periodic raw SQLite table exports during process
 ├── reports/                      voom report --all, files, plans, jobs, events
 │   ├── scan.json                 structured `voom scan --format json` summary
 │   ├── process.json              structured `voom process --format json` summary
@@ -92,6 +107,7 @@ BUILD=target/release/voom POLICY=/path/to/policy.voom ~/voom-e2e-runs/<run>/repr
 │   └── copy-repro-set.sh         copy representative problem files to a small library
 ├── web-smoke/                    statuses + body samples + content assertions
 ├── diffs/
+│   ├── db-growth.tsv             row count per exported table at each checkpoint
 │   ├── plugin-error-summary.md   repeated plugin.error signatures by plugin
 │   ├── plan-preview-vs-executed.tsv/.md  planned vs executed phase/action/skip diff
 │   ├── deprecations.md           `warning:` lines from logs/*.log

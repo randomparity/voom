@@ -113,8 +113,14 @@ json_run() {
 
 runtime_sampler_pid=""
 env_check_sampler_pid=""
+nvidia_dmon_pid=""
+db_checkpoint_sampler_pid=""
+progress_watchdog_pid=""
 runtime_sampler_uses_group=0
 env_check_sampler_uses_group=0
+nvidia_dmon_uses_group=0
+db_checkpoint_sampler_uses_group=0
+progress_watchdog_uses_group=0
 active_process_pid=""
 active_process_uses_group=0
 
@@ -183,6 +189,18 @@ stop_process_samplers() {
     stop_process_tree "${env_check_sampler_pid}" "${env_check_sampler_uses_group}"
     env_check_sampler_pid=""
     env_check_sampler_uses_group=0
+
+    stop_process_tree "${nvidia_dmon_pid}" "${nvidia_dmon_uses_group}"
+    nvidia_dmon_pid=""
+    nvidia_dmon_uses_group=0
+
+    stop_process_tree "${db_checkpoint_sampler_pid}" "${db_checkpoint_sampler_uses_group}"
+    db_checkpoint_sampler_pid=""
+    db_checkpoint_sampler_uses_group=0
+
+    stop_process_tree "${progress_watchdog_pid}" "${progress_watchdog_uses_group}"
+    progress_watchdog_pid=""
+    progress_watchdog_uses_group=0
 }
 
 start_process_samplers() {
@@ -198,6 +216,25 @@ start_process_samplers() {
         env_check_sampler_uses_group=0
     fi
     env_check_sampler_pid=$!
+    if start_background_session \
+        "${lib_dir}/nvidia-dmon-sampler.sh" \
+        "${run_dir}" \
+        "${VOOM_E2E_DMON_INTERVAL_SECONDS:-30}"; then
+        nvidia_dmon_uses_group=1
+    else
+        nvidia_dmon_uses_group=0
+    fi
+    nvidia_dmon_pid=$!
+    if start_background_session \
+        "${lib_dir}/db-checkpoint-sampler.sh" \
+        "${run_dir}" \
+        "${db_path}" \
+        "${VOOM_E2E_DB_CHECKPOINT_INTERVAL_SECONDS:-21600}"; then
+        db_checkpoint_sampler_uses_group=1
+    else
+        db_checkpoint_sampler_uses_group=0
+    fi
+    db_checkpoint_sampler_pid=$!
 }
 
 forward_process_signal() {
@@ -226,6 +263,20 @@ run_process_command() {
         active_process_uses_group=0
     fi >"${run_dir}/reports/process.json" 2>"${run_dir}/logs/process.log"
     active_process_pid=$!
+
+    if start_background_session \
+        "${lib_dir}/progress-watchdog.sh" \
+        "${run_dir}" \
+        "${voom_bin}" \
+        "${active_process_pid}" \
+        "${active_process_uses_group}" \
+        "${VOOM_E2E_WATCHDOG_INTERVAL_SECONDS:-600}" \
+        "${VOOM_E2E_WATCHDOG_STUCK_POLLS:-12}"; then
+        progress_watchdog_uses_group=1
+    else
+        progress_watchdog_uses_group=0
+    fi
+    progress_watchdog_pid=$!
 
     trap 'stop_process_samplers' EXIT
     trap 'forward_process_signal INT 130' INT
