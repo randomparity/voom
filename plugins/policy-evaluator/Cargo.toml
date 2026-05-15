@@ -19,6 +19,8 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+voom-kernel = { workspace = true }
+parking_lot = { workspace = true }
 
 [lints]
 workspace = true
