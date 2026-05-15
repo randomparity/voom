@@ -18,7 +18,10 @@ note_fail() {
 }
 note_warn() {
   soft_warns+=("$1")
-  [[ "${verdict}" == "PASS" ]] && verdict="WARN"
+  if [[ "${verdict}" == "PASS" ]]; then
+    verdict="WARN"
+  fi
+  return 0
 }
 link_artifact_if_exists() {
   local path="$1"

@@ -127,6 +127,58 @@ EOF
 
 run_summary_doctor_log_rc_compat_test
 
+run_summary_web_smoke_fail_then_sse_warn_test() {
+  local actual
+  local summary
+
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  mkdir -p \
+    "${actual}/logs" \
+    "${actual}/reports" \
+    "${actual}/db-export" \
+    "${actual}/diffs" \
+    "${actual}/web-smoke"
+
+  for log_name in doctor policy-validate scan; do
+    printf '0\n' >"${actual}/logs/${log_name}.log.rc"
+  done
+
+  cat >"${actual}/diffs/files-summary.md" <<'EOF'
+# Snapshot Diff Summary
+
+Disappeared paths: 0
+Missing backup post-run: 0
+EOF
+
+  cat >"${actual}/web-smoke/statuses.tsv" <<'EOF'
+endpoint	status	content
+root	200	FAIL
+events(sse)	200	FAIL
+EOF
+
+  if ! "lib/build-summary.sh" "${actual}" 0 0; then
+    echo "FAIL: build-summary should exit 0 after hard web smoke failure followed by SSE warning" >&2
+    fail=1
+  fi
+
+  summary="${actual}/summary.md"
+  if ! grep -Fq "FAIL: web smoke root content assertion failed" "${summary}"; then
+    echo "FAIL: summary missing web smoke hard content failure" >&2
+    fail=1
+  fi
+  if ! grep -Fq "WARN: SSE smoke events(sse) content assertion failed" "${summary}"; then
+    echo "FAIL: summary missing SSE content warning" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_summary_web_smoke_fail_then_sse_warn_test
+
 run_web_smoke_validation_helpers_test() {
   local actual
   actual=$(mktemp -d)
