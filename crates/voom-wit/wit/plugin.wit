@@ -58,4 +58,15 @@ interface plugin {
 
     /// Process an event and optionally return a result.
     on-event: func(event: event-data) -> option<event-result>;
+
+    /// Handle a Call dispatched by the host. The call is MessagePack-encoded
+    /// (matching how event payloads cross the WIT boundary). Returns either a
+    /// MessagePack-encoded CallResponse on success or an error message string.
+    ///
+    /// For streaming Calls (e.g. scan-library), the WASM plugin uses
+    /// `emit-call-item` (host fn) to push items to the caller's receiver and
+    /// `call-is-cancelled` (host fn) to poll the cancellation token. The
+    /// payload `list<u8>` for streaming Calls omits the host-only fields
+    /// (sink, cancel, root-done senders).
+    on-call: func(call: list<u8>) -> result<list<u8>, string>;
 }
