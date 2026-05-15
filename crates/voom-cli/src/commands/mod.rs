@@ -3,6 +3,7 @@ pub mod bug_report;
 pub mod completions;
 pub mod config;
 pub mod db;
+pub(crate) mod discovery_dispatch;
 pub mod env;
 pub mod estimate;
 pub mod events;

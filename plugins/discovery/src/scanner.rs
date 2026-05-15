@@ -183,6 +183,7 @@ fn hash_file_full(file: &mut fs::File) -> Result<String> {
 fn walk_media_files(
     options: &ScanOptions,
     snapshot: Option<&SessionMutationSnapshot>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> (Vec<(PathBuf, u64)>, usize, Vec<DiscoveryWalkError>) {
     #[cfg(feature = "test-hooks")]
     if let Some(delay) = crate::test_hooks::delay_for(&options.root) {
@@ -199,6 +200,12 @@ fn walk_media_files(
     let mut orphaned_temp_count: usize = 0;
     let mut walk_errors = Vec::new();
     for entry_result in walker {
+        if cancel.is_cancelled() {
+            // Caller cancelled; stop enumerating. Anything we've already
+            // collected is fine to return — the caller (the plugin's on_call)
+            // is responsible for suppressing root_done on cancellation.
+            break;
+        }
         let entry = match entry_result {
             Ok(entry) => entry,
             Err(err) => {
@@ -279,13 +286,17 @@ fn report_walk_errors(options: &ScanOptions, walk_errors: &[DiscoveryWalkError])
 /// and must be `Send + Sync`. Implementations that need ordering or
 /// serialization (e.g. an mpsc sender that returns errors) should handle
 /// it themselves.
-pub type EventSink = Box<dyn Fn(FileDiscoveredEvent) + Send + Sync>;
+pub(crate) type EventSink = Box<dyn Fn(FileDiscoveredEvent) + Send + Sync>;
 
 /// Streaming variant of [`scan_directory`]. Emits each `FileDiscoveredEvent`
 /// via `on_event` as soon as its content hash is computed, rather than
 /// collecting into a `Vec`. Order is rayon-dependent — callers that need a
 /// deterministic order should sort downstream.
-pub fn scan_directory_streaming(options: &ScanOptions, on_event: EventSink) -> Result<()> {
+pub(crate) fn scan_directory_streaming(
+    options: &ScanOptions,
+    cancel: &tokio_util::sync::CancellationToken,
+    on_event: EventSink,
+) -> Result<()> {
     if !options.root.exists() {
         return Err(VoomError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -301,7 +312,8 @@ pub fn scan_directory_streaming(options: &ScanOptions, on_event: EventSink) -> R
         None
     };
 
-    let (media_paths, _orphaned, walk_errors) = walk_media_files(options, snapshot.as_ref());
+    let (media_paths, _orphaned, walk_errors) =
+        walk_media_files(options, snapshot.as_ref(), cancel);
     report_walk_errors(options, &walk_errors);
 
     tracing::info!(
@@ -315,6 +327,13 @@ pub fn scan_directory_streaming(options: &ScanOptions, on_event: EventSink) -> R
     let fd_sem = Arc::new(FdSemaphore::new(MAX_CONCURRENT_FDS));
 
     let process_file = |(path, walk_size): &(PathBuf, u64)| {
+        if cancel.is_cancelled() {
+            // Caller cancelled; skip this file. Other workers will hit the
+            // same check on their next file. We don't release any per-file
+            // resources here because we haven't acquired any yet (the FD
+            // guard hasn't been built).
+            return;
+        }
         let _guard = fd_sem.guard();
         let result = build_event(
             path,
@@ -359,14 +378,18 @@ pub fn scan_directory_streaming(options: &ScanOptions, on_event: EventSink) -> R
     Ok(())
 }
 
-/// Scan a directory for media files. Returns all discovered events in
-/// deterministic path order. Kept for callers (e.g. `voom process`) that
-/// expect a fully-collected list.
-pub fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>> {
+/// Test-only synchronous scan helper that collects all events in
+/// deterministic path order. Production code goes through
+/// `DiscoveryPlugin::on_call(Call::ScanLibrary)` which uses the streaming
+/// variant directly.
+#[cfg(test)]
+pub(crate) fn scan_directory(options: &ScanOptions) -> Result<Vec<FileDiscoveredEvent>> {
     let collected: Arc<Mutex<Vec<FileDiscoveredEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let collected_clone = collected.clone();
+    let cancel = tokio_util::sync::CancellationToken::new();
     scan_directory_streaming(
         options,
+        &cancel,
         Box::new(move |event| {
             collected_clone
                 .lock()
@@ -710,8 +733,10 @@ mod tests {
         let emitted_clone = emitted.clone();
 
         let options = ScanOptions::new(dir.path());
+        let cancel = tokio_util::sync::CancellationToken::new();
         scan_directory_streaming(
             &options,
+            &cancel,
             Box::new(move |event| {
                 emitted_clone.lock().unwrap().push(event);
             }),
@@ -748,7 +773,8 @@ mod tests {
         }));
 
         // Sanity: with a healthy directory, no errors fire.
-        scan_directory_streaming(&options, Box::new(|_| {})).unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        scan_directory_streaming(&options, &cancel, Box::new(|_| {})).unwrap();
         assert_eq!(errors.load(Ordering::Relaxed), 0);
     }
 
@@ -763,5 +789,72 @@ mod tests {
         assert_eq!(events.len(), 2);
         // Existing API guarantees deterministic path ordering.
         assert!(events[0].path < events[1].path);
+    }
+
+    #[test]
+    fn walk_media_files_observes_cancellation() {
+        use tokio_util::sync::CancellationToken;
+
+        let dir = tempfile::tempdir().unwrap();
+        // Many files — without cancellation the walk would discover all 50.
+        for i in 0..50 {
+            std::fs::write(dir.path().join(format!("f{i:03}.mkv")), b"x").unwrap();
+        }
+
+        let options = ScanOptions::new(dir.path());
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // Pre-cancel so the walk bails on the very first observable check.
+
+        let (paths, _orphans, _walk_errors) = walk_media_files(&options, None, &cancel);
+
+        // The walker may have already enumerated some entries before the first
+        // check, but the invariant is "fewer than all 50" — cancellation actually
+        // stops work.
+        assert!(
+            paths.len() < 50,
+            "cancellation should stop the walk before discovering all 50 files (got {})",
+            paths.len()
+        );
+    }
+
+    #[test]
+    fn scan_directory_streaming_observes_cancellation_during_hashing() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio_util::sync::CancellationToken;
+
+        // Many small files; hashing each is fast, so the test relies on
+        // bulk cancellation, not racing a slow hash.
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..50 {
+            std::fs::write(dir.path().join(format!("f{i:03}.mkv")), b"x").unwrap();
+        }
+
+        let emitted = Arc::new(AtomicUsize::new(0));
+        let emitted_clone = emitted.clone();
+
+        let mut options = ScanOptions::new(dir.path());
+        options.hash_files = true; // exercise the hashing path
+
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // pre-cancel so workers observe it immediately
+
+        let result = scan_directory_streaming(
+            &options,
+            &cancel,
+            Box::new(move |_event| {
+                emitted_clone.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+
+        // The function returns Ok even on cancellation — cancellation is not an
+        // error condition for the scanner. The invariant we test is: fewer than
+        // all 50 files emitted, because workers observed the token.
+        assert!(result.is_ok(), "scanner returns Ok on cancellation");
+        assert!(
+            emitted.load(Ordering::Relaxed) < 50,
+            "cancellation should stop workers before emitting all 50 events (got {})",
+            emitted.load(Ordering::Relaxed)
+        );
     }
 }

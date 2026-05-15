@@ -38,7 +38,7 @@ fn dispatch_scan_library_streams_through_real_discovery_plugin() {
 
     let mut kernel = Kernel::new();
     kernel
-        .register_plugin(Arc::new(DiscoveryPlugin::new()), 10)
+        .register_plugin(Arc::new(DiscoveryPlugin::for_bootstrap()), 10)
         .expect("register discovery");
     let kernel = Arc::new(kernel);
 
@@ -111,7 +111,7 @@ fn dispatch_scan_library_rejects_other_call_variants() {
     // an error rather than silently succeeding.
     let mut kernel = Kernel::new();
     kernel
-        .register_plugin(Arc::new(DiscoveryPlugin::new()), 10)
+        .register_plugin(Arc::new(DiscoveryPlugin::for_bootstrap()), 10)
         .expect("register discovery");
 
     let call = Call::Orchestrate {
