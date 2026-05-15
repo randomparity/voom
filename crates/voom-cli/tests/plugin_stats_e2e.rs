@@ -320,3 +320,67 @@ async fn estimate_calibrate_does_not_mutate_database() {
          {baseline_cost_model_samples}, now {after_cost_model_samples}"
     );
 }
+
+// ─── Phase 4: process-path stats coverage ────────────────────────────────────
+
+/// A `voom process --dry-run` must record at least one `policy-evaluator` row
+/// in `plugin_stats`. `--dry-run` exercises the full process pipeline up to
+/// (but not including) executor mutation, so the per-phase `kernel_invoke::evaluate`
+/// call site fires and the kernel's dispatch_to_capability instrumentation
+/// writes a `plugin_stats` row whose `plugin_id = "policy-evaluator"`.
+///
+/// This is the regression that protects the spec acceptance criterion
+/// "`plugin_stats` contains rows for `discovery`, `policy-evaluator`, and
+/// `phase-orchestrator` after a `voom process` run" (#378).
+#[tokio::test]
+async fn process_dry_run_populates_policy_evaluator_stats_row() {
+    let _lock = TEST_LOCK.lock().await;
+    let mut env = TestEnv::new().await;
+
+    // A one-phase policy that evaluates against any container — keeps the
+    // evaluator's work non-trivial without depending on real ffprobe output.
+    env.set_policy(
+        r#"policy "phase4-stats-fixture" {
+            phase init { container mkv }
+        }"#,
+    );
+    env.write_media("a.mkv", 32);
+
+    let policy_path = env
+        .policy_path()
+        .to_str()
+        .expect("utf-8 policy path")
+        .to_string();
+    let root = env.root().to_str().expect("utf-8 root").to_string();
+
+    let _outcome = env
+        .run_process(&[
+            &root,
+            "--policy",
+            &policy_path,
+            "--dry-run",
+            "--no-backup",
+        ])
+        .await;
+
+    // Allow the SqliteStatsSink writer thread to flush batched rows.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    let db_path = env.db_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .unwrap_or_else(|e| panic!("open {}: {e}", db_path.display()));
+    let evaluator_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM plugin_stats WHERE plugin_id = 'policy-evaluator'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count policy-evaluator rows");
+    assert!(
+        evaluator_count > 0,
+        "expected at least one 'policy-evaluator' row in plugin_stats after a \
+         dry-run process; the CLI dispatches Call::EvaluatePolicy through \
+         Kernel::dispatch_to_capability which records the resolved plugin id \
+         (#378 Phase 4). Got {evaluator_count} rows."
+    );
+}
