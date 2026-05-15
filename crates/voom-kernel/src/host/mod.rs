@@ -37,6 +37,27 @@ impl Default for WasmResourceLimits {
     }
 }
 
+/// Per-active-Call context that backs `emit-call-item`,
+/// `emit-root-walk-completed`, and `call-is-cancelled` host functions. Set by
+/// `Kernel::dispatch_to_capability` before invoking a WASM plugin's `on-call`
+/// for a streaming Call, and cleared after the call returns. Outside the
+/// install/clear window, `HostState.streaming_call` is None and the host fns
+/// return their "not in a streaming Call" results.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum StreamingCallContext {
+    /// Context for an active `Call::ScanLibrary`. The sink receives
+    /// `FileDiscoveredEvent`s the WASM plugin emits via `emit-call-item`.
+    /// `root_done` (if Some) receives `RootWalkCompletedEvent`s the plugin
+    /// emits via `emit-root-walk-completed`. `cancel` is polled by
+    /// `call-is-cancelled`.
+    ScanLibrary {
+        sink: tokio::sync::mpsc::Sender<voom_domain::events::FileDiscoveredEvent>,
+        root_done: Option<tokio::sync::mpsc::Sender<voom_domain::events::RootWalkCompletedEvent>>,
+        cancel: tokio_util::sync::CancellationToken,
+    },
+}
+
 /// State provided to WASM plugins via host function imports.
 ///
 /// Each WASM plugin instance gets its own `HostState`, which holds
@@ -65,6 +86,9 @@ pub struct HostState {
     /// Store limits for wasmtime (only used when feature = "wasm").
     #[cfg(feature = "wasm")]
     pub store_limits: wasmtime::StoreLimits,
+    /// Per-call streaming context. Some(_) only during an active streaming
+    /// Call dispatched via `Kernel::dispatch_to_capability`.
+    pub streaming_call: Option<StreamingCallContext>,
 }
 
 impl HostState {
@@ -83,6 +107,7 @@ impl HostState {
             wasm_limits: WasmResourceLimits::default(),
             #[cfg(feature = "wasm")]
             store_limits: wasmtime::StoreLimits::default(),
+            streaming_call: None,
         }
     }
 
@@ -120,6 +145,21 @@ impl HostState {
     pub fn with_transition_store(mut self, store: Arc<dyn WasmTransitionStore>) -> Self {
         self.transition_store = Some(store);
         self
+    }
+
+    /// Install a streaming-call context. Called by `Kernel::dispatch_to_capability`
+    /// before invoking a WASM plugin's `on-call` for a streaming variant.
+    /// Replaces any prior context (which would indicate nested-Call misuse;
+    /// `dispatch_to_capability` should detect that condition earlier).
+    pub fn install_streaming_context(&mut self, ctx: StreamingCallContext) {
+        self.streaming_call = Some(ctx);
+    }
+
+    /// Clear the streaming-call context. Called after `on-call` returns.
+    /// The kernel must always call this; the dispatch site uses a single
+    /// critical section that clears in both Ok and Err paths.
+    pub fn clear_streaming_context(&mut self) {
+        self.streaming_call = None;
     }
 
     /// Pre-seed plugin data with initial configuration from the host.
@@ -542,5 +582,35 @@ mod tests {
         let result = state.run_tool("echo", &["hello".into()], 5000);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("lacks 'execute' capability"));
+    }
+}
+
+#[cfg(test)]
+mod streaming_context_tests {
+    use super::*;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
+    use voom_domain::events::FileDiscoveredEvent;
+
+    #[test]
+    fn default_host_state_has_no_streaming_context() {
+        let state = HostState::new("test".into());
+        assert!(state.streaming_call.is_none());
+    }
+
+    #[test]
+    fn install_and_clear_streaming_context() {
+        let mut state = HostState::new("test".into());
+        let (sink, _rx) = mpsc::channel::<FileDiscoveredEvent>(8);
+        let (root_done, _rx_root) = mpsc::channel(8);
+        let cancel = CancellationToken::new();
+        state.install_streaming_context(StreamingCallContext::ScanLibrary {
+            sink,
+            root_done: Some(root_done),
+            cancel: cancel.clone(),
+        });
+        assert!(state.streaming_call.is_some());
+        state.clear_streaming_context();
+        assert!(state.streaming_call.is_none());
     }
 }

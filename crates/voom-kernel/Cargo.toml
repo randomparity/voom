@@ -22,6 +22,8 @@ serde_json = { workspace = true }
 rmp-serde = { workspace = true }
 semver = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
 toml = { workspace = true }
 uuid = { workspace = true }
 ureq = { workspace = true, optional = true }
@@ -30,7 +32,7 @@ voom-process = { workspace = true, optional = true }
 
 [features]
 default = []
-wasm = ["dep:wasmtime", "dep:ureq", "dep:voom-process"]
+wasm = ["dep:wasmtime", "dep:ureq", "dep:voom-process", "dep:tokio", "dep:tokio-util"]
 
 [lints]
 workspace = true
