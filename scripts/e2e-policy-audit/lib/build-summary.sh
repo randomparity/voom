@@ -104,6 +104,11 @@ elif [[ -f "${jobs_report}" ]]; then
   fi
 fi
 
+watchdog_rc="${run}/logs/watchdog.log.rc"
+if [[ -f "${watchdog_rc}" ]] && [[ "$(cat "${watchdog_rc}")" == "2" ]]; then
+  note_fail "forward-progress watchdog detected no job-state change"
+fi
+
 # Per-phase plan summary from db-export/plans.tsv.
 phase_summary="${run}/diffs/phase-summary.tsv"
 failed_plans="${run}/diffs/failed-plans.tsv"
@@ -313,7 +318,11 @@ fi
   link_artifact_if_exists "reports/env-check.json"
   link_artifact_if_exists "env/version.json"
   link_artifact_if_exists "logs/plugin-errors/"
+  link_artifact_if_exists "logs/watchdog.log"
   link_artifact_if_exists "runtime/"
+  link_artifact_if_exists "runtime/nvidia-dmon.csv"
+  link_artifact_if_exists "diffs/db-growth.tsv"
+  link_artifact_if_exists "db-export/checkpoint-0001/"
   link_artifact_if_exists "env/journal.log"
   link_artifact_if_exists "env/dmesg.log"
   link_artifact_if_exists "env/dnf-history.txt"

@@ -177,6 +177,36 @@ EOF
 
 run_summary_jobs_json_straggler_test
 
+run_summary_watchdog_timeout_test() {
+  local actual summary
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  mkdir -p "${actual}/logs" "${actual}/reports" "${actual}/db-export" "${actual}/diffs"
+  for log_name in env-check policy-validate scan; do
+    printf '0\n' >"${actual}/logs/${log_name}.log.rc"
+  done
+  printf '2\n' >"${actual}/logs/watchdog.log.rc"
+  cat >"${actual}/diffs/files-summary.md" <<'EOF'
+# Snapshot Diff Summary
+
+Disappeared paths: 0
+Missing backup post-run: 0
+EOF
+
+  "lib/build-summary.sh" "${actual}" 0 0
+  summary="${actual}/summary.md"
+  if ! grep -Fq "FAIL: forward-progress watchdog detected no job-state change" "${summary}"; then
+    echo "FAIL: watchdog timeout did not fail summary" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_summary_watchdog_timeout_test
+
 run_summary_deprecation_gate_test() {
   local actual
   local summary
@@ -336,6 +366,110 @@ EOF
 }
 
 run_deprecations_test
+
+run_progress_watchdog_timeout_test() {
+  local actual fake_voom sleep_pid
+  actual=$(mktemp -d)
+  fake_voom="${actual}/voom"
+  cleanup_progress_watchdog_timeout_test() {
+    if [[ -n "${sleep_pid:-}" ]]; then
+      kill "${sleep_pid}" 2>/dev/null || true
+      wait "${sleep_pid}" 2>/dev/null || true
+      sleep_pid=""
+    fi
+    if [[ -n "${actual:-}" && -d "${actual}" ]]; then
+      rm -R "${actual}"
+    fi
+  }
+  trap cleanup_progress_watchdog_timeout_test EXIT
+
+  cat >"${fake_voom}" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "jobs" && "$2" == "list" ]]; then
+  printf 'job-1 running\n'
+  exit 0
+fi
+exit 2
+EOF
+  chmod +x "${fake_voom}"
+
+  sleep 30 &
+  sleep_pid=$!
+  VOOM_E2E_WATCHDOG_TEST_MAX_POLLS=3 \
+    "lib/progress-watchdog.sh" "${actual}" "${fake_voom}" "${sleep_pid}" 0 1 1
+
+  kill "${sleep_pid}" 2>/dev/null || true
+  wait "${sleep_pid}" 2>/dev/null || true
+  sleep_pid=""
+
+  if ! grep -Fq "WATCHDOG: no job-state change" "${actual}/logs/watchdog.log"; then
+    echo "FAIL: watchdog did not log timeout" >&2
+    fail=1
+  fi
+  if [[ "$(cat "${actual}/logs/watchdog.log.rc")" != "2" ]]; then
+    echo "FAIL: watchdog timeout rc should be 2" >&2
+    fail=1
+  fi
+
+  cleanup_progress_watchdog_timeout_test
+  trap - EXIT
+}
+
+run_progress_watchdog_timeout_test
+
+run_db_checkpoint_growth_test() {
+  local actual db expected_files
+  actual=$(mktemp -d)
+  db="${actual}/voom.db"
+  expected_files="${actual}/expected-files.tsv"
+  trap 'rm -R "${actual}"' EXIT
+
+  sqlite3 "${db}" <<'SQL'
+CREATE TABLE files(id TEXT PRIMARY KEY, path TEXT);
+CREATE TABLE tracks(id TEXT PRIMARY KEY, file_id TEXT);
+CREATE TABLE jobs(id TEXT PRIMARY KEY, status TEXT);
+CREATE TABLE plans(id TEXT PRIMARY KEY, file_id TEXT);
+CREATE TABLE file_transitions(id TEXT PRIMARY KEY);
+CREATE TABLE bad_files(id TEXT PRIMARY KEY);
+CREATE TABLE discovered_files(id TEXT PRIMARY KEY);
+INSERT INTO files VALUES ('file-1', '/lib/a.mkv');
+INSERT INTO jobs VALUES ('job-1', 'running');
+SQL
+
+  VOOM_E2E_CHECKPOINT_TEST_ONCE=1 \
+    "lib/db-checkpoint-sampler.sh" "${actual}" "${db}" 999
+
+  test -f "${actual}/db-export/checkpoint-0001/files.tsv" || {
+    echo "FAIL: checkpoint files.tsv missing" >&2
+    fail=1
+  }
+  cat >"${expected_files}" <<'EOF'
+id	path
+file-1	/lib/a.mkv
+EOF
+  assert_match "${actual}/db-export/checkpoint-0001/files.tsv" "${expected_files}"
+  test -f "${actual}/db-export/checkpoint-0001/EXPORT_FAILED" || {
+    echo "FAIL: checkpoint EXPORT_FAILED marker missing" >&2
+    fail=1
+  }
+  if ! grep -Fq $'checkpoint\ttable\trows' "${actual}/diffs/db-growth.tsv"; then
+    echo "FAIL: db-growth.tsv missing header" >&2
+    fail=1
+  fi
+  if ! grep -Fq $'checkpoint-0001\t__db_export_failed__\t0' "${actual}/diffs/db-growth.tsv"; then
+    echo "FAIL: db-growth.tsv missing export failure row" >&2
+    fail=1
+  fi
+  if ! grep -Fq $'checkpoint-0001\tfiles\t1' "${actual}/diffs/db-growth.tsv"; then
+    echo "FAIL: db-growth.tsv missing files row count" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_db_checkpoint_growth_test
 
 run_summary_web_smoke_fail_then_sse_warn_test() {
   local actual
