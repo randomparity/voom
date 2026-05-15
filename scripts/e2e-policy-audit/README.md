@@ -57,13 +57,21 @@ Then rerun the harness against `/tmp/voom-repro-library` with the same policy.
 ├── manifest.json                 run metadata + per-stage timings
 ├── pre/, post/                   library snapshots (find manifest + ffprobe NDJSON + DB NDJSON)
 │   └── voom-db-tables/           raw SQLite export (per-table TSV) post-scan / post-process
+├── runtime/                      5-minute host state samples during voom process
 ├── env/                          tool versions, GPU state, policy copy, redacted config
+│   ├── journal.log               host journal captured after voom process
+│   ├── dmesg.log                 kernel ring buffer captured after voom process
+│   ├── dnf-history.txt           recent package manager history
+│   └── rpm-recently-changed.txt  recently changed installed RPMs
 ├── logs/                         one file per CLI invocation, plus *.rc exit-code sidecars
+│   └── env-check/                hourly voom env check snapshots during process
 ├── db-export/                    raw SQLite tables (post-process; consumed by build-summary)
 ├── reports/                      voom report --all, files, plans, jobs, events.json
 ├── repro/                        problem-file lists + copy-repro-set.sh
 ├── web-smoke/                    curl statuses + body samples
 ├── diffs/
+│   ├── runtime-timeline.md       summarized runtime host state changes
+│   ├── env-check-timeline.md     summarized env check state changes
 │   ├── files-summary.md          path-level (size/mtime/disappeared/new/common)
 │   ├── codec-pivot.md            video-codec × container counts: pre vs post
 │   ├── tracks-pivot.md           audio + subtitle pivots
