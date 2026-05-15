@@ -45,6 +45,12 @@ const PRIORITY_STORAGE: i32 = 38;
 // the collector before any subsequent event reaches the executors.
 // (Lower priority = earlier dispatch — see voom_kernel::EventBus::subscribe_plugin.)
 const PRIORITY_CAPABILITY_COLLECTOR: i32 = 35;
+// Policy evaluator — dispatches AFTER capability-collector (35 < 36) so any
+// EXECUTOR_CAPABILITIES event has already populated the collector. Both
+// plugins subscribe to that event; the relative order between 35 and 36 only
+// matters for in-process consumers within the same dispatch, and the policy
+// evaluator caches independently.
+const PRIORITY_POLICY_EVALUATOR: i32 = 36;
 // Backup manager dispatches before executors (30 < 39/40) so the source
 // file is backed up before any executor mutates it.
 const PRIORITY_BACKUP_MANAGER: i32 = 30;
@@ -260,6 +266,17 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
             )
             .context("Failed to initialize and register capability collector")?
     };
+
+    // Policy evaluator — claims Capability::EvaluatePolicy. Subscribes to
+    // EXECUTOR_CAPABILITIES so the cached snapshot stays current; on_call
+    // routes Call::EvaluatePolicy to the existing free-function evaluator
+    // surface (PR #378 / Phase 4).
+    register_if_enabled!(
+        "policy-evaluator",
+        voom_policy_evaluator::PolicyEvaluatorPlugin::for_bootstrap(),
+        PRIORITY_POLICY_EVALUATOR,
+        "policy evaluator"
+    );
 
     // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)
     register_if_enabled!(
@@ -532,6 +549,33 @@ mod tests {
         assert!(
             msg.contains("discovery"),
             "error must name discovery; got: {msg}"
+        );
+        assert!(
+            msg.contains("disabled_plugins") || msg.contains("required"),
+            "error must explain the cause; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn bootstrap_fails_when_policy_evaluator_is_disabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config = AppConfig {
+            data_dir: dir.path().to_path_buf(),
+            plugins: crate::config::PluginsConfig {
+                disabled_plugins: vec!["policy-evaluator".into()],
+                ..crate::config::PluginsConfig::default()
+            },
+            ..AppConfig::default()
+        };
+
+        let err = match bootstrap_kernel_with_store(&config) {
+            Ok(_) => panic!("bootstrap must fail when policy-evaluator is disabled"),
+            Err(e) => e,
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("policy-evaluator"),
+            "error must name policy-evaluator; got: {msg}"
         );
         assert!(
             msg.contains("disabled_plugins") || msg.contains("required"),
