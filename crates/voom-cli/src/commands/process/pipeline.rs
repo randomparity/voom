@@ -253,13 +253,17 @@ async fn process_single_file_execute(
             break;
         }
 
-        let Some(plan) = voom_policy_evaluator::evaluate_single_phase_with_hints(
-            phase_name,
-            compiled,
-            &current_file,
-            &phase_outcomes,
-            ctx.capabilities,
-        ) else {
+        let result = crate::kernel_invoke::evaluate(
+            &ctx.kernel,
+            compiled.clone(),
+            current_file.clone(),
+            Some(phase_name.clone()),
+            None,
+            Some(phase_outcomes.clone()),
+            Some(ctx.capabilities.clone()),
+        )
+        .map_err(|e| format!("evaluate dispatch failed for phase {phase_name}: {e:#}"))?;
+        let Some(plan) = result.plans.into_iter().next() else {
             continue;
         };
         let mut plan = plan
@@ -901,6 +905,22 @@ mod tests {
     use super::super::tests as process_tests;
     use super::*;
 
+    /// Test-only helper: register the policy-evaluator plugin on a fresh kernel
+    /// so `Kernel::dispatch_to_capability(Exclusive { kind: "evaluate_policy" }, ...)`
+    /// resolves. Mirrors the bootstrap registration at `app.rs::PRIORITY_POLICY_EVALUATOR`
+    /// — keep the priority in sync if that constant ever changes.
+    fn register_policy_evaluator(kernel: &mut voom_kernel::Kernel) {
+        let plugin_ctx =
+            voom_kernel::PluginContext::new(serde_json::json!({}), std::env::temp_dir());
+        kernel
+            .init_and_register(
+                std::sync::Arc::new(voom_policy_evaluator::PolicyEvaluatorPlugin::for_bootstrap()),
+                36,
+                &plugin_ctx,
+            )
+            .expect("register PolicyEvaluatorPlugin for dispatch_to_capability");
+    }
+
     struct RecordingExecutor {
         entered_tx: mpsc::Sender<()>,
     }
@@ -1094,7 +1114,9 @@ mod tests {
     async fn auto_crop_detection_persists_and_updates_plan_file() {
         let fixture = process_tests::TestFixture::with_policy(global_hw_policy());
         let store = Arc::new(voom_domain::test_support::InMemoryStore::new());
-        let ctx = fixture.make_ctx(Arc::new(voom_kernel::Kernel::new()), store.clone());
+        let mut kernel = voom_kernel::Kernel::new();
+        register_policy_evaluator(&mut kernel);
+        let ctx = fixture.make_ctx(Arc::new(kernel), store.clone());
         let path = fixture.dir_path().join("movie.mkv");
         let mut file = h264_file(path);
         let mut plan = crop_plan(file.clone(), CropSettings::auto());
@@ -1222,6 +1244,7 @@ mod tests {
         let compiled = voom_dsl::compile_policy(policy).unwrap();
 
         let mut kernel = voom_kernel::Kernel::new();
+        register_policy_evaluator(&mut kernel);
         kernel
             .register_plugin(Arc::new(FailingExecutor), 50)
             .unwrap();
@@ -1263,6 +1286,7 @@ mod tests {
 
         let (entered_tx, entered_rx) = mpsc::channel();
         let mut kernel = voom_kernel::Kernel::new();
+        register_policy_evaluator(&mut kernel);
         kernel
             .register_plugin(Arc::new(RecordingExecutor { entered_tx }), 50)
             .unwrap();
@@ -1316,6 +1340,7 @@ mod tests {
 
         let (entered_tx, entered_rx) = mpsc::channel();
         let mut kernel = voom_kernel::Kernel::new();
+        register_policy_evaluator(&mut kernel);
         kernel
             .register_plugin(Arc::new(RecordingExecutor { entered_tx }), 50)
             .unwrap();
@@ -1364,6 +1389,7 @@ mod tests {
 
         let (entered_tx, entered_rx) = mpsc::channel();
         let mut kernel = voom_kernel::Kernel::new();
+        register_policy_evaluator(&mut kernel);
         kernel
             .register_plugin(Arc::new(RecordingExecutor { entered_tx }), 50)
             .unwrap();
