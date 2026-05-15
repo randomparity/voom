@@ -464,8 +464,27 @@ impl Kernel {
 
         let started_at = chrono::Utc::now();
         let timer = std::time::Instant::now();
-        let handler_result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| plugin.on_call(&call)));
+        let handler_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // When the resolved plugin is a WASM plugin, route through the
+            // WASM-specific invocation path so the streaming-call context can
+            // be installed/cleared atomically around the WASM `on-call`
+            // export. Detected via `Any::type_id` against the concrete
+            // `WasmPlugin` type — the same downcast pattern used by
+            // `Registry::get_typed`.
+            #[cfg(feature = "wasm")]
+            {
+                if Any::type_id(&*plugin) == TypeId::of::<crate::loader::wasm::WasmPlugin>() {
+                    // SAFETY: TypeId equality proves the trait object's
+                    // concrete type is `WasmPlugin`. We borrow it as `&WasmPlugin`
+                    // by going through a raw pointer cast (no Arc consumption).
+                    let wasm_plugin: &crate::loader::wasm::WasmPlugin = unsafe {
+                        &*(Arc::as_ptr(&plugin).cast::<crate::loader::wasm::WasmPlugin>())
+                    };
+                    return Self::invoke_wasm_on_call(wasm_plugin, &call);
+                }
+            }
+            plugin.on_call(&call)
+        }));
         let duration_ms = u64::try_from(timer.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         let outcome = match &handler_result {
@@ -493,6 +512,55 @@ impl Kernel {
                 "panic during dispatch_to_capability",
             )),
         }
+    }
+
+    /// Invoke a WASM plugin's `on-call` export from `dispatch_to_capability`.
+    ///
+    /// Serializes the call to MessagePack, hands it to the WASM plugin under
+    /// the streaming-context install/clear critical section, then
+    /// deserializes the response. Size caps are enforced in both directions.
+    #[cfg(feature = "wasm")]
+    fn invoke_wasm_on_call(
+        wasm_plugin: &crate::loader::wasm::WasmPlugin,
+        call: &voom_domain::call::Call,
+    ) -> Result<voom_domain::call::CallResponse> {
+        use voom_domain::wasm_call::WasmCall;
+
+        let wasm_call = WasmCall::from_call(call);
+        let call_bytes = rmp_serde::to_vec_named(&wasm_call).map_err(|e| {
+            voom_domain::errors::VoomError::plugin(
+                wasm_plugin.name(),
+                format!("serialize WasmCall: {e}"),
+            )
+        })?;
+
+        crate::loader::wasm::check_call_payload_size(
+            wasm_plugin.name(),
+            call_bytes.len(),
+            "request",
+        )?;
+
+        let response_bytes = wasm_plugin
+            .with_streaming_call(call, &call_bytes)
+            .map_err(|e| {
+                voom_domain::errors::VoomError::plugin(
+                    wasm_plugin.name(),
+                    format!("on-call invocation: {e}"),
+                )
+            })?;
+
+        crate::loader::wasm::check_call_payload_size(
+            wasm_plugin.name(),
+            response_bytes.len(),
+            "response",
+        )?;
+
+        rmp_serde::from_slice(&response_bytes).map_err(|e| {
+            voom_domain::errors::VoomError::plugin(
+                wasm_plugin.name(),
+                format!("deserialize CallResponse: {e}"),
+            )
+        })
     }
 
     fn resolve_capability(
@@ -1509,6 +1577,23 @@ mod tests {
         };
         let err = plugin.on_call(&call).unwrap_err();
         assert!(err.to_string().contains("does not handle calls"));
+    }
+
+    /// Placeholder for the end-to-end test that exercises the WASM-plugin
+    /// streaming-context install/tear-down through `dispatch_to_capability`.
+    /// The actual test body needs a compiled test WASM plugin fixture, which
+    /// is provided in Task 10. Marked `#[ignore]` until then.
+    #[cfg(feature = "wasm")]
+    #[test]
+    #[ignore = "requires test WASM plugin fixture from Task 10"]
+    fn dispatch_to_capability_installs_and_tears_down_streaming_context_for_wasm() {
+        // Body added in Task 10 once the fixture exists. The intent:
+        //   1. Load the test WASM plugin from fixtures.
+        //   2. Register it on a Kernel with a ScanLibrary capability.
+        //   3. Issue a Call::ScanLibrary via dispatch_to_capability.
+        //   4. Assert the sink received at least one FileDiscoveredEvent
+        //      emitted via `emit-call-item` from the WASM side.
+        //   5. Assert HostState.streaming_call is back to None after return.
     }
 }
 

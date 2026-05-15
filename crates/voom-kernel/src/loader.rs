@@ -360,22 +360,43 @@ pub mod wasm {
     }
 
     /// Internal state for a loaded WASM plugin instance.
-    struct WasmPluginInner {
-        store: wasmtime::Store<HostState>,
-        component: wasmtime::component::Component,
-        linker: wasmtime::component::Linker<HostState>,
+    pub(crate) struct WasmPluginInner {
+        pub(crate) store: wasmtime::Store<HostState>,
+        pub(crate) component: wasmtime::component::Component,
+        pub(crate) linker: wasmtime::component::Linker<HostState>,
         /// Lazily instantiated component instance.
-        instance: Option<wasmtime::component::Instance>,
+        pub(crate) instance: Option<wasmtime::component::Instance>,
     }
 
     /// Maximum size for WASM event payloads (16 MiB).
     pub(crate) const MAX_WASM_EVENT_PAYLOAD: usize = 16 * 1024 * 1024;
 
+    /// rev-2: shared size-cap check for WASM-boundary payloads. Used by
+    /// `invoke_wasm_on_call` for both request and response directions. The
+    /// host fns that receive `list<u8>` from WASM (`emit-call-item`,
+    /// `emit-root-walk-completed`) currently inline their own check with
+    /// a plain-string error; unifying them is a follow-up.
+    pub fn check_call_payload_size(
+        plugin_name: &str,
+        len: usize,
+        direction: &str,
+    ) -> voom_domain::errors::Result<()> {
+        if len > MAX_WASM_EVENT_PAYLOAD {
+            return Err(voom_domain::errors::VoomError::plugin(
+                plugin_name,
+                format!(
+                    "{direction} payload {len} bytes exceeds MAX_WASM_EVENT_PAYLOAD ({MAX_WASM_EVENT_PAYLOAD})",
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// A WASM plugin loaded from a `.wasm` component file.
     ///
     /// Wraps a wasmtime component instance and implements the Plugin trait,
     /// bridging between the kernel's event system and the WASM boundary.
-    struct WasmPlugin {
+    pub(crate) struct WasmPlugin {
         name: String,
         version: String,
         description: String,
@@ -384,7 +405,7 @@ pub mod wasm {
         homepage: String,
         capabilities: Vec<Capability>,
         handled_events: Vec<String>,
-        inner: Mutex<WasmPluginInner>,
+        pub(crate) inner: Mutex<WasmPluginInner>,
     }
 
     // SAFETY: WasmPlugin uses Mutex for interior mutability, ensuring
@@ -474,6 +495,187 @@ pub mod wasm {
                         self.name, e
                     )))
                 }
+            }
+        }
+    }
+
+    impl WasmPlugin {
+        /// Hold the Store mutex once across install/invoke/clear so that a
+        /// concurrent same-plugin dispatch cannot interleave its install with
+        /// ours and cross-contaminate streaming receivers. The context is
+        /// cleared in both the Ok and Err paths from `invoke_on_call_locked`.
+        ///
+        /// Returns the MessagePack-encoded `CallResponse` bytes produced by
+        /// the plugin's `on-call` export.
+        pub(crate) fn with_streaming_call(
+            &self,
+            call: &voom_domain::call::Call,
+            call_bytes: &[u8],
+        ) -> Result<Vec<u8>, WasmLoadError> {
+            use voom_domain::call::Call;
+
+            let mut inner = self.inner.lock();
+
+            let needs_context = matches!(call, Call::ScanLibrary { .. });
+
+            if needs_context {
+                if inner.store.data().streaming_call.is_some() {
+                    return Err(WasmLoadError::Linker(format!(
+                        "[{}] nested streaming-call install attempted \
+                         (reentrancy bug or unbalanced clear)",
+                        self.name,
+                    )));
+                }
+                if let Call::ScanLibrary {
+                    sink,
+                    root_done,
+                    cancel,
+                    ..
+                } = call
+                {
+                    inner.store.data_mut().install_streaming_context(
+                        crate::host::StreamingCallContext::ScanLibrary {
+                            sink: sink.clone(),
+                            root_done: root_done.clone(),
+                            cancel: cancel.clone(),
+                        },
+                    );
+                }
+            }
+
+            // rev-2 panic safety: wrap the wasmtime invocation in catch_unwind
+            // so the streaming context is ALWAYS cleared, even if
+            // invoke_on_call_locked panics (wasmtime traps, oversized internal
+            // allocations, etc.). The mutex guard's Drop already handles lock
+            // release; this handles HostState cleanup.
+            let invoke_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.invoke_on_call_locked(&mut inner, call_bytes)
+            }));
+
+            if needs_context {
+                inner.store.data_mut().clear_streaming_context();
+            }
+
+            match invoke_result {
+                Ok(r) => r,
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+
+        /// Invoke the `on-call` export with the Store mutex already held.
+        ///
+        /// Mirrors the structural pattern of `call_on_event`: lazy
+        /// instantiate, namespaced-export lookup with fallback chain
+        /// (`@0.3.0` → `@0.2.0` → bare), then a `Val`-based call.
+        ///
+        /// The WIT signature is:
+        ///   `on-call: func(call: list<u8>) -> result<list<u8>, string>`
+        ///
+        /// Unlike `on-event` (which silently returns `Ok(None)` when the
+        /// export is missing), a Call dispatched to a WASM plugin that has
+        /// no `on-call` export is a configuration error and returns an Err.
+        pub(crate) fn invoke_on_call_locked(
+            &self,
+            inner: &mut WasmPluginInner,
+            call_bytes: &[u8],
+        ) -> Result<Vec<u8>, WasmLoadError> {
+            use wasmtime::component::Val;
+
+            if inner.instance.is_none() {
+                let instance = inner
+                    .linker
+                    .instantiate(&mut inner.store, &inner.component)
+                    .map_err(|e| WasmLoadError::Instantiation(e.to_string()))?;
+                inner.instance = Some(instance);
+            }
+
+            let instance = inner
+                .instance
+                .as_ref()
+                .expect("instance set above when None");
+
+            let on_call = instance
+                .get_export(&mut inner.store, None, "voom:plugin/plugin@0.3.0")
+                .and_then(|(_, idx)| instance.get_export(&mut inner.store, Some(&idx), "on-call"))
+                .and_then(|(_, idx)| instance.get_func(&mut inner.store, idx))
+                .or_else(|| {
+                    instance
+                        .get_export(&mut inner.store, None, "voom:plugin/plugin@0.2.0")
+                        .and_then(|(_, idx)| {
+                            instance.get_export(&mut inner.store, Some(&idx), "on-call")
+                        })
+                        .and_then(|(_, idx)| instance.get_func(&mut inner.store, idx))
+                })
+                .or_else(|| {
+                    let (_, idx) = instance.get_export(&mut inner.store, None, "on-call")?;
+                    instance.get_func(&mut inner.store, idx)
+                });
+
+            let on_call = match on_call {
+                Some(func) => func,
+                None => {
+                    return Err(WasmLoadError::Linker(format!(
+                        "[{}] no on-call export found",
+                        self.name,
+                    )));
+                }
+            };
+
+            let args = vec![Val::List(call_bytes.iter().copied().map(Val::U8).collect())];
+            let mut results = vec![Val::Bool(false)];
+
+            on_call
+                .call(&mut inner.store, &args, &mut results)
+                .map_err(|e| WasmLoadError::ComponentCall(e.to_string()))?;
+
+            // wasmtime 44 represents `result<list<u8>, string>` as
+            // `Val::Result(Result<Option<Box<Val>>, Option<Box<Val>>>)` where
+            // the inner Option carries the success/error payload Val.
+            match results.into_iter().next() {
+                Some(Val::Result(Ok(Some(inner)))) => match *inner {
+                    Val::List(bytes) => {
+                        let mut response = Vec::with_capacity(bytes.len());
+                        for v in bytes {
+                            match v {
+                                Val::U8(b) => response.push(b),
+                                other => {
+                                    return Err(WasmLoadError::UnexpectedValue(format!(
+                                        "on-call returned list<u8> with non-U8 element: {}",
+                                        val_kind(&other),
+                                    )));
+                                }
+                            }
+                        }
+                        Ok(response)
+                    }
+                    other => Err(WasmLoadError::UnexpectedValue(format!(
+                        "on-call Ok payload expected list<u8>, got {}",
+                        val_kind(&other),
+                    ))),
+                },
+                Some(Val::Result(Ok(None))) => Err(WasmLoadError::UnexpectedValue(
+                    "on-call returned Ok with no payload (expected list<u8>)".to_string(),
+                )),
+                Some(Val::Result(Err(Some(inner)))) => match *inner {
+                    Val::String(msg) => Err(WasmLoadError::ComponentCall(format!(
+                        "[{}] plugin returned error: {msg}",
+                        self.name,
+                    ))),
+                    other => Err(WasmLoadError::UnexpectedValue(format!(
+                        "on-call Err payload expected string, got {}",
+                        val_kind(&other),
+                    ))),
+                },
+                Some(Val::Result(Err(None))) => Err(WasmLoadError::UnexpectedValue(
+                    "on-call returned Err with no payload (expected string)".to_string(),
+                )),
+                Some(other) => Err(WasmLoadError::UnexpectedValue(format!(
+                    "expected Result return from on-call, got {}",
+                    val_kind(&other),
+                ))),
+                None => Err(WasmLoadError::UnexpectedValue(
+                    "on-call returned no results".to_string(),
+                )),
             }
         }
     }

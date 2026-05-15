@@ -66,8 +66,13 @@ pub enum Call {
 }
 
 /// Response to a `Call`. Variant matches the request 1:1.
+///
+/// Serde-clean so it can cross the WASM boundary unchanged via
+/// `Kernel::dispatch_to_capability` (Phase 2). All variant payloads
+/// (`EvaluationResult`, `OrchestrationResult`, `ScanSummary`) already
+/// implement `Serialize`/`Deserialize`.
 #[non_exhaustive]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum CallResponse {
     EvaluatePolicy(crate::evaluation::EvaluationResult),
     Orchestrate(crate::orchestration::OrchestrationResult),
