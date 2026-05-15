@@ -567,7 +567,18 @@ mod streaming_tests {
         let db_path = db_dir.path().join("voom.db");
         let store: Arc<dyn StorageTrait> =
             Arc::new(voom_sqlite_store::store::SqliteStore::open(&db_path).expect("open store"));
-        let kernel = Arc::new(voom_kernel::Kernel::new());
+        // The streaming pipeline routes discovery through
+        // `Kernel::dispatch_to_capability(Sharded { kind: "discover", key:
+        // "file" }, …)`, so the discovery plugin must be registered for the
+        // capability resolver to find a handler.
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel
+            .register_plugin(
+                Arc::new(voom_discovery::DiscoveryPlugin::for_bootstrap()),
+                10,
+            )
+            .expect("register discovery");
+        let kernel = Arc::new(kernel);
         let media_dir = tempfile::tempdir().expect("temp media dir");
         Bed {
             _db_dir: db_dir,

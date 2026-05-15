@@ -231,12 +231,15 @@ fn spawn_discovery_stage(
     let recursive = args.recursive;
     let paths = paths.to_vec();
     tokio::task::spawn_blocking(move || -> Result<u64> {
-        let discovery = voom_discovery::DiscoveryPlugin::new();
         let cumulative_discovered = Arc::new(AtomicU64::new(0));
         let processing_base = Arc::new(AtomicU64::new(0));
         // Local counter for discovery-time errors (open / hash / walk
         // failures). Returned via the JoinHandle's Ok value.
         let discovery_errors = Arc::new(AtomicU64::new(0));
+        // One scan-session id covers all paths in this scan run. The scan
+        // command doesn't use gate semantics or event_log correlation, but
+        // `Call::ScanLibrary` requires a session id.
+        let scan_session = voom_domain::transition::ScanSessionId::new();
 
         // Wrap the scan loop so we can inspect the result BEFORE dropping
         // tx_disc. On Err, we cancel the pipeline token first; that ensures
@@ -306,19 +309,25 @@ fn spawn_discovery_stage(
                     );
                 }));
 
-                let token_inner = token.clone();
-                let tx_inner = tx_disc.clone();
-                let on_event: voom_discovery::EventSink = Box::new(move |event| {
-                    if token_inner.is_cancelled() {
-                        return;
-                    }
-                    // blocking_send blocks the current rayon worker until the
-                    // ingest stage drains. This is the backpressure mechanism.
-                    let _ = tx_inner.blocking_send(event);
-                });
-
-                discovery
-                    .scan_streaming(&options, on_event)
+                // Route through the kernel so the discovery plugin handles the
+                // scan via `Plugin::on_call`. The plugin uses `blocking_send`
+                // on `sink` (backpressure) and checks `cancel` between items.
+                // We pass `root_done: None` — the scan command does not need
+                // per-root completion signalling.
+                let call = voom_domain::call::Call::ScanLibrary {
+                    uri: format!("file://{}", path.display()),
+                    options,
+                    scan_session,
+                    sink: tx_disc.clone(),
+                    root_done: None,
+                    cancel: token.clone(),
+                };
+                let query = voom_domain::capabilities::CapabilityQuery::Sharded {
+                    kind: "discover".into(),
+                    key: "file".into(),
+                };
+                kernel
+                    .dispatch_to_capability(query, call)
                     .with_context(|| format!("filesystem scan failed for {}", path.display()))?;
 
                 let dir_count = cumulative_discovered.load(Ordering::Relaxed) - pre;
