@@ -373,8 +373,9 @@ pub fn default_config_contents() -> String {
 # wasm_dir = "{data_dir_str}/plugins/wasm"
 
 # List of plugin names to disable at startup.
-# Valid names: sqlite-store, tool-detector, discovery,
+# Optional plugins (safe to disable): sqlite-store, tool-detector,
 #   mkvtoolnix-executor, ffmpeg-executor, backup-manager, job-manager
+# Required plugins (cannot be disabled): discovery
 # disabled_plugins = ["mkvtoolnix-executor"]
 
 # Default policy file applied when no --policy or --policy-map flag is given.
