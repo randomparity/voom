@@ -293,8 +293,6 @@ fn spawn_discovery_stage(
     let paths = paths.to_vec();
 
     tokio::task::spawn_blocking(move || -> Result<()> {
-        let discovery = voom_discovery::DiscoveryPlugin::new();
-
         let run_scan = || -> Result<()> {
             for path in &paths {
                 if token.is_cancelled() {
@@ -333,34 +331,28 @@ fn spawn_discovery_stage(
                     );
                 }));
 
-                let token_inner = token.clone();
-                let tx_inner = tx_disc.clone();
-                let on_event: voom_discovery::EventSink = Box::new(move |event| {
-                    if token_inner.is_cancelled() {
-                        return;
-                    }
-                    // blocking_send applies natural backpressure: when the
-                    // ingest channel is full this blocks the rayon worker
-                    // until the ingest stage drains.
-                    let _ = tx_inner.blocking_send(event);
-                });
-
-                let started = std::time::Instant::now();
-                discovery
-                    .scan_streaming(&options, on_event)
+                // Route through the kernel so the discovery plugin handles the
+                // scan via `Plugin::on_call`. The plugin uses `blocking_send`
+                // on `sink` (backpressure), checks `cancel` between items, and
+                // — on a successful scan — emits a `RootWalkCompletedEvent` on
+                // `root_done` carrying our `scan_session`. The dispatcher in
+                // the ingest stage consumes those events to open the per-root
+                // gate when `execute_during_discovery` is on.
+                let call = voom_domain::call::Call::ScanLibrary {
+                    uri: format!("file://{}", path.display()),
+                    options,
+                    scan_session,
+                    sink: tx_disc.clone(),
+                    root_done: tx_root_done.clone(),
+                    cancel: token.clone(),
+                };
+                let query = voom_domain::capabilities::CapabilityQuery::Sharded {
+                    kind: "discover".into(),
+                    key: "file".into(),
+                };
+                kernel
+                    .dispatch_to_capability(query, call)
                     .with_context(|| format!("filesystem scan failed for {}", path.display()))?;
-
-                // Emit RootWalkCompleted so the dispatcher can open the gate
-                // and drain the holding buffer for this root. Only send when
-                // the channel exists (i.e. execute_during_discovery is on).
-                if let Some(tx) = tx_root_done.as_ref() {
-                    let elapsed_ms =
-                        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    let evt = RootWalkCompletedEvent::new(path.clone(), scan_session, elapsed_ms);
-                    if let Err(e) = tx.blocking_send(evt) {
-                        tracing::warn!(error = %e, "tx_root_done dropped; ingest dispatcher gone");
-                    }
-                }
             }
             Ok(())
         };
@@ -719,7 +711,18 @@ mod tests {
         config.max_workers = 2;
         config.worker_prefix = "test".into();
         let pool = Arc::new(WorkerPool::new(queue, config, token));
-        let kernel = Arc::new(voom_kernel::Kernel::new());
+        // The streaming pipeline routes discovery through
+        // `Kernel::dispatch_to_capability(Sharded { kind: "discover", key:
+        // "file" }, …)`, so the discovery plugin must be registered for the
+        // capability resolver to find a handler.
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel
+            .register_plugin(
+                Arc::new(voom_discovery::DiscoveryPlugin::for_bootstrap()),
+                10,
+            )
+            .expect("register discovery");
+        let kernel = Arc::new(kernel);
         (pool, store, kernel)
     }
 
