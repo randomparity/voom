@@ -354,13 +354,7 @@ async fn process_dry_run_populates_policy_evaluator_stats_row() {
     let root = env.root().to_str().expect("utf-8 root").to_string();
 
     let _outcome = env
-        .run_process(&[
-            &root,
-            "--policy",
-            &policy_path,
-            "--dry-run",
-            "--no-backup",
-        ])
+        .run_process(&[&root, "--policy", &policy_path, "--dry-run", "--no-backup"])
         .await;
 
     // Allow the SqliteStatsSink writer thread to flush batched rows.

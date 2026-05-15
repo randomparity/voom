@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 use voom_domain::call::{Call, CallResponse};
 use voom_domain::capabilities::{Capability, CapabilityQuery};
