@@ -20,6 +20,7 @@ xxhash-rust = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 unicode-normalization = "0.1"
 
 [features]
@@ -33,6 +34,5 @@ workspace = true
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
 voom-domain = { workspace = true }
 voom-kernel = { workspace = true }

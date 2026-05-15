@@ -183,6 +183,7 @@ fn hash_file_full(file: &mut fs::File) -> Result<String> {
 fn walk_media_files(
     options: &ScanOptions,
     snapshot: Option<&SessionMutationSnapshot>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> (Vec<(PathBuf, u64)>, usize, Vec<DiscoveryWalkError>) {
     #[cfg(feature = "test-hooks")]
     if let Some(delay) = crate::test_hooks::delay_for(&options.root) {
@@ -199,6 +200,12 @@ fn walk_media_files(
     let mut orphaned_temp_count: usize = 0;
     let mut walk_errors = Vec::new();
     for entry_result in walker {
+        if cancel.is_cancelled() {
+            // Caller cancelled; stop enumerating. Anything we've already
+            // collected is fine to return — the caller (the plugin's on_call)
+            // is responsible for suppressing root_done on cancellation.
+            break;
+        }
         let entry = match entry_result {
             Ok(entry) => entry,
             Err(err) => {
@@ -301,7 +308,12 @@ pub(crate) fn scan_directory_streaming(options: &ScanOptions, on_event: EventSin
         None
     };
 
-    let (media_paths, _orphaned, walk_errors) = walk_media_files(options, snapshot.as_ref());
+    // TEMP (Task 2 replaces this with a function parameter): use a
+    // never-cancelled token at the call site so this task compiles in
+    // isolation. Task 2 threads the caller's CancellationToken through.
+    let scan_cancel = tokio_util::sync::CancellationToken::new();
+    let (media_paths, _orphaned, walk_errors) =
+        walk_media_files(options, snapshot.as_ref(), &scan_cancel);
     report_walk_errors(options, &walk_errors);
 
     tracing::info!(
@@ -765,5 +777,31 @@ mod tests {
         assert_eq!(events.len(), 2);
         // Existing API guarantees deterministic path ordering.
         assert!(events[0].path < events[1].path);
+    }
+
+    #[test]
+    fn walk_media_files_observes_cancellation() {
+        use tokio_util::sync::CancellationToken;
+
+        let dir = tempfile::tempdir().unwrap();
+        // Many files — without cancellation the walk would discover all 50.
+        for i in 0..50 {
+            std::fs::write(dir.path().join(format!("f{i:03}.mkv")), b"x").unwrap();
+        }
+
+        let options = ScanOptions::new(dir.path());
+        let cancel = CancellationToken::new();
+        cancel.cancel(); // Pre-cancel so the walk bails on the very first observable check.
+
+        let (paths, _orphans, _walk_errors) = walk_media_files(&options, None, &cancel);
+
+        // The walker may have already enumerated some entries before the first
+        // check, but the invariant is "fewer than all 50" — cancellation actually
+        // stops work.
+        assert!(
+            paths.len() < 50,
+            "cancellation should stop the walk before discovering all 50 files (got {})",
+            paths.len()
+        );
     }
 }
