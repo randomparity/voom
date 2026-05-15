@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -95,10 +96,12 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
                 }
             }
             if matches!(args.format, Some(crate::cli::OutputFormat::Json)) {
-                #[allow(clippy::print_stdout)]
-                {
-                    println!("[]");
-                }
+                output::print_json(&scan_json_summary(
+                    &outcome,
+                    &paths,
+                    start.elapsed(),
+                    token.is_cancelled(),
+                ))?;
             }
             return Ok(());
         }
@@ -144,7 +147,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
 
         if token.is_cancelled() {
             if let Some(format) = args.format {
-                output::format_scan_results(&outcome.formatted, format);
+                format_scan_output(&outcome, &paths, start.elapsed(), true, format)?;
             }
             return Ok(());
         }
@@ -184,7 +187,7 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
         )));
 
         if let Some(format) = args.format {
-            output::format_scan_results(&outcome.formatted, format);
+            format_scan_output(&outcome, &paths, start.elapsed(), false, format)?;
         }
 
         Ok(())
@@ -194,6 +197,54 @@ pub async fn run(args: ScanArgs, quiet: bool, token: CancellationToken) -> Resul
     crate::retention::maybe_run_after_cli(store, &config.retention, Some(kernel));
 
     primary_result
+}
+
+fn format_scan_output(
+    outcome: &pipeline::PipelineOutcome,
+    paths: &[PathBuf],
+    elapsed: Duration,
+    cancelled: bool,
+    format: crate::cli::OutputFormat,
+) -> Result<()> {
+    if matches!(format, crate::cli::OutputFormat::Json) {
+        output::print_json(&scan_json_summary(outcome, paths, elapsed, cancelled))?;
+    } else {
+        output::format_scan_results(&outcome.formatted, format);
+    }
+    Ok(())
+}
+
+fn scan_json_summary(
+    outcome: &pipeline::PipelineOutcome,
+    paths: &[PathBuf],
+    elapsed: Duration,
+    cancelled: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "command": "scan",
+        "status": if cancelled { "cancelled" } else { "ok" },
+        "cancelled": cancelled,
+        "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "elapsed_ms": u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        "counts": {
+            "files_discovered": outcome.files_discovered,
+            "files_introspected": outcome.files_introspected,
+            "discovery_errors": outcome.discovery_errors,
+            "probe_errors": outcome.probe_errors,
+            "errors": outcome.errors(),
+            "orphans": outcome.orphans,
+            "missing": outcome.missing,
+            "moved": outcome.moved,
+            "external_changes": outcome.external_changes,
+        },
+        "files": outcome.formatted.iter().map(|(path, size, hash)| {
+            serde_json::json!({
+                "path": path.display().to_string(),
+                "size": size,
+                "hash": hash,
+            })
+        }).collect::<Vec<_>>(),
+    })
 }
 
 /// Print the discovery/hashing summary line.
@@ -494,7 +545,10 @@ fn print_verify_summary(records: &[VerificationRecord]) {
 #[cfg(test)]
 mod streaming_tests {
     use super::pipeline::{self, PipelineOutcome};
+    use super::scan_json_summary;
+    use std::path::PathBuf;
     use std::sync::Arc;
+    use std::time::Duration;
     use tempfile::TempDir;
     use tokio_util::sync::CancellationToken;
     use voom_domain::media::{Container, MediaFile, Track, TrackType};
@@ -562,6 +616,45 @@ mod streaming_tests {
         for n in names {
             std::fs::write(root.join(n), b"fake-media-data").unwrap();
         }
+    }
+
+    #[test]
+    fn scan_json_summary_includes_counts_and_files() {
+        let outcome = PipelineOutcome {
+            files_discovered: 1,
+            files_introspected: 1,
+            discovery_errors: 0,
+            probe_errors: 0,
+            moved: 2,
+            external_changes: 3,
+            missing: 4,
+            orphans: 5,
+            formatted: vec![(
+                PathBuf::from("/media/a.mkv"),
+                123,
+                Some("abcdef".to_string()),
+            )],
+        };
+
+        let json = scan_json_summary(
+            &outcome,
+            &[PathBuf::from("/media")],
+            Duration::from_millis(42),
+            false,
+        );
+
+        assert_eq!(json["command"], "scan");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["elapsed_ms"], 42);
+        assert_eq!(json["counts"]["files_discovered"], 1);
+        assert_eq!(json["counts"]["files_introspected"], 1);
+        assert_eq!(json["counts"]["moved"], 2);
+        assert_eq!(json["counts"]["external_changes"], 3);
+        assert_eq!(json["counts"]["missing"], 4);
+        assert_eq!(json["counts"]["orphans"], 5);
+        assert_eq!(json["files"][0]["path"], "/media/a.mkv");
+        assert_eq!(json["files"][0]["size"], 123);
+        assert_eq!(json["files"][0]["hash"], "abcdef");
     }
 
     #[tokio::test(flavor = "multi_thread")]

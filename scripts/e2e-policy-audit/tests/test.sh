@@ -127,6 +127,56 @@ EOF
 
 run_summary_doctor_log_rc_compat_test
 
+run_summary_jobs_json_straggler_test() {
+  local actual
+  local summary
+
+  actual=$(mktemp -d)
+  trap 'rm -R "${actual}"' EXIT
+
+  mkdir -p \
+    "${actual}/logs" \
+    "${actual}/reports" \
+    "${actual}/db-export" \
+    "${actual}/diffs"
+
+  for log_name in env-check policy-validate scan; do
+    printf '0\n' >"${actual}/logs/${log_name}.log.rc"
+  done
+
+  cat >"${actual}/diffs/files-summary.md" <<'EOF'
+# Snapshot Diff Summary
+
+Disappeared paths: 0
+Missing backup post-run: 0
+EOF
+
+  cat >"${actual}/reports/jobs.json" <<'EOF'
+{
+  "jobs": [
+    {"id": "job-1", "status": "completed"},
+    {"id": "job-2", "status": "pending"}
+  ],
+  "counts": [],
+  "limit": 50,
+  "offset": 0
+}
+EOF
+
+  "lib/build-summary.sh" "${actual}" 0 0
+
+  summary="${actual}/summary.md"
+  if ! grep -Fq "FAIL: jobs report contains non-terminal states (running/pending)" "${summary}"; then
+    echo "FAIL: jobs.json non-terminal state did not fail summary" >&2
+    fail=1
+  fi
+
+  rm -R "${actual}"
+  trap - EXIT
+}
+
+run_summary_jobs_json_straggler_test
+
 run_summary_web_smoke_fail_then_sse_warn_test() {
   local actual
   local summary

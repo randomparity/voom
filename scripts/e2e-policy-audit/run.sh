@@ -101,6 +101,16 @@ log_run() {
     return 0
 }
 
+json_run() {
+    local name="$1"
+    local out="$2"
+    shift 2
+    local rc=0
+    "$@" >"${out}" 2>"${run_dir}/logs/${name}.log" || rc=$?
+    echo "${rc}" >"${run_dir}/logs/${name}.log.rc"
+    return 0
+}
+
 runtime_sampler_pid=""
 env_check_sampler_pid=""
 runtime_sampler_uses_group=0
@@ -215,7 +225,7 @@ run_process_command() {
         active_process_uses_group=1
     else
         active_process_uses_group=0
-    fi >"${run_dir}/logs/process.log" 2>&1
+    fi >"${run_dir}/reports/process.json" 2>"${run_dir}/logs/process.log"
     active_process_pid=$!
 
     trap 'stop_process_samplers' EXIT
@@ -248,9 +258,11 @@ fi
     exit 1
 }
 
+json_run version-json "${run_dir}/env/version.json" "${voom_bin}" version --format json
 log_run version "${voom_bin}" --version
-log_run env-check "${voom_bin}" env check
-log_run policy-validate "${voom_bin}" policy validate "${policy}"
+json_run env-check "${run_dir}/reports/env-check.json" "${voom_bin}" env check --format json
+json_run policy-validate "${run_dir}/reports/policy-validate.json" \
+    "${voom_bin}" policy validate "${policy}" --format json
 
 # ---- Pre snapshot + probe ----
 echo "==> Pre-snapshot"
@@ -269,7 +281,7 @@ fi
 # ---- Discover + introspect ----
 echo "==> voom scan"
 t=$(stage_start)
-log_run scan "${voom_bin}" scan -r -y "${library}"
+json_run scan "${run_dir}/reports/scan.json" "${voom_bin}" scan -r -y "${library}" --format json
 stage_end scan "$t"
 
 log_run files-list "${voom_bin}" files list -f csv
@@ -291,12 +303,13 @@ run_start=$(date -Iseconds)
 echo "==> voom process (long run starts at ${run_start})"
 t=$(stage_start)
 start_process_samplers
-run_process_command "${voom_bin}" process -y --on-error continue --policy "${policy}" "${library}"
+run_process_command "${voom_bin}" process -y --on-error continue --policy "${policy}" --format json "${library}"
 stop_process_samplers
 trap - EXIT INT TERM
 stage_end process "$t"
 "${lib_dir}/capture-host-journal.sh" "${run_dir}" "${run_start}" ||
     echo "host journal capture failed (continuing)" >&2
+json_run jobs-list-json "${run_dir}/reports/jobs.json" "${voom_bin}" jobs list --format json
 log_run jobs-list "${voom_bin}" jobs list
 cp "${run_dir}/logs/jobs-list.log" "${run_dir}/reports/jobs.txt"
 
@@ -336,6 +349,7 @@ cp "${run_dir}/logs/events.log" "${run_dir}/reports/events.json"
     "${run_dir}/logs/plugin-errors" \
     "${run_dir}/diffs/plugin-error-summary.md" ||
     echo "plugin error dedupe failed (continuing)" >&2
+json_run report-json "${run_dir}/reports/report.json" "${voom_bin}" report --all --format json
 log_run report "${voom_bin}" report --all
 cp "${run_dir}/logs/report.log" "${run_dir}/reports/report.txt"
 

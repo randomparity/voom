@@ -8,6 +8,18 @@ fn main() {
     let package_version = std::env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION is set");
     let product_version = product_version(&package_version);
     println!("cargo:rustc-env=VOOM_PRODUCT_VERSION={product_version}");
+    println!(
+        "cargo:rustc-env=VOOM_GIT_SHA={}",
+        git_short_sha().unwrap_or_else(|| "unknown".to_string())
+    );
+    println!(
+        "cargo:rustc-env=VOOM_GIT_DIRTY={}",
+        if git_dirty() { "true" } else { "false" }
+    );
+    println!(
+        "cargo:rustc-env=VOOM_BUILD_TARGET={}",
+        std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string())
+    );
 }
 
 fn emit_git_rerun_instructions() {
@@ -56,6 +68,13 @@ fn git_head_is_release_tag(expected_tag: &str) -> bool {
 
 fn git_short_sha() -> Option<String> {
     git_output(&["rev-parse", "--short=12", "HEAD"])
+}
+
+fn git_dirty() -> bool {
+    Command::new("git")
+        .args(["diff", "--quiet", "--ignore-submodules", "HEAD"])
+        .status()
+        .is_ok_and(|status| !status.success())
 }
 
 fn git_output(args: &[&str]) -> Option<String> {

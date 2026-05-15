@@ -69,6 +69,7 @@ fn process_args_from_launch_request(request: ProcessRunLaunchRequest) -> Process
         confirm_savings: None,
         priority_by_date: false,
         execute_during_discovery: false,
+        format: crate::cli::OutputFormat::Table,
     }
 }
 

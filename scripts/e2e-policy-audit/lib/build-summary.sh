@@ -91,8 +91,14 @@ if [[ -f "${statuses}" ]]; then
 fi
 
 # Job stragglers
+jobs_json="${run}/reports/jobs.json"
 jobs_report="${run}/reports/jobs.txt"
-if [[ -f "${jobs_report}" ]]; then
+if [[ -f "${jobs_json}" ]]; then
+  if jq -e '.jobs[]? | select(.status == "running" or .status == "pending")' \
+    "${jobs_json}" >/dev/null; then
+    note_fail "jobs report contains non-terminal states (running/pending)"
+  fi
+elif [[ -f "${jobs_report}" ]]; then
   if grep -Eqi '\b(running|pending)\b' "${jobs_report}"; then
     note_fail "jobs report contains non-terminal states (running/pending)"
   fi
@@ -128,7 +134,12 @@ if ((total_failed_plans > 0)); then
   if [[ -f "${process_rc_file}" ]] && [[ "$(cat "${process_rc_file}")" == "0" ]]; then
     note_warn "process exited 0 despite ${total_failed_plans} failed plan(s)"
   fi
-  if [[ -f "${jobs_report}" ]] &&
+  if [[ -f "${jobs_json}" ]] &&
+    jq -e '([.jobs[]? | select(.status == "completed")] | length) > 0
+           and ([.jobs[]? | select(.status == "failed")] | length) == 0' \
+      "${jobs_json}" >/dev/null; then
+    note_warn "jobs report has completed jobs but no failed jobs despite ${total_failed_plans} failed plan(s)"
+  elif [[ -f "${jobs_report}" ]] &&
     grep -qE 'completed:[[:space:]]+[1-9][0-9]*' "${jobs_report}" &&
     ! grep -qE 'failed:[[:space:]]+[1-9][0-9]*' "${jobs_report}"; then
     note_warn "jobs report has completed jobs but no failed jobs despite ${total_failed_plans} failed plan(s)"
@@ -260,6 +271,13 @@ fi
   link_artifact_if_exists "diffs/failure-timeline.md"
   link_artifact_if_exists "diffs/plugin-error-summary.md"
   link_artifact_if_exists "reports/events-deduped.json"
+  link_artifact_if_exists "reports/process.json"
+  link_artifact_if_exists "reports/scan.json"
+  link_artifact_if_exists "reports/jobs.json"
+  link_artifact_if_exists "reports/report.json"
+  link_artifact_if_exists "reports/policy-validate.json"
+  link_artifact_if_exists "reports/env-check.json"
+  link_artifact_if_exists "env/version.json"
   link_artifact_if_exists "logs/plugin-errors/"
   link_artifact_if_exists "runtime/"
   link_artifact_if_exists "env/journal.log"

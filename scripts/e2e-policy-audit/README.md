@@ -59,6 +59,7 @@ Then rerun the harness against `/tmp/voom-repro-library` with the same policy.
 │   └── voom-db-tables/           raw SQLite export (per-table TSV) post-scan / post-process
 ├── runtime/                      5-minute host state samples during voom process
 ├── env/                          tool versions, GPU state, policy copy, redacted config
+│   ├── version.json              structured VOOM build/version metadata
 │   ├── journal.log               host journal captured after voom process
 │   ├── dmesg.log                 kernel ring buffer captured after voom process
 │   ├── dnf-history.txt           recent package manager history
@@ -68,6 +69,12 @@ Then rerun the harness against `/tmp/voom-repro-library` with the same policy.
 │   └── env-check/                hourly voom env check snapshots during process
 ├── db-export/                    raw SQLite tables (post-process; consumed by build-summary)
 ├── reports/                      voom report --all, files, plans, jobs, events
+│   ├── scan.json                 structured `voom scan --format json` summary
+│   ├── process.json              structured `voom process --format json` summary
+│   ├── jobs.json                 structured `voom jobs list --format json` output
+│   ├── report.json               structured `voom report --all --format json` output
+│   ├── policy-validate.json      structured policy validation result
+│   ├── env-check.json            structured environment check result
 │   ├── events.json               raw `voom events -f json` capture
 │   └── events-deduped.json       raw events with repeated plugin errors compacted
 ├── repro/                        problem-file lists + copy-repro-set.sh

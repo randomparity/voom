@@ -25,6 +25,31 @@ progress, warnings, status notes, and deprecation notices are written to stderr.
 
 ## Commands
 
+### `voom version`
+
+Print version and build metadata.
+
+```
+voom version [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-f`, `--format <FORMAT>` | `table` | Output format: `table`, `json`, `plain`, or `csv` |
+
+Human formats print `voom <version>`. JSON output is intended for automation
+and includes stable top-level fields: `command`, `product_version`,
+`package_version`, `git_sha`, `git_dirty`, `build_profile`, and `target`.
+
+**Examples:**
+
+```bash
+voom version
+voom version --format json
+```
+
+---
+
 ### `voom scan`
 
 Discover and introspect media files in one or more directories.
@@ -38,12 +63,21 @@ voom scan <PATH>... [OPTIONS]
 | `<PATH>...` | *required* | Directories to scan for media files (one or more) |
 | `-r`, `--recursive` | `true` | Recurse into subdirectories |
 | `-w`, `--workers <N>` | `0` (auto) | Number of parallel workers for hashing |
+| `--probe-workers <N>` | `0` (auto) | Number of parallel workers for ffprobe introspection |
 | `--no-hash` | `false` | Skip content hashing (faster scans) |
+| `--verify` | `false` | Run a quick verification pass after introspection |
 | `-f`, `--format <FORMAT>` | *none* | Output format (omit for summary only) |
 
 Before scanning, stale database entries for files that no longer exist under the scanned directory are automatically pruned (along with their associated plans and processing stats).
 
 The scanner walks the directory tree (using rayon for parallelism), identifies media files by extension, computes xxHash64 content hashes (unless `--no-hash`), and runs ffprobe for metadata extraction. Results are stored in the SQLite database. Files that fail introspection are recorded as "bad files" for tracking and can be reviewed with `voom db list-bad`.
+
+`--format json` emits a scan summary object with `command`, `status`,
+`cancelled`, `paths`, `elapsed_ms`, `counts`, and `files`. The `counts` object
+includes discovered/introspected file counts plus discovery, probe, missing,
+orphan, moved, and external-change counts. `files` contains scanned file
+entries with `path`, `size`, and `hash`; an empty scan returns the same envelope
+with `files: []`.
 
 **Examples:**
 
@@ -51,6 +85,7 @@ The scanner walks the directory tree (using rayon for parallelism), identifies m
 voom scan /media/movies -r
 voom scan /media/tv --workers 8 --no-hash
 voom scan /media/movies /media/tv --format table
+voom scan /media/movies --format json
 ```
 
 ---
@@ -108,6 +143,7 @@ voom process <PATH>... [--policy <FILE> | --policy-map <TOML>] [OPTIONS]
 | `--confirm-savings <SIZE>` | *optional* | Execute only files whose estimated savings meet the per-file threshold |
 | `--priority-by-date` | `false` | Assign job priority based on file modification date |
 | `--execute-during-discovery` | `false` | Unlock each root for execution as soon as its walk finishes (see below) |
+| `-f`, `--format <FORMAT>` | `table` | Output format for execution summaries: `table`, `json`, `plain`, or `csv` |
 
 Before processing, stale database entries for files that no longer exist under the target directory are automatically pruned (along with their associated plans and processing stats). Files that previously failed introspection (tracked as "bad files") are automatically skipped unless `--force-rescan` is set.
 
@@ -119,6 +155,17 @@ If an executable plan fails, the file job is marked failed and the final
 summary error count is non-zero. With `--on-error continue`, the command still
 finishes the batch; inspect `voom jobs list --status failed` and
 `voom report errors --session <session>` for details.
+
+`--format json` emits a process execution summary object after execution. It
+includes `command`, `status`, `session_id`, `cancelled`, `dry_run`, `paths`,
+`workers`, `elapsed_ms`, `counts`, and `phase_stats`. The `counts` object
+includes file, processed, modified, skipped, failed-file, failed-plan, and
+backup-byte totals. `phase_stats` is keyed by phase name and reports completed,
+skipped, failed, and skip-reason counts.
+
+`--plan-only` keeps its existing behavior: it implies `--dry-run` and writes the
+raw plan array as JSON to stdout instead of the execution summary. Estimate mode
+continues to print the estimate report.
 
 #### `--execute-during-discovery` (advanced, opt-in)
 
@@ -170,6 +217,9 @@ voom process /media --policy-map policies.toml
 
 # Output plans as JSON without executing
 voom process /media/movies --policy normalize.voom --plan-only
+
+# Output an execution summary as JSON
+voom process /media/movies --policy normalize.voom --dry-run --format json
 
 # Estimate cost without executing
 voom process /media/movies --policy normalize.voom --estimate
