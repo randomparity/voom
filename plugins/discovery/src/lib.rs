@@ -132,9 +132,19 @@ impl Plugin for DiscoveryPlugin {
 
         match scan_result {
             Ok(()) => {
-                // Send the root-walk-completed signal *only* after a successful
-                // scan, mirroring the Call::ScanLibrary doc contract.
-                if let Some(done) = root_done {
+                // Send the root-walk-completed signal only after a successful
+                // *and uncancelled* scan, mirroring the Call::ScanLibrary doc
+                // contract. The scanner may have returned Ok before observing
+                // the cancel — that's a race window for tiny libraries — but
+                // a cancelled walk is not a "completed" walk for callers using
+                // root_done (e.g. the gate dispatcher in the process pipeline,
+                // which would otherwise open the gate for incomplete data).
+                if cancel.is_cancelled() {
+                    tracing::debug!(
+                        root = %options.root.display(),
+                        "scan returned Ok but cancel was observed post-scan; suppressing RootWalkCompletedEvent"
+                    );
+                } else if let Some(done) = root_done {
                     if let Err(e) = done.try_send(RootWalkCompletedEvent::new(
                         options.root.clone(),
                         *scan_session,
@@ -662,6 +672,53 @@ mod tests {
         assert!(
             rx_root.try_recv().is_err(),
             "no second root event for a single Call"
+        );
+    }
+
+    #[test]
+    fn on_call_suppresses_root_done_when_cancelled_even_if_scan_returned_ok() {
+        use tokio::sync::mpsc;
+        use tokio_util::sync::CancellationToken;
+        use voom_domain::call::Call;
+        use voom_domain::events::{FileDiscoveredEvent, RootWalkCompletedEvent};
+
+        // Tiny library — only one file, so the scanner is overwhelmingly likely
+        // to return Ok before the pre-cancellation below would have caused
+        // any worker to bail.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("only.mkv"), b"x").unwrap();
+
+        let (sink, _rx) = mpsc::channel::<FileDiscoveredEvent>(8);
+        let (root_done_tx, mut root_done_rx) = mpsc::channel::<RootWalkCompletedEvent>(1);
+
+        let cancel = CancellationToken::new();
+        // Cancel before on_call. The scanner will likely still return Ok for
+        // such a tiny library — but the plugin must observe the cancelled token
+        // post-scan and skip the root_done emission.
+        cancel.cancel();
+
+        let mut options = ScanOptions::new(dir.path());
+        options.hash_files = false;
+
+        let call = Call::ScanLibrary {
+            uri: format!("file://{}", dir.path().display()),
+            options,
+            scan_session: voom_domain::transition::ScanSessionId::new(),
+            sink,
+            root_done: Some(root_done_tx),
+            cancel,
+        };
+
+        let plugin = DiscoveryPlugin::new();
+        let response = plugin.on_call(&call);
+
+        // The scanner may or may not have returned Ok depending on timing.
+        // We don't assert on the response — only on the root_done invariant.
+        let _ = response;
+
+        assert!(
+            root_done_rx.try_recv().is_err(),
+            "RootWalkCompletedEvent must NOT be emitted on a cancelled scan, regardless of scan_result"
         );
     }
 }
