@@ -126,7 +126,7 @@ impl Plugin for DiscoveryPlugin {
             }
         });
 
-        let scan_result = scanner::scan_directory_streaming(options, on_event);
+        let scan_result = scanner::scan_directory_streaming(options, cancel, on_event);
 
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
