@@ -42,7 +42,7 @@ jobs:
           key: mutants-${{ matrix.package }}
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@ec28e287910af896fd98e04056d31fa68607e7ad  # v2.77.4
+        uses: taiki-e/install-action@184183c2401be73c3bf42c2e61268aa5855379c1  # v2.78.1
         with:
           tool: cargo-mutants
 
