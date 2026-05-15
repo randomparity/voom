@@ -9,6 +9,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod introspect;
+pub mod kernel_invoke;
 pub mod lock;
 pub mod output;
 pub mod paths;
