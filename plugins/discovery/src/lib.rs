@@ -9,7 +9,7 @@ pub use scanner::hash_file;
 pub use scanner::normalize_path;
 pub use scanner::scan_directory_streaming;
 
-use voom_domain::call::{Call, CallResponse, DiscoveryError, ScanSummary};
+use voom_domain::call::{Call, CallResponse, ScanSummary};
 use voom_domain::capabilities::Capability;
 use voom_domain::errors::Result;
 use voom_domain::events::{FileDiscoveredEvent, RootWalkCompletedEvent};
@@ -92,44 +92,37 @@ impl Plugin for DiscoveryPlugin {
             ));
         };
 
-        // Shared counters / error list — populated from inside the rayon
-        // worker callback.
+        // Shared counter — populated from inside the rayon worker callback.
         let file_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        let errors: std::sync::Arc<std::sync::Mutex<Vec<DiscoveryError>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
         let count_clone = file_count.clone();
         let sink_clone = sink.clone();
-        let errors_clone = errors.clone();
         let cancel_clone = cancel.clone();
 
         let started = std::time::Instant::now();
 
         // The scanner is synchronous and rayon-parallel. Forward each
-        // FileDiscoveredEvent into the caller's tokio mpsc via `try_send`.
-        // If the channel is full we record a DiscoveryError rather than
-        // blocking the scanner thread; Phase 3 will replace this with a
-        // proper async pump that respects back-pressure.
+        // FileDiscoveredEvent into the caller's tokio mpsc via `blocking_send`.
+        // `blocking_send` applies natural backpressure: when the receiver is
+        // full, the rayon worker blocks until drain. A `SendError` here means
+        // the receiver was dropped — caller went away, safe to swallow; the
+        // next `cancel_clone.is_cancelled()` check will short-circuit any
+        // remaining work.
         let on_event: scanner::EventSink = Box::new(move |event| {
             if cancel_clone.is_cancelled() {
                 return;
             }
-            let path_display = event.path.display().to_string();
-            match sink_clone.try_send(event) {
+            match sink_clone.blocking_send(event) {
                 Ok(()) => {
                     count_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
-                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                    if let Ok(mut errs) = errors_clone.lock() {
-                        errs.push(DiscoveryError::new(
-                            path_display,
-                            "scan sink full; dropping event (caller draining too slowly)".into(),
-                        ));
-                    }
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                Err(_send_error) => {
                     // Receiver dropped — caller no longer cares. Stop counting,
-                    // let the scanner finish naturally.
+                    // let the scanner finish naturally; the next cancel check
+                    // will short-circuit remaining work.
+                    tracing::debug!(
+                        "scan sink receiver dropped; remaining events will be discarded"
+                    );
                 }
             }
         });
@@ -143,28 +136,21 @@ impl Plugin for DiscoveryPlugin {
                 // Send the root-walk-completed signal *only* after a successful
                 // scan, mirroring the Call::ScanLibrary doc contract.
                 if let Some(done) = root_done {
-                    let _ = done.try_send(RootWalkCompletedEvent::new(
+                    if let Err(e) = done.try_send(RootWalkCompletedEvent::new(
                         options.root.clone(),
                         *scan_session,
                         duration_ms,
-                    ));
-                }
-                let collected_errors = match errors.lock() {
-                    Ok(guard) => guard.clone(),
-                    Err(poisoned) => {
-                        // A scanner worker panicked while holding the lock.
-                        // Surface the loss explicitly rather than returning an
-                        // empty error list (which would look like a clean run
-                        // to the caller).
+                    )) {
                         tracing::warn!(
-                            "scan error list mutex poisoned; partial error data discarded"
+                            error = %e,
+                            root = %options.root.display(),
+                            "failed to deliver RootWalkCompletedEvent",
                         );
-                        poisoned.into_inner().clone()
                     }
-                };
+                }
                 let summary = ScanSummary::new(
                     file_count.load(std::sync::atomic::Ordering::Relaxed),
-                    collected_errors,
+                    vec![],
                     1,
                 );
                 Ok(CallResponse::ScanLibrary(summary))
@@ -414,6 +400,89 @@ mod tests {
             reused.load(Ordering::Relaxed),
             0,
             "HashReused must not fire when mtime is newer than last_seen"
+        );
+    }
+
+    #[test]
+    fn on_call_scan_library_emits_events_to_sink() {
+        use tokio::sync::mpsc;
+        use tokio_util::sync::CancellationToken;
+        use voom_domain::transition::ScanSessionId;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("video.mkv"), b"fake mkv data").unwrap();
+        std::fs::write(dir.path().join("audio.mp4"), b"fake mp4 data").unwrap();
+        std::fs::write(dir.path().join("readme.txt"), b"not media").unwrap();
+
+        let (sink, mut rx) = mpsc::channel::<FileDiscoveredEvent>(16);
+        let (root_done_tx, mut root_done_rx) = mpsc::channel::<RootWalkCompletedEvent>(1);
+        let cancel = CancellationToken::new();
+        let scan_session = ScanSessionId::new();
+
+        let call = Call::ScanLibrary {
+            uri: format!("file://{}", dir.path().display()),
+            options: ScanOptions::new(dir.path()),
+            scan_session,
+            sink,
+            root_done: Some(root_done_tx),
+            cancel,
+        };
+
+        let plugin = DiscoveryPlugin::new();
+        let response = plugin.on_call(&call).expect("on_call should succeed");
+
+        // Drain the events synchronously: on_call returned, so the rayon
+        // workers have all finished pushing into the channel.
+        let mut received = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            received.push(event);
+        }
+        assert_eq!(received.len(), 2, "should receive 2 media events");
+
+        // root_done must be emitted exactly once, carrying the caller's session id.
+        let root_done_event = root_done_rx
+            .try_recv()
+            .expect("RootWalkCompletedEvent must be emitted on success");
+        assert_eq!(root_done_event.session, scan_session);
+        assert!(
+            root_done_rx.try_recv().is_err(),
+            "exactly one RootWalkCompletedEvent expected"
+        );
+
+        let CallResponse::ScanLibrary(summary) = response else {
+            panic!("expected CallResponse::ScanLibrary");
+        };
+        assert_eq!(summary.file_count, 2);
+        assert_eq!(summary.roots_scanned, 1);
+        assert!(summary.errors.is_empty(), "errors should be empty");
+    }
+
+    #[test]
+    fn on_call_does_not_emit_root_done_when_scan_fails() {
+        use tokio::sync::mpsc;
+        use tokio_util::sync::CancellationToken;
+        use voom_domain::transition::ScanSessionId;
+
+        let (sink, _rx) = mpsc::channel::<FileDiscoveredEvent>(16);
+        let (root_done_tx, mut root_done_rx) = mpsc::channel::<RootWalkCompletedEvent>(1);
+        let cancel = CancellationToken::new();
+        let scan_session = ScanSessionId::new();
+
+        let call = Call::ScanLibrary {
+            uri: "file:///definitely/does/not/exist/scratch/scan".into(),
+            options: ScanOptions::new("/definitely/does/not/exist/scratch/scan"),
+            scan_session,
+            sink,
+            root_done: Some(root_done_tx),
+            cancel,
+        };
+
+        let plugin = DiscoveryPlugin::new();
+        let result = plugin.on_call(&call);
+        assert!(result.is_err(), "scanning a missing path must return Err");
+        assert!(
+            root_done_rx.try_recv().is_err(),
+            "RootWalkCompletedEvent must NOT be emitted on scan failure"
         );
     }
 
