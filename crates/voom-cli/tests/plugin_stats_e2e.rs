@@ -86,14 +86,17 @@ async fn scan_populates_plugin_stats_table() {
         "plugin_stats rollup should have at least one row after a scan; got zero"
     );
 
-    // Direct SQL assertion that a specific named plugin appears in the table.
-    // The dispatcher records the *subscriber's* plugin_id, not the publisher's
-    // (see `Bus::publish_recursive` in voom-kernel/src/bus.rs). Discovery is a
-    // pure publisher (`handles()` returns false for every event — see
-    // `DiscoveryPlugin::test_handles_no_events`), so it never appears in
-    // `plugin_stats`. We assert on `sqlite-store` instead, which subscribes to
-    // every event for persistence and is therefore the canonical reliable
-    // subscriber on any scan run.
+    // Direct SQL assertions that specific named plugins appear in the table.
+    //
+    // `sqlite-store` is a bus subscriber: `Bus::publish_recursive` records the
+    // *subscriber's* plugin_id on every event it handles, so a single scan
+    // produces many `sqlite-store` rows. This invariant predates Phase 3.
+    //
+    // `discovery` is a capability-dispatched plugin: after Phase 3 (#378), the
+    // CLI scan command issues one `Call::ScanLibrary` per root through
+    // `Kernel::dispatch_to_capability`, which records a `PluginStatRecord` for
+    // the resolved plugin (see `voom-kernel/src/lib.rs` ~lines 497-505). So at
+    // least one `discovery` row must appear after any successful scan.
     let db_path = env.db_path();
     let conn = rusqlite::Connection::open(&db_path)
         .unwrap_or_else(|e| panic!("open {}: {e}", db_path.display()));
@@ -107,6 +110,20 @@ async fn scan_populates_plugin_stats_table() {
     assert!(
         store_count > 0,
         "expected at least one sqlite-store row in plugin_stats"
+    );
+
+    let discovery_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM plugin_stats WHERE plugin_id = 'discovery'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count discovery rows");
+    assert!(
+        discovery_count > 0,
+        "expected at least one 'discovery' row in plugin_stats after a scan; the CLI dispatches \
+         ScanLibrary through Kernel::dispatch_to_capability which records the resolved plugin id \
+         (#378 Phase 3)"
     );
 }
 
