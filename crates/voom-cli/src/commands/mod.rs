@@ -21,3 +21,4 @@ pub mod scan;
 pub mod serve;
 pub mod tools;
 pub mod verify;
+pub mod version;

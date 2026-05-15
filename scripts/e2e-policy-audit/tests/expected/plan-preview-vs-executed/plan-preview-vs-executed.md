@@ -1,0 +1,8 @@
+# Plan Preview vs Executed
+
+Divergences: 2
+
+| Path | Phase | Diff | Preview | Executed |
+|---|---|---|---|---|
+| `/lib/a.mkv` | transcode-video | action-params | operation=transcode;parameters={"codec":"hevc","crf":23,"hw":"nvenc","hw_fallback":true,"preset":"slow"} | operation=transcode;parameters={"codec":"hevc","crf":24,"hw":"nvenc","hw_fallback":true,"preset":"slow"} |
+| `/lib/c.mkv` | metadata | action-params | operation=set_language;parameters={"language":"eng"};track_index=1 | operation=set_language;parameters={"language":"jpn"};track_index=1 |

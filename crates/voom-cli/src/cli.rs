@@ -66,6 +66,9 @@ pub enum Commands {
     /// View event log
     Events(EventsArgs),
 
+    /// Show VOOM build and version metadata
+    Version(VersionArgs),
+
     /// Environment diagnostics and history
     #[command(subcommand)]
     Env(EnvCommands),
@@ -250,6 +253,10 @@ pub struct ProcessArgs {
     /// model and recommended use cases.
     #[arg(long)]
     pub execute_during_discovery: bool,
+
+    /// Output format for execution summaries
+    #[arg(short, long, default_value = "table")]
+    pub format: OutputFormat,
 }
 
 #[derive(clap::Args)]
@@ -281,6 +288,15 @@ pub struct EstimateArgs {
     /// Maximum generated corpus fixtures to benchmark during calibration
     #[arg(long, default_value_t = 3)]
     pub max_fixtures: usize,
+}
+
+// === Version ===
+
+#[derive(clap::Args)]
+pub struct VersionArgs {
+    /// Output format
+    #[arg(short, long, default_value = "table")]
+    pub format: OutputFormat,
 }
 
 fn parse_size_bytes(value: &str) -> std::result::Result<u64, String> {
@@ -2324,6 +2340,15 @@ mod tests {
     }
 
     #[test]
+    fn test_version_json_format() {
+        let cli = parse(&["voom", "version", "--format", "json"]);
+        match cli.command {
+            Commands::Version(args) => assert!(matches!(args.format, OutputFormat::Json)),
+            _ => panic!("expected Version command"),
+        }
+    }
+
+    #[test]
     fn test_invalid_on_error_rejected() {
         assert!(
             try_parse(&[
@@ -2623,6 +2648,17 @@ mod tests {
             Commands::Process(args) => {
                 assert_eq!(args.paths, vec![PathBuf::from("/media")]);
             }
+            _ => panic!("expected Process"),
+        }
+    }
+
+    #[test]
+    fn test_process_json_format() {
+        let cli = parse(&[
+            "voom", "process", "/media", "--policy", "p.voom", "--format", "json",
+        ]);
+        match cli.command {
+            Commands::Process(args) => assert!(matches!(args.format, OutputFormat::Json)),
             _ => panic!("expected Process"),
         }
     }

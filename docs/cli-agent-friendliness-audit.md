@@ -17,9 +17,10 @@ agent-friendly output work. It should be updated as phases land.
 
 | Command | Mutates state | Format flag | JSON support | Empty JSON shape | Prompts | Progress/status notes |
 |---|---:|---:|---:|---|---:|---|
-| `scan` | yes | partial | yes | `[]` | no | progress/status should be quiet for machine formats |
+| `version` | no | yes | yes | version metadata object | no | query command |
+| `scan` | yes | partial | yes | scan summary object with empty `files` | no | progress/status should be quiet for machine formats |
 | `inspect` | no | yes | yes | n/a | no | may introspect missing DB entries |
-| `process` | yes | no | `--plan-only` only | `[]` for no plans | optional approval | long-running progress/status |
+| `process` | yes | yes | yes | process summary object; `--plan-only` still emits plan array | optional approval | long-running progress/status |
 | `estimate` | yes, calibration data | no | no | n/a | no | summary is human-only |
 | `policy list` | no | yes | yes | `[]` | no | query command |
 | `policy validate` | no | yes | yes | validation object | no | query command |
@@ -77,7 +78,24 @@ agent-friendly output work. It should be updated as phases land.
 
 The initial contract tests cover:
 
-- Existing JSON stdout parses for `scan --format json`, `tools list --format
-  json`, and `env check --format json`.
+- Existing JSON stdout parses for `version --format json`, `scan --format
+  json`, `process --format json`, `tools list --format json`, and `env check
+  --format json`.
 - JSON stdout excludes representative human status text.
 - Human scan status is emitted on stderr for table/human output.
+
+## E2E JSON Consumers
+
+The `scripts/e2e-policy-audit` harness now captures JSON artifacts from
+agent-facing commands and uses them in summary checks:
+
+- `env/version.json` from `voom version --format json`.
+- `reports/env-check.json` from `voom env check --format json`.
+- `reports/policy-validate.json` from `voom policy validate --format json`.
+- `reports/scan.json` from `voom scan --format json`.
+- `reports/process.json` from `voom process --format json`.
+- `reports/jobs.json` from `voom jobs list --format json`.
+- `reports/report.json` from `voom report --all --format json`.
+
+`jobs.json` is the preferred source for detecting non-terminal jobs in the
+generated run summary; the human `jobs.txt` artifact remains a fallback.

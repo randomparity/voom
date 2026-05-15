@@ -171,7 +171,7 @@ fn process_single_file_dry_run(
         let plans_json: Vec<serde_json::Value> = result
             .plans
             .iter()
-            .filter(|p| !p.is_empty() && !p.is_skipped())
+            .filter(|p| include_in_plan_only_output(p))
             .filter_map(|p| {
                 serde_json::to_value(p)
                     .inspect_err(|e| {
@@ -217,6 +217,10 @@ fn process_single_file_dry_run(
         "needs_execution": needs_exec,
         "plans": plan_summaries,
     })))
+}
+
+fn include_in_plan_only_output(plan: &voom_domain::plan::Plan) -> bool {
+    !plan.is_empty() || plan.is_skipped()
 }
 
 /// Real execution: evaluate → execute → re-introspect per phase.
@@ -925,6 +929,39 @@ mod tests {
             }
             Ok(None)
         }
+    }
+
+    #[test]
+    fn plan_only_output_filter_includes_skipped_plans_for_audit_diff() {
+        let skipped = voom_domain::plan::Plan::new(
+            voom_domain::media::MediaFile::new(std::path::PathBuf::from("/media/a.mkv")),
+            "test-policy",
+            "transcode-video",
+        )
+        .with_skip_reason("already-compatible");
+
+        let executable = voom_domain::plan::Plan::new(
+            voom_domain::media::MediaFile::new(std::path::PathBuf::from("/media/b.mkv")),
+            "test-policy",
+            "transcode-video",
+        )
+        .with_action(voom_domain::plan::PlannedAction::file_op(
+            voom_domain::plan::OperationType::ConvertContainer,
+            voom_domain::plan::ActionParams::Container {
+                container: voom_domain::media::Container::Mkv,
+            },
+            "convert container",
+        ));
+
+        let empty = voom_domain::plan::Plan::new(
+            voom_domain::media::MediaFile::new(std::path::PathBuf::from("/media/c.mkv")),
+            "test-policy",
+            "metadata",
+        );
+
+        assert!(super::include_in_plan_only_output(&skipped));
+        assert!(super::include_in_plan_only_output(&executable));
+        assert!(!super::include_in_plan_only_output(&empty));
     }
 
     struct FailingExecutor;

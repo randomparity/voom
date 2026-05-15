@@ -91,8 +91,14 @@ if [[ -f "${statuses}" ]]; then
 fi
 
 # Job stragglers
+jobs_json="${run}/reports/jobs.json"
 jobs_report="${run}/reports/jobs.txt"
-if [[ -f "${jobs_report}" ]]; then
+if [[ -f "${jobs_json}" ]]; then
+  if jq -e '.jobs[]? | select(.status == "running" or .status == "pending")' \
+    "${jobs_json}" >/dev/null; then
+    note_fail "jobs report contains non-terminal states (running/pending)"
+  fi
+elif [[ -f "${jobs_report}" ]]; then
   if grep -Eqi '\b(running|pending)\b' "${jobs_report}"; then
     note_fail "jobs report contains non-terminal states (running/pending)"
   fi
@@ -128,15 +134,36 @@ if ((total_failed_plans > 0)); then
   if [[ -f "${process_rc_file}" ]] && [[ "$(cat "${process_rc_file}")" == "0" ]]; then
     note_warn "process exited 0 despite ${total_failed_plans} failed plan(s)"
   fi
-  if [[ -f "${jobs_report}" ]] &&
+  if [[ -f "${jobs_json}" ]] &&
+    jq -e '([.jobs[]? | select(.status == "completed")] | length) > 0
+           and ([.jobs[]? | select(.status == "failed")] | length) == 0' \
+      "${jobs_json}" >/dev/null; then
+    note_warn "jobs report has completed jobs but no failed jobs despite ${total_failed_plans} failed plan(s)"
+  elif [[ -f "${jobs_report}" ]] &&
     grep -qE 'completed:[[:space:]]+[1-9][0-9]*' "${jobs_report}" &&
     ! grep -qE 'failed:[[:space:]]+[1-9][0-9]*' "${jobs_report}"; then
     note_warn "jobs report has completed jobs but no failed jobs despite ${total_failed_plans} failed plan(s)"
   fi
 fi
 
-"${script_dir}/build-repro-set.py" "${run}" ||
-  note_warn "failed to build repro file set"
+plan_diff_tsv="${run}/diffs/plan-preview-vs-executed.tsv"
+if [[ -f "${plan_diff_tsv}" ]]; then
+  plan_diff_count=$(awk 'NR > 1 {count++} END {print count + 0}' "${plan_diff_tsv}")
+  ((plan_diff_count > 0)) && note_warn "${plan_diff_count} plan preview/executed divergence(s)"
+fi
+
+deprecations_md="${run}/diffs/deprecations.md"
+if [[ -f "${deprecations_md}" ]]; then
+  deprecation_count=$(awk '/^Warnings:/ {print $2}' "${deprecations_md}")
+  [[ -z "${deprecation_count}" ]] && deprecation_count=0
+  if ((deprecation_count > 0)); then
+    if [[ "${VOOM_E2E_FAIL_ON_DEPRECATIONS:-0}" == "1" ]]; then
+      note_fail "${deprecation_count} deprecation warning(s)"
+    else
+      note_warn "${deprecation_count} deprecation warning(s)"
+    fi
+  fi
+fi
 
 # Render
 {
@@ -202,6 +229,20 @@ fi
     echo "(not generated)"
   fi
   echo
+  echo "### Plan preview vs executed"
+  if [[ -s "${run}/diffs/plan-preview-vs-executed.md" ]]; then
+    sed -n '1,24p' "${run}/diffs/plan-preview-vs-executed.md"
+  else
+    echo "(not generated)"
+  fi
+  echo
+  echo "### Deprecation warnings"
+  if [[ -s "${run}/diffs/deprecations.md" ]]; then
+    sed -n '1,24p' "${run}/diffs/deprecations.md"
+  else
+    echo "(not generated)"
+  fi
+  echo
   echo "### Failed plans (first 20)"
   echo '```'
   if [[ -f "${failed_plans}" ]] && [[ $(awk 'END {print NR}' "${failed_plans}") -gt 1 ]]; then
@@ -259,7 +300,18 @@ fi
   link_artifact_if_exists "diffs/env-check-timeline.md"
   link_artifact_if_exists "diffs/failure-timeline.md"
   link_artifact_if_exists "diffs/plugin-error-summary.md"
+  link_artifact_if_exists "diffs/plan-preview-vs-executed.md"
+  link_artifact_if_exists "diffs/plan-preview-vs-executed.tsv"
+  link_artifact_if_exists "diffs/deprecations.md"
+  link_artifact_if_exists "repro/replay.sh"
   link_artifact_if_exists "reports/events-deduped.json"
+  link_artifact_if_exists "reports/process.json"
+  link_artifact_if_exists "reports/scan.json"
+  link_artifact_if_exists "reports/jobs.json"
+  link_artifact_if_exists "reports/report.json"
+  link_artifact_if_exists "reports/policy-validate.json"
+  link_artifact_if_exists "reports/env-check.json"
+  link_artifact_if_exists "env/version.json"
   link_artifact_if_exists "logs/plugin-errors/"
   link_artifact_if_exists "runtime/"
   link_artifact_if_exists "env/journal.log"

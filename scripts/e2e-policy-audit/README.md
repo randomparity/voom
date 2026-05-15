@@ -41,6 +41,16 @@ small library containing representative problem files:
 
 Then rerun the harness against `/tmp/voom-repro-library` with the same policy.
 
+To rerun only files that had failed plans:
+
+```bash
+~/voom-e2e-runs/<run>/repro/replay.sh
+BUILD=target/release/voom POLICY=/path/to/policy.voom ~/voom-e2e-runs/<run>/repro/replay.sh
+```
+
+`replay.sh` defaults to `command -v voom` and the policy snapshot copied into
+`env/policy.voom`.
+
 ## Pre-conditions
 
 - `~/.config/voom/voom.db` must NOT exist.
@@ -59,6 +69,7 @@ Then rerun the harness against `/tmp/voom-repro-library` with the same policy.
 │   └── voom-db-tables/           raw SQLite export (per-table TSV) post-scan / post-process
 ├── runtime/                      5-minute host state samples during voom process
 ├── env/                          tool versions, GPU state, policy copy, redacted config
+│   ├── version.json              structured VOOM build/version metadata
 │   ├── journal.log               host journal captured after voom process
 │   ├── dmesg.log                 kernel ring buffer captured after voom process
 │   ├── dnf-history.txt           recent package manager history
@@ -68,12 +79,22 @@ Then rerun the harness against `/tmp/voom-repro-library` with the same policy.
 │   └── env-check/                hourly voom env check snapshots during process
 ├── db-export/                    raw SQLite tables (post-process; consumed by build-summary)
 ├── reports/                      voom report --all, files, plans, jobs, events
+│   ├── scan.json                 structured `voom scan --format json` summary
+│   ├── process.json              structured `voom process --format json` summary
+│   ├── jobs.json                 structured `voom jobs list --format json` output
+│   ├── report.json               structured `voom report --all --format json` output
+│   ├── policy-validate.json      structured policy validation result
+│   ├── env-check.json            structured environment check result
 │   ├── events.json               raw `voom events -f json` capture
 │   └── events-deduped.json       raw events with repeated plugin errors compacted
-├── repro/                        problem-file lists + copy-repro-set.sh
+├── repro/                        problem-file lists + replay/copy scripts
+│   ├── replay.sh                 rerun failed-plan files against BUILD/POLICY
+│   └── copy-repro-set.sh         copy representative problem files to a small library
 ├── web-smoke/                    statuses + body samples + content assertions
 ├── diffs/
 │   ├── plugin-error-summary.md   repeated plugin.error signatures by plugin
+│   ├── plan-preview-vs-executed.tsv/.md  planned vs executed phase/action/skip diff
+│   ├── deprecations.md           `warning:` lines from logs/*.log
 │   ├── failure-timeline.md       failed plans bucketed by hour and cause
 │   ├── runtime-timeline.md       summarized runtime host state changes
 │   ├── env-check-timeline.md     summarized env check state changes
@@ -107,6 +128,9 @@ For large runs, start with the aggregate views:
   spread across the run.
 - `diffs/failure-clusters.md` groups failed plans by phase, error signature,
   exit code, source container, and source video codec.
+- `diffs/plan-preview-vs-executed.md` highlights drift between `--plan-only`
+  preview plans and the plans persisted after execution.
+- `diffs/deprecations.md` lists `warning:` lines emitted by CLI invocations.
 - `diffs/plugin-error-summary.md` compresses repeated plugin error payloads and
   points to per-plugin logs under `logs/plugin-errors/`.
 - `diffs/db-vs-ffprobe-post-summary.md` groups post-run introspection
@@ -116,6 +140,17 @@ For large runs, start with the aggregate views:
   independently of VOOM's DB view.
 - `repro/minimal-covering-set.tsv` picks a capped set of representative files
   per failure/diff signature for faster follow-up runs.
+
+## Pre-Release Audit Gates
+
+Pre-release audit runs should have:
+
+- zero rows in `diffs/plan-preview-vs-executed.tsv`, unless each divergence is
+  intentionally explained in release notes;
+- zero warnings in `diffs/deprecations.md`.
+
+Set `VOOM_E2E_FAIL_ON_DEPRECATIONS=1` to make warning lines a hard summary
+failure instead of a soft warning.
 
 ## Canonical metadata comparison
 

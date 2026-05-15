@@ -60,6 +60,7 @@ async fn main() -> Result<()> {
         Commands::Files(sub) => commands::files::run(sub, global_yes),
         Commands::Plans(sub) => commands::plans::run(sub),
         Commands::Events(args) => commands::events::run(args, token).await,
+        Commands::Version(args) => commands::version::run(args.format),
         Commands::Env(sub) => commands::env::run(sub),
         Commands::Health(sub) => {
             commands::env::warn_health_deprecated();
@@ -116,8 +117,10 @@ fn command_output_format(command: &Commands) -> Option<OutputFormat> {
     match command {
         Commands::Scan(args) => args.format,
         Commands::Inspect(args) => Some(args.format),
+        Commands::Process(args) => Some(args.format),
         Commands::Report(args) => Some(args.format),
         Commands::Events(args) => Some(args.format),
+        Commands::Version(args) => Some(args.format),
         Commands::History(args) => Some(args.format),
         Commands::Plans(cli::PlansCommands::Show { format, .. }) => Some(*format),
         Commands::Policy(PolicyCommands::List { format }) => Some(*format),
