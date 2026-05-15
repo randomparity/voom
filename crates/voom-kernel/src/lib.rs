@@ -1455,9 +1455,13 @@ mod tests {
             )
             .expect("dispatch");
 
+        let actual = LAST_HANDLER.load(Ordering::SeqCst);
+        assert_ne!(
+            actual, 0,
+            "neither plugin handled the call — dispatch never reached on_call"
+        );
         assert_eq!(
-            LAST_HANDLER.load(Ordering::SeqCst),
-            1,
+            actual, 1,
             "lower priority (5) must win over higher (50); this exact test \
              defeats any HashMap-iteration-order or registration-order \
              implementation."
