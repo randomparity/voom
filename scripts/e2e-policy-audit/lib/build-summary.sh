@@ -18,7 +18,10 @@ note_fail() {
 }
 note_warn() {
   soft_warns+=("$1")
-  [[ "${verdict}" == "PASS" ]] && verdict="WARN"
+  if [[ "${verdict}" == "PASS" ]]; then
+    verdict="WARN"
+  fi
+  return 0
 }
 link_artifact_if_exists() {
   local path="$1"
@@ -75,13 +78,15 @@ fi
 # Web smoke
 statuses="${run}/web-smoke/statuses.tsv"
 if [[ -f "${statuses}" ]]; then
-  while IFS=$'\t' read -r ep st; do
+  while IFS=$'\t' read -r ep st content; do
     [[ "${ep}" == "endpoint" ]] && continue
     if [[ "${ep}" == *"(sse)"* ]]; then
       [[ ! "${st}" =~ ^2[0-9][0-9]$ ]] && note_warn "SSE smoke ${ep} returned ${st}"
+      [[ "${content:-PASS}" != "PASS" ]] && note_warn "SSE smoke ${ep} content assertion failed"
       continue
     fi
     [[ ! "${st}" =~ ^2[0-9][0-9]$ ]] && note_fail "web smoke ${ep} returned ${st}"
+    [[ "${content:-PASS}" != "PASS" ]] && note_fail "web smoke ${ep} content assertion failed"
   done <"${statuses}"
 fi
 
@@ -183,6 +188,20 @@ fi
     echo "(none)"
   fi
   echo
+  echo "### Failure timeline"
+  if [[ -s "${run}/diffs/failure-timeline.md" ]]; then
+    sed -n '1,24p' "${run}/diffs/failure-timeline.md"
+  else
+    echo "(not generated)"
+  fi
+  echo
+  echo "### Plugin error summary"
+  if [[ -s "${run}/diffs/plugin-error-summary.md" ]]; then
+    sed -n '1,24p' "${run}/diffs/plugin-error-summary.md"
+  else
+    echo "(not generated)"
+  fi
+  echo
   echo "### Failed plans (first 20)"
   echo '```'
   if [[ -f "${failed_plans}" ]] && [[ $(awk 'END {print NR}' "${failed_plans}") -gt 1 ]]; then
@@ -238,6 +257,10 @@ fi
   echo "- [web-smoke/](web-smoke/)"
   link_artifact_if_exists "diffs/runtime-timeline.md"
   link_artifact_if_exists "diffs/env-check-timeline.md"
+  link_artifact_if_exists "diffs/failure-timeline.md"
+  link_artifact_if_exists "diffs/plugin-error-summary.md"
+  link_artifact_if_exists "reports/events-deduped.json"
+  link_artifact_if_exists "logs/plugin-errors/"
   link_artifact_if_exists "runtime/"
   link_artifact_if_exists "env/journal.log"
   link_artifact_if_exists "env/dmesg.log"

@@ -64,12 +64,17 @@ Then rerun the harness against `/tmp/voom-repro-library` with the same policy.
 │   ├── dnf-history.txt           recent package manager history
 │   └── rpm-recently-changed.txt  recently changed installed RPMs
 ├── logs/                         one file per CLI invocation, plus *.rc exit-code sidecars
+│   ├── plugin-errors/            compact repeated plugin.error signature logs
 │   └── env-check/                hourly voom env check snapshots during process
 ├── db-export/                    raw SQLite tables (post-process; consumed by build-summary)
-├── reports/                      voom report --all, files, plans, jobs, events.json
+├── reports/                      voom report --all, files, plans, jobs, events
+│   ├── events.json               raw `voom events -f json` capture
+│   └── events-deduped.json       raw events with repeated plugin errors compacted
 ├── repro/                        problem-file lists + copy-repro-set.sh
-├── web-smoke/                    curl statuses + body samples
+├── web-smoke/                    statuses + body samples + content assertions
 ├── diffs/
+│   ├── plugin-error-summary.md   repeated plugin.error signatures by plugin
+│   ├── failure-timeline.md       failed plans bucketed by hour and cause
 │   ├── runtime-timeline.md       summarized runtime host state changes
 │   ├── env-check-timeline.md     summarized env check state changes
 │   ├── files-summary.md          path-level (size/mtime/disappeared/new/common)
@@ -98,8 +103,12 @@ do that, read `diffs/codec-pivot.md`, `diffs/tracks-pivot.md`, and the four
 
 For large runs, start with the aggregate views:
 
+- `diffs/failure-timeline.md` shows whether failures are clustered in time or
+  spread across the run.
 - `diffs/failure-clusters.md` groups failed plans by phase, error signature,
   exit code, source container, and source video codec.
+- `diffs/plugin-error-summary.md` compresses repeated plugin error payloads and
+  points to per-plugin logs under `logs/plugin-errors/`.
 - `diffs/db-vs-ffprobe-post-summary.md` groups post-run introspection
   divergences by stable signatures such as subtitle default drift or attachment
   promotion.

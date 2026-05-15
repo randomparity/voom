@@ -74,7 +74,7 @@ repo_root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 lib_dir="${repo_root}/scripts/e2e-policy-audit/lib"
 voom_bin="${repo_root}/target/release/voom"
 
-mkdir -p "${run_dir}"/{pre,post,logs,reports,db-export,web-smoke,diffs,runtime} "${run_dir}/logs/env-check"
+mkdir -p "${run_dir}"/{pre,post,logs,reports,db-export,web-smoke,diffs,runtime} "${run_dir}/logs/env-check" "${run_dir}/logs/plugin-errors"
 echo "Run dir: ${run_dir}"
 
 stage_start() { date +%s.%N; }
@@ -319,17 +319,30 @@ if [[ -f "${db_path}" ]]; then
     "${lib_dir}/db-to-ndjson.sh" "${run_dir}/post/voom-db-tables" "${run_dir}/post/voom-db.ndjson"
     # The build-summary's longest-jobs query reads db-export/jobs.tsv.
     cp -r "${run_dir}/post/voom-db-tables/." "${run_dir}/db-export/"
+    if [[ -f "${run_dir}/db-export/plans.tsv" ]]; then
+        "${lib_dir}/ffmpeg-stderr-normalize.py" \
+            "${run_dir}/db-export/plans.tsv" \
+            "${run_dir}/db-export/plans.normalized.tsv" &&
+            mv "${run_dir}/db-export/plans.normalized.tsv" "${run_dir}/db-export/plans.tsv" ||
+            echo "ffmpeg stderr normalization failed (continuing)" >&2
+    fi
 fi
 
 log_run events "${voom_bin}" events -n 1000000 -f json
 cp "${run_dir}/logs/events.log" "${run_dir}/reports/events.json"
+"${lib_dir}/plugin-error-dedupe.py" \
+    "${run_dir}/reports/events.json" \
+    "${run_dir}/reports/events-deduped.json" \
+    "${run_dir}/logs/plugin-errors" \
+    "${run_dir}/diffs/plugin-error-summary.md" ||
+    echo "plugin error dedupe failed (continuing)" >&2
 log_run report "${voom_bin}" report --all
 cp "${run_dir}/logs/report.log" "${run_dir}/reports/report.txt"
 
 # ---- Web smoke ----
 if ((do_web)); then
     echo "==> Web smoke"
-    "${lib_dir}/web-smoke.sh" "${voom_bin}" "${run_dir}/web-smoke" \
+    "${lib_dir}/web-smoke.sh" "${voom_bin}" "${run_dir}/web-smoke" "${db_path}" \
         2>&1 | tee "${run_dir}/logs/web-smoke.log" ||
         echo "web smoke failed; see logs/web-smoke.log"
 fi
@@ -393,6 +406,12 @@ if compgen -G "${run_dir}/logs/env-check/[0-9][0-9][0-9][0-9].log" >/dev/null; t
         "${run_dir}/logs/env-check" \
         "${run_dir}/diffs/env-check-timeline.md" ||
         echo "env check timeline generation failed (continuing)" >&2
+fi
+if [[ -f "${run_dir}/db-export/plans.tsv" ]]; then
+    "${lib_dir}/failure-timeline.py" \
+        "${run_dir}/db-export/plans.tsv" \
+        "${run_dir}/diffs/failure-timeline.md" ||
+        echo "failure timeline generation failed (continuing)" >&2
 fi
 stage_end diff "$t"
 
