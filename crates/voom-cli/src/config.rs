@@ -191,6 +191,32 @@ impl AppConfig {
             .and_then(voom_ffprobe_introspector::parser::AnimationDetectionMode::parse)
             .unwrap_or_default()
     }
+
+    /// Validate the loaded configuration. Returns `Err` with an actionable
+    /// message if the user has disabled a plugin that is required for core
+    /// commands.
+    ///
+    /// This catches the misconfiguration at startup with a clear error
+    /// rather than letting it surface as an opaque "no handler for
+    /// capability" failure deep inside a dispatch call.
+    pub fn validate(&self) -> Result<(), anyhow::Error> {
+        let disabled = &self.plugins.disabled_plugins;
+        let mut bad: Vec<&str> = REQUIRED_PLUGIN_NAMES
+            .iter()
+            .copied()
+            .filter(|req| disabled.iter().any(|d| d == *req))
+            .collect();
+        bad.sort();
+        if !bad.is_empty() {
+            anyhow::bail!(
+                "config: required plugin(s) {bad:?} are listed in disabled_plugins. \
+                 These plugins are required for the `scan` and `process` commands \
+                 after the plugin-contract rev-6 migration (#378). \
+                 Remove them from `disabled_plugins` in your config.toml."
+            );
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -312,6 +338,16 @@ pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
     "report",
     "verifier",
 ];
+
+/// Plugins whose absence makes the `scan` or `process` commands non-functional.
+///
+/// After plugin contract rev 6 (issue #378), these commands route through
+/// `Kernel::dispatch_to_capability`, so the required capabilities must be
+/// claimed by a registered plugin. Disabling any of these via
+/// `disabled_plugins` in config.toml is an unrunnable configuration; we
+/// reject it at config load with an explicit error rather than failing at
+/// dispatch time with a less actionable "no handler" message.
+pub const REQUIRED_PLUGIN_NAMES: &[&str] = &["discovery"];
 
 /// Generate a default config.toml with all options commented out and documented.
 pub fn default_config_contents() -> String {
@@ -880,5 +916,64 @@ keep_last = 100000
         // See issue #194.
         assert_eq!(cfg.retention.event_log.keep_for_days, Some(60));
         assert_eq!(cfg.retention.event_log.keep_last, Some(500_000));
+    }
+
+    #[test]
+    fn validate_accepts_default_config() {
+        let config = AppConfig::default();
+        assert!(config.validate().is_ok(), "default config must validate");
+    }
+
+    #[test]
+    fn validate_accepts_disabling_optional_plugins() {
+        let mut config = AppConfig::default();
+        config.plugins.disabled_plugins = vec!["mkvtoolnix-executor".into(), "web-server".into()];
+        assert!(
+            config.validate().is_ok(),
+            "optional plugins may be disabled"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_discovery_in_disabled_plugins() {
+        let mut config = AppConfig::default();
+        config.plugins.disabled_plugins = vec!["discovery".into()];
+        let err = config
+            .validate()
+            .expect_err("discovery in disabled_plugins must fail");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("discovery"),
+            "error must name the offending plugin; got: {msg}"
+        );
+        assert!(
+            msg.contains("disabled_plugins"),
+            "error must point at the config key; got: {msg}"
+        );
+        assert!(
+            msg.contains("scan") || msg.contains("process"),
+            "error must explain which commands break; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_lists_all_required_plugins_disabled() {
+        // If REQUIRED_PLUGIN_NAMES grows, the message should mention every one
+        // the user has disabled — not just the first.
+        let mut config = AppConfig::default();
+        config.plugins.disabled_plugins = REQUIRED_PLUGIN_NAMES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let err = config
+            .validate()
+            .expect_err("required plugin disabled must fail");
+        let msg = format!("{err}");
+        for required in REQUIRED_PLUGIN_NAMES {
+            assert!(
+                msg.contains(required),
+                "error must mention required plugin '{required}'; got: {msg}"
+            );
+        }
     }
 }
