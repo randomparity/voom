@@ -74,7 +74,7 @@ repo_root="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 lib_dir="${repo_root}/scripts/e2e-policy-audit/lib"
 voom_bin="${repo_root}/target/release/voom"
 
-mkdir -p "${run_dir}"/{pre,post,logs,reports,db-export,web-smoke,diffs}
+mkdir -p "${run_dir}"/{pre,post,logs,reports,db-export,web-smoke,diffs,runtime} "${run_dir}/logs/env-check"
 echo "Run dir: ${run_dir}"
 
 stage_start() { date +%s.%N; }
@@ -98,6 +98,134 @@ log_run() {
     local rc=0
     "$@" >"${run_dir}/logs/${name}.log" 2>&1 || rc=$?
     echo "${rc}" >"${run_dir}/logs/${name}.log.rc"
+    return 0
+}
+
+runtime_sampler_pid=""
+env_check_sampler_pid=""
+runtime_sampler_uses_group=0
+env_check_sampler_uses_group=0
+active_process_pid=""
+active_process_uses_group=0
+
+start_background_session() {
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "$@" &
+        return 0
+    fi
+    "$@" &
+    return 1
+}
+
+process_is_live() {
+    local pid="$1" uses_group="$2"
+    if ((uses_group)); then
+        kill -0 "-${pid}" 2>/dev/null
+    else
+        kill -0 "${pid}" 2>/dev/null
+    fi
+}
+
+signal_process() {
+    local pid="$1" uses_group="$2" signal="$3"
+    if [[ -z "${pid}" ]]; then
+        return 0
+    fi
+    if ((uses_group)); then
+        kill -"${signal}" "-${pid}" 2>/dev/null || true
+    else
+        kill -"${signal}" "${pid}" 2>/dev/null || true
+    fi
+}
+
+stop_process_tree() {
+    local pid="$1" uses_group="$2"
+    local initial_signal="${3:-TERM}"
+    local i
+
+    if [[ -z "${pid}" ]]; then
+        return 0
+    fi
+
+    signal_process "${pid}" "${uses_group}" "${initial_signal}"
+    for _ in {1..5}; do
+        if ! process_is_live "${pid}" "${uses_group}"; then
+            wait "${pid}" 2>/dev/null || true
+            return 0
+        fi
+        sleep 1
+    done
+
+    signal_process "${pid}" "${uses_group}" KILL
+    for i in {1..5}; do
+        if ! process_is_live "${pid}" "${uses_group}"; then
+            break
+        fi
+        sleep 1
+    done
+    wait "${pid}" 2>/dev/null || true
+}
+
+stop_process_samplers() {
+    stop_process_tree "${runtime_sampler_pid}" "${runtime_sampler_uses_group}"
+    runtime_sampler_pid=""
+    runtime_sampler_uses_group=0
+
+    stop_process_tree "${env_check_sampler_pid}" "${env_check_sampler_uses_group}"
+    env_check_sampler_pid=""
+    env_check_sampler_uses_group=0
+}
+
+start_process_samplers() {
+    if start_background_session "${lib_dir}/runtime-sampler.sh" "${run_dir}" 300 "${voom_bin}"; then
+        runtime_sampler_uses_group=1
+    else
+        runtime_sampler_uses_group=0
+    fi
+    runtime_sampler_pid=$!
+    if start_background_session "${lib_dir}/env-check-sampler.sh" "${run_dir}" "${voom_bin}" 3600; then
+        env_check_sampler_uses_group=1
+    else
+        env_check_sampler_uses_group=0
+    fi
+    env_check_sampler_pid=$!
+}
+
+forward_process_signal() {
+    local signal="$1" exit_code="$2"
+    trap - EXIT INT TERM
+    stop_process_tree "${active_process_pid}" "${active_process_uses_group}" "${signal}"
+    active_process_pid=""
+    active_process_uses_group=0
+    stop_process_samplers
+    if [[ ! -f "${run_dir}/logs/process.log.rc" ]]; then
+        echo "${exit_code}" >"${run_dir}/logs/process.log.rc"
+    fi
+    exit "${exit_code}"
+}
+
+run_process_command() {
+    local rc=0
+
+    active_process_pid=""
+    active_process_uses_group=0
+    rm -f "${run_dir}/logs/process.log.rc"
+
+    if start_background_session "$@"; then
+        active_process_uses_group=1
+    else
+        active_process_uses_group=0
+    fi >"${run_dir}/logs/process.log" 2>&1
+    active_process_pid=$!
+
+    trap 'stop_process_samplers' EXIT
+    trap 'forward_process_signal INT 130' INT
+    trap 'forward_process_signal TERM 143' TERM
+
+    wait "${active_process_pid}" || rc=$?
+    echo "${rc}" >"${run_dir}/logs/process.log.rc"
+    active_process_pid=""
+    active_process_uses_group=0
     return 0
 }
 
@@ -162,8 +290,13 @@ cp "${run_dir}/logs/plans-preview.log" "${run_dir}/reports/plans.json"
 run_start=$(date -Iseconds)
 echo "==> voom process (long run starts at ${run_start})"
 t=$(stage_start)
-log_run process "${voom_bin}" process -y --on-error continue --policy "${policy}" "${library}"
+start_process_samplers
+run_process_command "${voom_bin}" process -y --on-error continue --policy "${policy}" "${library}"
+stop_process_samplers
+trap - EXIT INT TERM
 stage_end process "$t"
+"${lib_dir}/capture-host-journal.sh" "${run_dir}" "${run_start}" ||
+    echo "host journal capture failed (continuing)" >&2
 log_run jobs-list "${voom_bin}" jobs list
 cp "${run_dir}/logs/jobs-list.log" "${run_dir}/reports/jobs.txt"
 
@@ -248,6 +381,18 @@ if ((do_probe)); then
                 echo "diff class summary failed for ${diff_name} (continuing)" >&2
         fi
     done
+fi
+if compgen -G "${run_dir}/runtime/*.txt" >/dev/null; then
+    "${lib_dir}/runtime-timeline.py" \
+        "${run_dir}/runtime" \
+        "${run_dir}/diffs/runtime-timeline.md" ||
+        echo "runtime timeline generation failed (continuing)" >&2
+fi
+if compgen -G "${run_dir}/logs/env-check/[0-9][0-9][0-9][0-9].log" >/dev/null; then
+    "${lib_dir}/env-check-timeline.py" \
+        "${run_dir}/logs/env-check" \
+        "${run_dir}/diffs/env-check-timeline.md" ||
+        echo "env check timeline generation failed (continuing)" >&2
 fi
 stage_end diff "$t"
 
