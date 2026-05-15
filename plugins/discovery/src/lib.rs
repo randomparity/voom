@@ -149,7 +149,19 @@ impl Plugin for DiscoveryPlugin {
                         duration_ms,
                     ));
                 }
-                let collected_errors = errors.lock().map(|e| e.clone()).unwrap_or_default();
+                let collected_errors = match errors.lock() {
+                    Ok(guard) => guard.clone(),
+                    Err(poisoned) => {
+                        // A scanner worker panicked while holding the lock.
+                        // Surface the loss explicitly rather than returning an
+                        // empty error list (which would look like a clean run
+                        // to the caller).
+                        tracing::warn!(
+                            "scan error list mutex poisoned; partial error data discarded"
+                        );
+                        poisoned.into_inner().clone()
+                    }
+                };
                 let summary = ScanSummary::new(
                     file_count.load(std::sync::atomic::Ordering::Relaxed),
                     collected_errors,

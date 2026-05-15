@@ -69,17 +69,17 @@ fn dispatch_scan_library_streams_through_real_discovery_plugin() {
         )
     });
 
-    // Collect all FileDiscoveredEvent payloads.
+    // Collect all FileDiscoveredEvent payloads and the root-done signal.
     let mut received = Vec::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("rt");
-    rt.block_on(async {
+    let root_done_event = rt.block_on(async {
         while let Some(ev) = rx.recv().await {
             received.push(ev);
         }
-        let _ = root_done_rx.recv().await; // optional, may be None if discovery skipped it
+        root_done_rx.recv().await
     });
 
     let response = handle
@@ -97,6 +97,11 @@ fn dispatch_scan_library_streams_through_real_discovery_plugin() {
     assert!(
         summary.errors.is_empty(),
         "no discovery errors expected on a clean tempdir"
+    );
+    let root_done_event = root_done_event.expect("root_done must fire on a successful scan");
+    assert_eq!(
+        root_done_event.root, root,
+        "RootWalkCompletedEvent must carry the scanned root"
     );
 }
 
