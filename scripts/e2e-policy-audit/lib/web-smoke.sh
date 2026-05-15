@@ -49,6 +49,22 @@ validate_sse_body() {
     return 1
 }
 
+validate_sse_content() {
+    local status="$1"
+    local body="$2"
+
+    if validate_sse_body "${body}"; then
+        return 0
+    fi
+
+    [[ "${status}" =~ ^2[0-9][0-9]$ ]] || return 1
+    if ! grep -Eq '^(event|data):' "${body}"; then
+        return 0
+    fi
+
+    return 1
+}
+
 failed_job_count_from_db() {
     local db_path="$1"
 
@@ -126,7 +142,7 @@ probe_sse() {
 
     status=$(curl -s -N -o "${body_path}" -w '%{http_code}' --max-time 5 "${url}" || true)
     [[ -z "${status}" ]] && status="000"
-    if validate_sse_body "${body_path}"; then
+    if validate_sse_content "${status}" "${body_path}"; then
         content="PASS"
     fi
     printf '%s\t%s\t%s\n' "${label}" "${status}" "${content}" >>"${statuses}"

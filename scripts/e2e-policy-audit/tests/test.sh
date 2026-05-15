@@ -195,6 +195,7 @@ event: job-update
 data: {"JobProgress":{"job_id":"job-1","progress":0.5,"message":null}}
 
 EOF
+  : >"${actual}/events-idle.body"
   cat >"${actual}/root.body" <<'EOF'
 <!doctype html><html><head><title>VOOM</title></head><body>VOOM</body></html>
 EOF
@@ -204,6 +205,14 @@ EOF
   validate_files_body "${actual}/files.body"
   validate_jobs_body "${actual}/jobs.body" 1
   validate_sse_body "${actual}/events.body"
+  if ! validate_sse_content "200" "${actual}/events.body"; then
+    echo "FAIL: populated SSE body should satisfy smoke content" >&2
+    fail=1
+  fi
+  if ! validate_sse_content "200" "${actual}/events-idle.body"; then
+    echo "FAIL: idle 2xx SSE body should satisfy smoke content" >&2
+    fail=1
+  fi
 
   rm -R "${actual}"
   trap - EXIT
