@@ -179,30 +179,64 @@ fn disable(name: &str) -> Result<()> {
 /// Shared implementation for enable/disable: validates the plugin name, checks
 /// current state, mutates the disabled list, and saves the config.
 fn set_plugin_enabled(name: &str, enabled: bool) -> Result<()> {
+    let mut config = config::load_config()?;
+    let changed = apply_plugin_enable_change(&mut config, name, enabled)?;
+
+    let state_style = if enabled {
+        style("enabled").green()
+    } else {
+        style("disabled").yellow()
+    };
+
+    if !changed {
+        println!(
+            "Plugin \"{}\" is already {}.",
+            style(name).cyan(),
+            state_style
+        );
+        return Ok(());
+    }
+
+    config::save_config(&config)?;
+    println!(
+        "{} Plugin \"{}\" has been {}.",
+        style("OK").bold().green(),
+        style(name).cyan(),
+        state_style
+    );
+    Ok(())
+}
+
+/// Apply an enable/disable transition to an in-memory config.
+///
+/// Returns `true` if the config was modified and needs to be saved. Returns
+/// `false` if the plugin was already in the requested state (no-op).
+///
+/// Rejects:
+/// - Unknown plugin names (not in `KNOWN_PLUGIN_NAMES`).
+/// - Attempts to disable a plugin in `REQUIRED_PLUGIN_NAMES`. Required
+///   plugins are gated at the CLI boundary so users never reach the cryptic
+///   bootstrap-time validation error from `AppConfig::validate`.
+fn apply_plugin_enable_change(
+    config: &mut config::AppConfig,
+    name: &str,
+    enabled: bool,
+) -> Result<bool> {
     if !config::KNOWN_PLUGIN_NAMES.contains(&name) {
         let known = config::KNOWN_PLUGIN_NAMES.join(", ");
         bail!("Unknown plugin \"{name}\". Known plugins: {known}");
     }
-
-    let mut config = config::load_config()?;
-    let is_disabled = config.plugins.disabled_plugins.iter().any(|d| d == name);
-
-    if enabled && !is_disabled {
-        println!(
-            "Plugin \"{}\" is already {}.",
-            style(name).cyan(),
-            style("enabled").green()
+    if !enabled && config::REQUIRED_PLUGIN_NAMES.contains(&name) {
+        let required = config::REQUIRED_PLUGIN_NAMES.join(", ");
+        bail!(
+            "Cannot disable required plugin \"{name}\". \
+             Required plugins (the scan/process commands fail to bootstrap without them): {required}."
         );
-        return Ok(());
     }
 
-    if !enabled && is_disabled {
-        println!(
-            "Plugin \"{}\" is already {}.",
-            style(name).cyan(),
-            style("disabled").yellow()
-        );
-        return Ok(());
+    let is_disabled = config.plugins.disabled_plugins.iter().any(|d| d == name);
+    if enabled != is_disabled {
+        return Ok(false);
     }
 
     if enabled {
@@ -210,24 +244,7 @@ fn set_plugin_enabled(name: &str, enabled: bool) -> Result<()> {
     } else {
         config.plugins.disabled_plugins.push(name.to_string());
     }
-    config::save_config(&config)?;
-
-    if enabled {
-        println!(
-            "{} Plugin \"{}\" has been {}.",
-            style("OK").bold().green(),
-            style(name).cyan(),
-            style("enabled").green()
-        );
-    } else {
-        println!(
-            "{} Plugin \"{}\" has been {}.",
-            style("OK").bold().green(),
-            style(name).cyan(),
-            style("disabled").yellow()
-        );
-    }
-    Ok(())
+    Ok(true)
 }
 
 fn install(path: &std::path::Path) -> Result<()> {
@@ -368,5 +385,43 @@ mod tests {
         // Verify that enable/disable check against KNOWN_PLUGIN_NAMES
         assert!(config::KNOWN_PLUGIN_NAMES.contains(&"sqlite-store"));
         assert!(!config::KNOWN_PLUGIN_NAMES.contains(&"nonexistent-plugin"));
+    }
+
+    #[test]
+    fn cannot_disable_required_plugins_via_cli() {
+        // For every name in REQUIRED_PLUGIN_NAMES, attempting to disable it
+        // must fail with an actionable error message naming the plugin.
+        // This guards the CLI boundary so users never reach the cryptic
+        // bootstrap-time config-validation failure.
+        for name in config::REQUIRED_PLUGIN_NAMES {
+            let mut cfg = config::AppConfig::default();
+            let err = apply_plugin_enable_change(&mut cfg, name, false)
+                .expect_err(&format!("disable of required plugin {name} must fail"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Cannot disable required plugin"),
+                "error must explain why disable was rejected; got: {msg}"
+            );
+            assert!(
+                msg.contains(name),
+                "error must name the rejected plugin {name}; got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn enabling_required_plugin_still_succeeds() {
+        // Idempotent: enabling a required plugin from its default state
+        // (enabled) is a no-op success. Confirms the rejection gate is
+        // bounded to the disable direction.
+        for name in config::REQUIRED_PLUGIN_NAMES {
+            let mut cfg = config::AppConfig::default();
+            let changed = apply_plugin_enable_change(&mut cfg, name, true)
+                .unwrap_or_else(|e| panic!("enable of required plugin {name} should succeed: {e}"));
+            assert!(
+                !changed,
+                "enabling an already-enabled required plugin must be a no-op"
+            );
+        }
     }
 }
