@@ -1352,6 +1352,156 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_path_produces_phase_orchestrator_stats_row_on_success() {
+        // The happy path: a real `process_single_file_execute` invocation
+        // against a file that the policy skips (no executor needed, inner
+        // returns Ok) must still produce exactly one phase-orchestrator
+        // plugin_stats row from the wrapper's finalization call. This is
+        // the production-code-path complement to the dispatch-boundary
+        // test in phase_orchestrator_parity::
+        // dispatch_to_capability_produces_phase_orchestrator_stats_row.
+        use std::sync::Mutex;
+        use voom_domain::plugin_stats::{PluginInvocationOutcome, PluginStatRecord};
+        use voom_kernel::stats_sink::StatsSink;
+
+        #[derive(Default)]
+        struct RecordingSink(Mutex<Vec<PluginStatRecord>>);
+        impl StatsSink for RecordingSink {
+            fn record(&self, record: PluginStatRecord) {
+                self.0.lock().unwrap().push(record);
+            }
+        }
+
+        // Policy with `skip when video.codec == "hevc"` against an hevc file
+        // produces a single plan with skip_reason set. The execute pipeline
+        // dispatches a PlanCreated + PlanSkipped pair (no executor needed)
+        // and the inner returns Ok cleanly. The wrapper then unconditionally
+        // invokes the orchestrator, which is the row we are asserting on.
+        let policy = r#"policy "test" {
+                phase transcode-video {
+                    skip when video.codec == "hevc"
+                    transcode video to hevc
+                }
+            }"#;
+        let fixture = process_tests::TestFixture::with_policy(policy);
+        let path = fixture.dir_path().join("movie.mkv");
+        let mut file = MediaFile::new(path)
+            .with_container(Container::Mkv)
+            .with_tracks(vec![Track::new(0, TrackType::Video, "hevc".into())]);
+        file.duration = 120.0;
+        file.tracks[0].width = Some(1920);
+        file.tracks[0].height = Some(1080);
+        let compiled = voom_dsl::compile_policy(policy).unwrap();
+
+        let sink: Arc<RecordingSink> = Arc::new(RecordingSink::default());
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel.set_stats_sink(sink.clone() as Arc<dyn StatsSink>);
+        register_policy_evaluator(&mut kernel);
+        register_phase_orchestrator(&mut kernel);
+        let ctx = fixture.make_ctx(
+            Arc::new(kernel),
+            Arc::new(voom_domain::test_support::InMemoryStore::new()),
+        );
+
+        let result = process_single_file_execute(&file, &compiled, &ctx).await;
+        assert!(
+            result.is_ok(),
+            "execute path returned an error on success scenario: {result:?}"
+        );
+
+        let records = sink.0.lock().unwrap();
+        let orch_rows: Vec<&PluginStatRecord> = records
+            .iter()
+            .filter(|r| r.plugin_id == "phase-orchestrator")
+            .collect();
+        assert_eq!(
+            orch_rows.len(),
+            1,
+            "expected exactly 1 phase-orchestrator row after success execute; \
+             got {} of {} total: {:?}",
+            orch_rows.len(),
+            records.len(),
+            *records
+        );
+        assert!(
+            matches!(orch_rows[0].outcome, PluginInvocationOutcome::Ok),
+            "expected outcome Ok, got {:?}",
+            orch_rows[0].outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_path_produces_orchestrator_row_even_when_inner_returns_err() {
+        // rev-3 critical regression test: when the inner returns Err (e.g.,
+        // executor failure), the wrapper MUST STILL invoke the orchestrator.
+        // If this assertion fails, the wrapper's finalization isn't running
+        // on the Err path — rev-2 finding #2 has regressed.
+        use std::sync::Mutex;
+        use voom_domain::plugin_stats::{PluginInvocationOutcome, PluginStatRecord};
+        use voom_kernel::stats_sink::StatsSink;
+
+        #[derive(Default)]
+        struct RecordingSink(Mutex<Vec<PluginStatRecord>>);
+        impl StatsSink for RecordingSink {
+            fn record(&self, record: PluginStatRecord) {
+                self.0.lock().unwrap().push(record);
+            }
+        }
+
+        let policy = global_hw_policy();
+        let fixture = process_tests::TestFixture::with_policy(policy);
+        let path = fixture.dir_path().join("movie.mkv");
+        let file = h264_file(path);
+        let compiled = voom_dsl::compile_policy(policy).unwrap();
+
+        let sink: Arc<RecordingSink> = Arc::new(RecordingSink::default());
+        let mut kernel = voom_kernel::Kernel::new();
+        kernel.set_stats_sink(sink.clone() as Arc<dyn StatsSink>);
+        register_policy_evaluator(&mut kernel);
+        register_phase_orchestrator(&mut kernel);
+        // FailingExecutor mirrors the existing
+        // failed_executable_plan_returns_file_job_error test fixture: it
+        // returns plan_failed for every PlanCreated event, which makes
+        // process_single_file_execute_inner return Err via the
+        // "executable plan(s) failed" branch.
+        kernel
+            .register_plugin(Arc::new(FailingExecutor), 50)
+            .unwrap();
+        let ctx = fixture.make_ctx(
+            Arc::new(kernel),
+            Arc::new(voom_domain::test_support::InMemoryStore::new()),
+        );
+
+        let result = process_single_file_execute(&file, &compiled, &ctx).await;
+        assert!(
+            result.is_err(),
+            "expected Err from failing executor; got {result:?}"
+        );
+
+        let records = sink.0.lock().unwrap();
+        let orch_rows: Vec<&PluginStatRecord> = records
+            .iter()
+            .filter(|r| r.plugin_id == "phase-orchestrator")
+            .collect();
+        assert_eq!(
+            orch_rows.len(),
+            1,
+            "expected 1 phase-orchestrator row even after inner Err; \
+             got {} of {} total. If this is 0, the wrapper's finalization isn't \
+             running on the Err path — rev-2 finding #2 has regressed. Rows: {:?}",
+            orch_rows.len(),
+            records.len(),
+            *records
+        );
+        assert!(
+            matches!(orch_rows[0].outcome, PluginInvocationOutcome::Ok),
+            "the orchestrator dispatch itself should succeed even when the \
+             execute path returns Err; got outcome {:?}",
+            orch_rows[0].outcome
+        );
+    }
+
+    #[tokio::test]
     async fn process_pipeline_respects_plan_limiter() {
         let policy = nvenc_policy();
         let fixture = process_tests::TestFixture::with_policy(policy);
