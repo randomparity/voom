@@ -129,3 +129,41 @@ fn parity_empty_plans() {
 
     assert_orchestration_results_equal(&direct, &routed);
 }
+
+#[test]
+fn dispatch_to_capability_produces_phase_orchestrator_stats_row() {
+    // The spec's #378 acceptance criterion at the dispatch-boundary level:
+    // calling Kernel::dispatch_to_capability with Capability::OrchestratePhases
+    // (via kernel_invoke::orchestrate) must produce exactly one PluginStatRecord
+    // attributed to "phase-orchestrator" with outcome Ok. Phase 6 codifies the
+    // full voom-process e2e; this test catches regressions in the dispatch
+    // instrumentation itself for the orchestrator capability.
+    use std::sync::Mutex;
+    use voom_domain::plugin_stats::{PluginInvocationOutcome, PluginStatRecord};
+    use voom_kernel::stats_sink::StatsSink;
+
+    #[derive(Default)]
+    struct RecordingSink(Mutex<Vec<PluginStatRecord>>);
+    impl StatsSink for RecordingSink {
+        fn record(&self, record: PluginStatRecord) {
+            self.0.lock().unwrap().push(record);
+        }
+    }
+
+    let sink: Arc<RecordingSink> = Arc::new(RecordingSink::default());
+    let kernel = kernel_with_orchestrator();
+    kernel.set_stats_sink(sink.clone() as Arc<dyn StatsSink>);
+
+    voom_cli::kernel_invoke::orchestrate(&kernel, vec![], "demo".into())
+        .expect("kernel orchestrate");
+
+    let records = sink.0.lock().unwrap();
+    assert_eq!(records.len(), 1, "exactly one stats row per dispatch");
+    assert_eq!(records[0].plugin_id, "phase-orchestrator");
+    assert_eq!(records[0].event_type, "call.orchestrate");
+    assert!(
+        matches!(records[0].outcome, PluginInvocationOutcome::Ok),
+        "successful dispatch must record Ok outcome; got {:?}",
+        records[0].outcome
+    );
+}
