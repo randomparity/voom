@@ -22,5 +22,6 @@ workspace = true
 
 [dev-dependencies]
 insta = { workspace = true }
+serde_json = { workspace = true }
 voom-dsl = { workspace = true }
 voom-policy-evaluator = { workspace = true }
