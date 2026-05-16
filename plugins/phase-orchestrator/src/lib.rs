@@ -9,6 +9,10 @@ pub use voom_domain::orchestration::OrchestrationResult;
 use voom_domain::plan::{PhaseOutcome, PhaseResult, Plan};
 use voom_dsl::compiled::{CompiledPolicy, ErrorStrategy};
 
+pub mod plugin;
+
+pub use plugin::PhaseOrchestratorPlugin;
+
 /// Produce phase outcomes from pre-evaluated plans, computing skip/completion
 /// state and dry-run summary.
 ///

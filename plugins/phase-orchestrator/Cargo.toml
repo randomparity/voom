@@ -14,6 +14,7 @@ description = "Phase orchestration plugin for VOOM — sequences policy phases w
 [dependencies]
 voom-domain = { workspace = true }
 voom-dsl = { workspace = true }
+voom-kernel = { workspace = true }
 tracing = { workspace = true }
 
 [lints]
