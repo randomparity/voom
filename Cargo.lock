@@ -3980,6 +3980,7 @@ dependencies = [
  "tracing",
  "voom-domain",
  "voom-dsl",
+ "voom-kernel",
  "voom-policy-evaluator",
 ]
 

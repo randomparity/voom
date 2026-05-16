@@ -17,15 +17,25 @@ use voom_domain::errors::{Result, VoomError};
 use voom_kernel::Plugin;
 
 /// Kernel-registered plugin that exposes `voom-phase-orchestrator` via Call dispatch.
-#[non_exhaustive]
 pub struct PhaseOrchestratorPlugin {
     capabilities: Vec<Capability>,
 }
 
 impl PhaseOrchestratorPlugin {
-    /// Bootstrap-only constructor.
+    /// Bootstrap-only constructor — the canonical public entry point.
+    ///
+    /// All runtime orchestrator invocations flow through
+    /// `Kernel::dispatch_to_capability(Exclusive(OrchestratePhases), Call::Orchestrate)`.
+    /// Constructing a `PhaseOrchestratorPlugin` directly is legitimate only at
+    /// kernel-bootstrap registration time and inside in-crate tests
+    /// (via the `pub(crate) fn new()` companion).
     #[must_use]
     pub fn for_bootstrap() -> Self {
+        Self::new()
+    }
+
+    #[must_use]
+    pub(crate) fn new() -> Self {
         Self {
             capabilities: vec![Capability::OrchestratePhases],
         }
@@ -33,10 +43,11 @@ impl PhaseOrchestratorPlugin {
 }
 
 impl Plugin for PhaseOrchestratorPlugin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "phase-orchestrator"
     }
-    fn version(&self) -> &str {
+
+    fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 
@@ -59,8 +70,11 @@ impl Plugin for PhaseOrchestratorPlugin {
         } = call
         else {
             return Err(VoomError::plugin(
-                "phase-orchestrator",
-                format!("phase-orchestrator only handles Call::Orchestrate, got {call:?}"),
+                self.name(),
+                format!(
+                    "PhaseOrchestratorPlugin only handles Call::Orchestrate, got {:?}",
+                    std::mem::discriminant(call)
+                ),
             ));
         };
 
