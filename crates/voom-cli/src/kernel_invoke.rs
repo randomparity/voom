@@ -84,6 +84,45 @@ pub fn evaluate(
     }
 }
 
+/// Dispatch phase orchestration through the kernel's
+/// `Capability::OrchestratePhases` handler (the `PhaseOrchestratorPlugin`
+/// registered at bootstrap).
+///
+/// Records one row in `plugin_stats` per call (kernel-instrumented at the
+/// Call boundary). Use this from CLI runtime paths so every orchestration is
+/// host-measured.
+///
+/// `policy_name` is included in the Call payload per spec (useful for stats
+/// attribution and future cross-cutting features); the current orchestrator
+/// implementation doesn't read it.
+///
+/// # Errors
+/// - Capability not claimed (bootstrap bug): error names the missing capability.
+/// - Plugin returned the wrong `CallResponse` variant: hard error naming the
+///   variant returned. Cannot happen with the in-tree `PhaseOrchestratorPlugin`
+///   but is checked because a future WASM plugin could violate this.
+/// - Plugin's `on_call` returned `Err`: propagated.
+/// - Plugin panicked: caught at the kernel boundary, returned as `Err`.
+pub fn orchestrate(
+    kernel: &Kernel,
+    plans: Vec<voom_domain::plan::Plan>,
+    policy_name: String,
+) -> Result<voom_phase_orchestrator::OrchestrationResult> {
+    let call = Call::Orchestrate { plans, policy_name };
+    let query = CapabilityQuery::Exclusive {
+        kind: Capability::OrchestratePhases.kind().to_string(),
+    };
+    let response = kernel
+        .dispatch_to_capability(query, call)
+        .map_err(anyhow::Error::new)?;
+    match response {
+        CallResponse::Orchestrate(result) => Ok(result),
+        other => Err(anyhow!(
+            "orchestrate dispatch returned wrong CallResponse variant: {other:?}"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +208,59 @@ mod tests {
         assert!(
             chain.contains("EvaluatePolicy")
                 || chain.contains("evaluate_policy")
+                || chain.contains("no handler"),
+            "error must name the missing capability or 'no handler'; got: {chain}"
+        );
+    }
+
+    fn kernel_with_orchestrator() -> voom_kernel::Kernel {
+        let mut kernel = voom_kernel::Kernel::new();
+        let ctx = voom_kernel::PluginContext::new(serde_json::json!({}), std::env::temp_dir());
+        kernel
+            .init_and_register(
+                std::sync::Arc::new(
+                    voom_phase_orchestrator::PhaseOrchestratorPlugin::for_bootstrap(),
+                ),
+                37,
+                &ctx,
+            )
+            .expect("init_and_register phase-orchestrator");
+        kernel
+    }
+
+    #[test]
+    fn orchestrate_returns_result_for_single_phase_policy() {
+        let kernel = kernel_with_orchestrator();
+        let policy =
+            voom_dsl::compile_policy(r#"policy "demo" { phase init { container mkv } }"#).unwrap();
+        let file = voom_domain::media::MediaFile::new(std::path::PathBuf::from("/movies/test.mkv"));
+        let plans = voom_policy_evaluator::evaluator::evaluate(&policy, &file).plans;
+
+        let result =
+            orchestrate(&kernel, plans, "demo".into()).expect("orchestrate should succeed");
+        assert_eq!(result.plans.len(), 1);
+        assert_eq!(result.plans[0].phase_name, "init");
+    }
+
+    #[test]
+    fn orchestrate_with_empty_plans_returns_empty_result() {
+        let kernel = kernel_with_orchestrator();
+        let result =
+            orchestrate(&kernel, vec![], "demo".into()).expect("orchestrate should succeed");
+        assert!(result.plans.is_empty());
+        assert!(result.phase_results.is_empty());
+        assert!(!result.file_modified);
+    }
+
+    #[test]
+    fn orchestrate_without_orchestrator_registered_is_hard_error() {
+        let kernel = voom_kernel::Kernel::new();
+        let err = orchestrate(&kernel, vec![], "demo".into())
+            .expect_err("dispatch without a handler must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("OrchestratePhases")
+                || chain.contains("orchestrate_phases")
                 || chain.contains("no handler"),
             "error must name the missing capability or 'no handler'; got: {chain}"
         );
