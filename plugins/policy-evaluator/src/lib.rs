@@ -8,6 +8,9 @@ pub mod condition;
 pub mod container_compat;
 pub mod evaluator;
 pub mod filter;
+pub mod plugin;
+
+pub use plugin::PolicyEvaluatorPlugin;
 
 use std::collections::HashMap;
 

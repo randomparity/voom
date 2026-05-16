@@ -4000,6 +4000,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "insta",
+ "parking_lot",
  "proptest",
  "serde",
  "serde_json",
@@ -4007,6 +4008,7 @@ dependencies = [
  "uuid",
  "voom-domain",
  "voom-dsl",
+ "voom-kernel",
 ]
 
 [[package]]
