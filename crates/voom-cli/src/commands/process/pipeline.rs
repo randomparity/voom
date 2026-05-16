@@ -708,6 +708,8 @@ fn preserve_persisted_file_identity(
 /// Policy evaluation now flows through `kernel_invoke::evaluate` so the
 /// kernel's `dispatch_to_capability` instrumentation records a
 /// `plugin_stats` row for each dry-run invocation (#378 Phase 4).
+/// Phase orchestration now flows through `kernel_invoke::orchestrate` as
+/// well (#378 Phase 5).
 fn orchestrate_plans(
     kernel: &voom_kernel::Kernel,
     compiled: &voom_dsl::CompiledPolicy,
@@ -724,7 +726,8 @@ fn orchestrate_plans(
         Some(capabilities.clone()),
     )
     .map_err(|e| format!("evaluate dispatch failed (dry-run): {e:#}"))?;
-    Ok(voom_phase_orchestrator::orchestrate(result.plans))
+    crate::kernel_invoke::orchestrate(kernel, result.plans, compiled.name.clone())
+        .map_err(|e| format!("orchestrate dispatch failed (dry-run): {e:#}"))
 }
 
 /// Determine the file path after plan execution.
@@ -933,6 +936,24 @@ mod tests {
             .expect("register PolicyEvaluatorPlugin for dispatch_to_capability");
     }
 
+    /// Test-only helper: register the phase-orchestrator plugin on a fresh kernel
+    /// so `Kernel::dispatch_to_capability(Exclusive { kind: "orchestrate_phases" }, ...)`
+    /// resolves. Mirrors the bootstrap registration at `app.rs::PRIORITY_PHASE_ORCHESTRATOR`
+    /// — keep the priority in sync if that constant ever changes.
+    fn register_phase_orchestrator(kernel: &mut voom_kernel::Kernel) {
+        let plugin_ctx =
+            voom_kernel::PluginContext::new(serde_json::json!({}), std::env::temp_dir());
+        kernel
+            .init_and_register(
+                std::sync::Arc::new(
+                    voom_phase_orchestrator::PhaseOrchestratorPlugin::for_bootstrap(),
+                ),
+                37,
+                &plugin_ctx,
+            )
+            .expect("register PhaseOrchestratorPlugin for dispatch_to_capability");
+    }
+
     struct RecordingExecutor {
         entered_tx: mpsc::Sender<()>,
     }
@@ -1128,6 +1149,7 @@ mod tests {
         let store = Arc::new(voom_domain::test_support::InMemoryStore::new());
         let mut kernel = voom_kernel::Kernel::new();
         register_policy_evaluator(&mut kernel);
+        register_phase_orchestrator(&mut kernel);
         let ctx = fixture.make_ctx(Arc::new(kernel), store.clone());
         let path = fixture.dir_path().join("movie.mkv");
         let mut file = h264_file(path);
@@ -1257,6 +1279,7 @@ mod tests {
 
         let mut kernel = voom_kernel::Kernel::new();
         register_policy_evaluator(&mut kernel);
+        register_phase_orchestrator(&mut kernel);
         kernel
             .register_plugin(Arc::new(FailingExecutor), 50)
             .unwrap();
@@ -1299,6 +1322,7 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let mut kernel = voom_kernel::Kernel::new();
         register_policy_evaluator(&mut kernel);
+        register_phase_orchestrator(&mut kernel);
         kernel
             .register_plugin(Arc::new(RecordingExecutor { entered_tx }), 50)
             .unwrap();
@@ -1353,6 +1377,7 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let mut kernel = voom_kernel::Kernel::new();
         register_policy_evaluator(&mut kernel);
+        register_phase_orchestrator(&mut kernel);
         kernel
             .register_plugin(Arc::new(RecordingExecutor { entered_tx }), 50)
             .unwrap();
@@ -1402,6 +1427,7 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let mut kernel = voom_kernel::Kernel::new();
         register_policy_evaluator(&mut kernel);
+        register_phase_orchestrator(&mut kernel);
         kernel
             .register_plugin(Arc::new(RecordingExecutor { entered_tx }), 50)
             .unwrap();
