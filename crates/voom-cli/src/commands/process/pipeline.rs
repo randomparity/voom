@@ -226,10 +226,56 @@ fn include_in_plan_only_output(plan: &voom_domain::plan::Plan) -> bool {
 ///
 /// After each phase executes successfully, the file is re-introspected so
 /// that subsequent phases see the updated path, container, and tracks.
+/// Real execution: evaluate → execute → re-introspect per phase.
+///
+/// Splits responsibilities between an inner async fn that runs the per-phase
+/// execution loop and this outer wrapper that always finalizes the file with
+/// a `phase-orchestrator` Call dispatch. The orchestrator dispatch is
+/// non-fatal (logged on error, never propagated): observability must not turn
+/// successful file mutations into errors for the caller (PR #378 / Phase 5).
 async fn process_single_file_execute(
     file: &voom_domain::media::MediaFile,
     compiled: &voom_dsl::CompiledPolicy,
     ctx: &ProcessContext<'_>,
+) -> std::result::Result<Option<serde_json::Value>, String> {
+    let mut all_plans: Vec<voom_domain::plan::Plan> = Vec::new();
+    let inner_result = process_single_file_execute_inner(file, compiled, ctx, &mut all_plans).await;
+    // Always invoke the orchestrator after the inner returns — Ok, Err via ?,
+    // or explicit return. This is the kernel-instrumented call that produces
+    // the phase-orchestrator plugin_stats row for every file processed.
+    // Non-fatal: orchestrator dispatch errors are logged, not propagated.
+    invoke_orchestrator_observability(ctx, compiled, all_plans);
+    inner_result
+}
+
+/// Non-fatal finalization: invoke the orchestrator for stats attribution +
+/// per-file orchestration boundary. Errors from the kernel dispatch are
+/// logged via `tracing::warn!` and not propagated — this call's role is
+/// observability, and a missing-handler / wrong-response / panicking-plugin
+/// failure should never turn a successful file mutation into an error for
+/// the caller. `verify_registration_invariants` at bootstrap (Phase 1)
+/// already prevents "no handler for OrchestratePhases" since the capability
+/// is Exclusive; the runtime non-propagation is defense in depth.
+fn invoke_orchestrator_observability(
+    ctx: &ProcessContext<'_>,
+    compiled: &voom_dsl::CompiledPolicy,
+    all_plans: Vec<voom_domain::plan::Plan>,
+) {
+    if let Err(e) = crate::kernel_invoke::orchestrate(&ctx.kernel, all_plans, compiled.name.clone())
+    {
+        tracing::warn!(
+            policy = %compiled.name,
+            error = %e,
+            "phase-orchestrator dispatch failed at end-of-file; plugin_stats row may be missing for this file"
+        );
+    }
+}
+
+async fn process_single_file_execute_inner(
+    file: &voom_domain::media::MediaFile,
+    compiled: &voom_dsl::CompiledPolicy,
+    ctx: &ProcessContext<'_>,
+    all_plans: &mut Vec<voom_domain::plan::Plan>,
 ) -> std::result::Result<Option<serde_json::Value>, String> {
     let file_path_str = file.path.display().to_string();
     let keep_backups = compiled.config.keep_backups;
@@ -268,6 +314,7 @@ async fn process_single_file_execute(
         let mut plan = plan
             .with_session_id(ctx.counters.session_id)
             .with_scan_session(ctx.scan_session);
+        all_plans.push(plan.clone());
 
         plans_evaluated += 1;
 
