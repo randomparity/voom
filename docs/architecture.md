@@ -308,10 +308,13 @@ Each `Capability` variant declares its resolution discipline via
   fails with a duplicate-claim error if two plugins both declare the same
   Exclusive capability. Used by `EvaluatePolicy`, `OrchestratePhases`, and
   `ScanLibrary`. The kernel routes the call to the single claimant.
-- **Sharded** — multiple plugins claim disjoint shards (e.g. one executor per
-  codec family). The kernel routes on a shard key the caller supplies.
-- **Shared** — any plugin may claim; the caller picks one explicitly (rare;
-  reserved for future use).
+- **Sharded** — multiple plugins claim disjoint shards (e.g. one Discover
+  plugin per URI scheme). Registration fails if a new claim collides on
+  the same shard key. The kernel routes on a shard key the caller supplies.
+- **Competing** — multiple plugins may claim the same capability without a
+  uniqueness check; the kernel picks one at dispatch time using priority
+  ordering (the same model used by the legacy `EventResult.claimed`
+  executor path).
 
 A plugin claims one or more capabilities by returning them from
 `Plugin::capabilities()`. The trait returns `&[Capability]`, so plugins

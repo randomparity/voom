@@ -42,8 +42,11 @@ impl Plugin for MyEvaluator {
 Return one or more `Capability` values from `Plugin::capabilities()`.
 The trait returns `&[Capability]`, so plugins typically store the claim
 list in a field set up by `new()`. Each capability has a resolution
-discipline (`Exclusive`, `Sharded`, or `Shared`); claiming an Exclusive
-capability that another plugin already claims is a registration error.
+discipline (`Exclusive`, `Sharded`, or `Competing` — see
+`voom_domain::capability_resolution::CapabilityResolution`); claiming an
+Exclusive capability that another plugin already claims is a
+registration error, and claiming a Sharded capability whose shard key
+collides with an existing claim is likewise rejected.
 
 ```rust
 pub struct MyEvaluator {
