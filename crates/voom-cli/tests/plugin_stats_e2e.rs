@@ -378,3 +378,130 @@ async fn process_dry_run_populates_policy_evaluator_stats_row() {
          (#378 Phase 4). Got {evaluator_count} rows."
     );
 }
+
+// ─── Phase 6 acceptance: full kernel-registered coverage ─────────────────────
+
+/// Copy the bundled `distorted.mkv` fixture (a real, ffprobe-readable Matroska
+/// file under 16 KiB) into the given destination. Used by Phase 6 acceptance
+/// tests that need introspection to succeed so the dry-run pipeline reaches
+/// `kernel_invoke::orchestrate` and produces a `phase-orchestrator` row.
+fn copy_real_mkv_fixture(dest: &std::path::Path) {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = std::path::Path::new(manifest_dir)
+        .join("../../plugins/ffmpeg-executor/tests/fixtures/vmaf/distorted.mkv");
+    let src = src
+        .canonicalize()
+        .unwrap_or_else(|e| panic!("canonicalize {}: {e}", src.display()));
+    std::fs::copy(&src, dest).unwrap_or_else(|e| {
+        panic!(
+            "copy real mkv fixture {} -> {}: {e}",
+            src.display(),
+            dest.display()
+        )
+    });
+}
+
+/// After rev-6, every kernel-registered plugin invoked by `voom process`
+/// produces at least one `plugin_stats` row. This pins the closed coverage
+/// gap (#378) so it can't quietly re-open: `discovery`, `policy-evaluator`,
+/// and `phase-orchestrator` all flow through `dispatch_to_capability`, which
+/// records one `PluginStatRecord` per call. The `phase-orchestrator` row in
+/// particular requires introspection to succeed (it only subscribes to no
+/// events, so its only entry point is `on_call(Call::Orchestrate)`), so the
+/// test uses the bundled real-Matroska fixture rather than synthetic bytes.
+#[tokio::test]
+async fn process_records_stats_rows_for_discovery_evaluator_orchestrator() {
+    let _lock = TEST_LOCK.lock().await;
+    let mut env = TestEnv::new().await;
+
+    env.set_policy(
+        r#"policy "phase6-coverage-fixture" {
+            phase init { container mkv }
+        }"#,
+    );
+    copy_real_mkv_fixture(&env.root().join("clip.mkv"));
+
+    let policy_path = env
+        .policy_path()
+        .to_str()
+        .expect("utf-8 policy path")
+        .to_string();
+    let root = env.root().to_str().expect("utf-8 root").to_string();
+
+    let _outcome = env
+        .run_process(&[&root, "--policy", &policy_path, "--dry-run", "--no-backup"])
+        .await;
+
+    // Allow the SqliteStatsSink writer thread to flush batched rows.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    let db_path = env.db_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .unwrap_or_else(|e| panic!("open {}: {e}", db_path.display()));
+    let names_seen: Vec<String> = conn
+        .prepare("SELECT DISTINCT plugin_id FROM plugin_stats")
+        .expect("prepare distinct plugin_id query")
+        .query_map([], |row| row.get(0))
+        .expect("execute distinct plugin_id query")
+        .map(|r| r.expect("read plugin_id row"))
+        .collect();
+
+    for required in ["discovery", "policy-evaluator", "phase-orchestrator"] {
+        assert!(
+            names_seen.iter().any(|n| n == required),
+            "plugin_stats must include row for {required} after `voom process`; \
+             saw plugin_ids: {names_seen:?} (#378 Phase 6)"
+        );
+    }
+}
+
+/// Call dispatches are RPC, not broadcast — they must not show up in
+/// `event_log`. This guards against an accidental `kernel.dispatch()`
+/// emission from inside a plugin's `on_call` path: the kernel maps `Call`
+/// variants to `call.<variant>` strings only as a debug formatting aid, and
+/// none of those strings should ever survive into `event_log`.
+#[tokio::test]
+async fn event_log_contains_no_call_payloads_after_process() {
+    let _lock = TEST_LOCK.lock().await;
+    let mut env = TestEnv::new().await;
+
+    env.set_policy(
+        r#"policy "phase6-event-log-fixture" {
+            phase init { container mkv }
+        }"#,
+    );
+    env.write_media("clip.mkv", 32);
+
+    let policy_path = env
+        .policy_path()
+        .to_str()
+        .expect("utf-8 policy path")
+        .to_string();
+    let root = env.root().to_str().expect("utf-8 root").to_string();
+
+    let _outcome = env
+        .run_process(&[&root, "--policy", &policy_path, "--dry-run", "--no-backup"])
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    let db_path = env.db_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .unwrap_or_else(|e| panic!("open {}: {e}", db_path.display()));
+    let call_event_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM event_log
+             WHERE event_type LIKE 'call.%'
+                OR payload LIKE '%\"call.evaluate_policy\"%'
+                OR payload LIKE '%\"call.orchestrate\"%'
+                OR payload LIKE '%\"call.scan_library\"%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count call-shaped event_log rows");
+    assert_eq!(
+        call_event_count, 0,
+        "Call dispatches must never appear in event_log; found \
+         {call_event_count} call-shaped rows (#378 Phase 6)"
+    );
+}
