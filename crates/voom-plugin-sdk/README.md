@@ -1,54 +1,35 @@
 # voom-plugin-sdk
 
-SDK for authoring VOOM plugins — both native (Rust) and WASM (any
-language with a WIT-capable toolchain). Covers the rev-6 plugin contract
-(#378).
+Helpers for authoring VOOM **WASM** plugins. This crate intentionally
+does not depend on `voom-kernel` — it ships only the types, ABI helpers,
+and host shims a `wasm32-wasip1` guest needs.
 
-## Implementing `on_call`
+VOOM also supports **native** plugins (Rust crates compiled into the
+binary that implement `voom_kernel::Plugin` directly). Native plugins
+do not use this SDK; they depend on `voom-kernel` and `voom-domain`
+instead. See the "Native plugins" section below for the contract surface
+and `docs/plugin-development.md` for the full walkthrough.
 
-`Plugin::on_call` handles unary and streaming RPCs the kernel routes to
-your plugin via `dispatch_to_capability`. The trait takes `&Call` (the
-kernel keeps ownership for stats accounting) and returns
-`voom_domain::errors::Result<CallResponse>`. The `Call` enum is
-`#[non_exhaustive]`; match the variant you handle with a `let ... else`
-guard and reject the rest with an explicit error:
+Both tiers participate in the same rev-6 plugin contract (#378):
+capability claims, unary and streaming Calls routed via
+`Kernel::dispatch_to_capability`, and instrumented `plugin_stats`
+records.
+
+## Native plugins (compiled into the binary)
+
+`Cargo.toml` dependencies: `voom-kernel`, `voom-domain`. Not
+`voom-plugin-sdk`.
+
+Plugins implement `voom_kernel::Plugin` and override `on_call` to handle
+unary or streaming Calls the kernel routes via
+`Kernel::dispatch_to_capability`:
 
 ```rust
 use voom_domain::call::{Call, CallResponse};
+use voom_domain::capabilities::Capability;
 use voom_domain::errors::{Result, VoomError};
+use voom_kernel::Plugin;
 
-impl Plugin for MyEvaluator {
-    fn on_call(&self, call: &Call) -> Result<CallResponse> {
-        let Call::EvaluatePolicy { policy, file, .. } = call else {
-            return Err(VoomError::plugin(
-                self.name(),
-                format!(
-                    "{} only handles Call::EvaluatePolicy, got {:?}",
-                    self.name(),
-                    std::mem::discriminant(call)
-                ),
-            ));
-        };
-        // `policy` and `file` are `&Box<...>` — deref coercion lets them
-        // flow into helpers that take `&CompiledPolicy` / `&MediaFile`.
-        let result = self.evaluate(policy, file)?;
-        Ok(CallResponse::EvaluatePolicy(result))
-    }
-}
-```
-
-## Claiming a capability
-
-Return one or more `Capability` values from `Plugin::capabilities()`.
-The trait returns `&[Capability]`, so plugins typically store the claim
-list in a field set up by `new()`. Each capability has a resolution
-discipline (`Exclusive`, `Sharded`, or `Competing` — see
-`voom_domain::capability_resolution::CapabilityResolution`); claiming an
-Exclusive capability that another plugin already claims is a
-registration error, and claiming a Sharded capability whose shard key
-collides with an existing claim is likewise rejected.
-
-```rust
 pub struct MyEvaluator {
     capabilities: Vec<Capability>,
 }
@@ -56,68 +37,128 @@ pub struct MyEvaluator {
 impl MyEvaluator {
     pub fn new() -> Self {
         Self {
-            capabilities: vec![Capability::EvaluatePolicy],   // Exclusive
+            capabilities: vec![Capability::EvaluatePolicy], // Exclusive
         }
     }
 }
 
 impl Plugin for MyEvaluator {
-    fn capabilities(&self) -> &[Capability] {
-        &self.capabilities
+    fn name(&self) -> &str { "my-evaluator" }
+    fn version(&self) -> &str { "0.1.0" }
+    fn capabilities(&self) -> &[Capability] { &self.capabilities }
+
+    fn on_call(&self, call: &Call) -> Result<CallResponse> {
+        let Call::EvaluatePolicy { policy, file, .. } = call else {
+            return Err(VoomError::plugin(
+                self.name(),
+                format!(
+                    "{} only handles Call::EvaluatePolicy, got {:?}",
+                    self.name(),
+                    std::mem::discriminant(call),
+                ),
+            ));
+        };
+        // `policy` and `file` are `&Box<...>`; deref coercion lets them
+        // flow into helpers that take `&CompiledPolicy` / `&MediaFile`.
+        let result = self.evaluate(policy, file)?;
+        Ok(CallResponse::EvaluatePolicy(result))
     }
 }
 ```
 
-The kernel routes `Call::EvaluatePolicy` to the single plugin claiming
-`Capability::EvaluatePolicy`. To take over the capability in a custom
-build, disable the default plugin via `disabled_plugins` in `config.toml`
-and register your own.
+### Streaming Calls (native)
 
-## Streaming Calls
+Streaming-Call variants of `Call` (e.g. `Call::ScanLibrary`) carry a
+`tokio::sync::mpsc::Sender<T>` plus a `CancellationToken`. Because
+`on_call` takes `&Call`, the destructured fields are references; the
+plugin emits items through `sink.blocking_send(...)` and observes
+cancellation via `cancel.is_cancelled()`. See `docs/architecture.md`
+("Communication primitives — Events vs Calls") for a full example.
 
-A streaming Call is a `Call` variant whose payload contains a
-`tokio::sync::mpsc::Sender<T>`. The plugin sends items through the sender
-while running; the host consumes from the matching receiver. Backpressure
-is the channel's natural backpressure — a saturated consumer blocks the
-plugin's `blocking_send`.
+## WASM plugins
 
-Because `on_call` receives `&Call`, the destructured fields are
-references: `sink: &Sender<...>`, `cancel: &CancellationToken`, and
-`root_done: &Option<Sender<...>>`. Calling `sink.blocking_send(...)` and
-`cancel.is_cancelled()` works directly through the references.
+`Cargo.toml` dependencies: `voom-plugin-sdk`, `wit-bindgen`. WIT files
+live in `crates/voom-wit/wit/`.
+
+WASM plugins do not implement `voom_kernel::Plugin`. They implement the
+WIT-generated `Guest` trait and decode/encode the WASM-safe mirror of
+`Call` (`WasmCall`) at the `on-call` boundary. `WasmCall` omits the
+non-serde fields (`sink`, `root_done`, `cancel`) — those are host-only;
+streaming emission goes through host imports.
 
 ```rust
-let Call::ScanLibrary {
-    uri,
-    options,
-    sink,           // &mpsc::Sender<FileDiscoveredEvent>
-    root_done,      // &Option<mpsc::Sender<RootWalkCompletedEvent>>
-    cancel,         // &CancellationToken — observe between sends
-    ..
-} = call else {
-    return Err(VoomError::plugin(self.name(), "expected ScanLibrary"));
+use voom_plugin_sdk::{
+    WasmCall, CallResponse,
+    decode_call, encode_response,
 };
-for entry in walk(uri, options) {
-    if cancel.is_cancelled() { break; }
-    sink.blocking_send(make_event(entry))
-        .map_err(|e| VoomError::plugin(self.name(), e.to_string()))?;
+
+wit_bindgen::generate!({
+    world: "voom-plugin",
+    path: "path/to/voom-wit/wit",
+});
+
+struct MyPlugin;
+
+impl Guest for MyPlugin {
+    fn on_call(call_bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+        let call = decode_call(&call_bytes)?;
+        let response = match call {
+            WasmCall::EvaluatePolicy { policy, file, .. } => {
+                let result = evaluate(&policy, &file)
+                    .map_err(|e| e.to_string())?;
+                CallResponse::EvaluatePolicy(result)
+            }
+            other => return Err(format!("unhandled WasmCall: {other:?}")),
+        };
+        encode_response(&response)
+    }
 }
-// `root_done` is optional; emit a completion event through it if the
-// host wired one up (e.g. so the per-root execution gate can open).
-if let Some(_rd) = root_done {
-    // build the appropriate RootWalkCompletedEvent for your scan and
-    // send it through `_rd.blocking_send(...)`.
-}
-Ok(CallResponse::ScanLibrary(summary))
+
+export!(MyPlugin);
 ```
 
-WASM plugins use the host import `emit-call-item` (defined in
-`crates/voom-wit/wit/host.wit`) to push items; cancellation is observed
-via `call-is-cancelled`.
+### Streaming Calls (WASM)
+
+For streaming variants (`WasmCall::ScanLibrary` today), emit items
+through host imports rather than `mpsc::Sender` fields. The SDK exposes
+typed wrappers:
+
+```rust
+use voom_plugin_sdk::{emit_file_discovered, is_cancelled};
+use voom_plugin_sdk::host::HostFunctions;
+
+fn scan(host: &dyn HostFunctions, uri: &str) -> Result<(), String> {
+    for entry in walk(uri) {
+        if is_cancelled(host) { break; }
+        emit_file_discovered(host, &entry.into())?;
+    }
+    Ok(())
+}
+```
+
+The underlying WIT contract — `on-call`, `emit-call-item`,
+`emit-root-walk-completed`, `call-is-cancelled` — is defined in
+`crates/voom-wit/wit/host.wit` and `crates/voom-wit/wit/plugin.wit`.
+
+## Capabilities
+
+Both tiers claim capabilities via the same `voom_domain::capabilities::Capability`
+enum:
+
+- **Native** — return them from `Plugin::capabilities() -> &[Capability]`.
+- **WASM** — list them in the `PluginInfo` returned by `Guest::get_info()`.
+
+Each capability has a resolution discipline
+(`voom_domain::capability_resolution::CapabilityResolution`): `Exclusive`
+(at most one claimant), `Sharded` (disjoint per-key claimants), or
+`Competing` (kernel picks at dispatch time by priority). Claiming an
+Exclusive capability that another plugin already claims is a
+registration error; Sharded capabilities reject colliding shard keys.
 
 ## See also
 
-- `docs/architecture.md` — Communication primitives & Capability-based
-  routing.
+- `docs/plugin-development.md` — full two-tier authoring walkthrough.
+- `docs/architecture.md` — communication primitives, capability-based
+  routing, and stats-sink instrumentation.
 - `docs/superpowers/specs/2026-05-14-plugin-stats-self-reporting-design.md`
-  — design rationale.
+  — rev-6 design rationale.
