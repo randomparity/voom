@@ -45,7 +45,7 @@ def text_for_result(raw: str) -> tuple[dict[str, Any], str]:
     detail = parsed.get("detail") or {}
     parts = [
         str(parsed.get("error") or ""),
-        str(detail.get("stderr_tail") or ""),
+        str(detail.get("stderr_full") or detail.get("stderr_tail") or ""),
         str(detail.get("command") or ""),
     ]
     return parsed, "\n".join(parts)

@@ -368,6 +368,7 @@ impl MkvtoolnixExecutorPlugin {
                     exit_code: o.status.code(),
                     // exit code 1 = mkvmerge warnings; capture stderr for diagnostics
                     stderr_tail: voom_process::stderr_tail(&o.stderr, 20),
+                    stderr_full: None,
                     duration_ms,
                 };
                 Ok(vec![
@@ -392,6 +393,7 @@ impl MkvtoolnixExecutorPlugin {
                     command: command_str,
                     exit_code: o.status.code(),
                     stderr_tail: tail,
+                    stderr_full: None,
                     duration_ms,
                 };
                 Ok(vec![

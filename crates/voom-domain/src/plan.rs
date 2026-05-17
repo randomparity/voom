@@ -1297,6 +1297,12 @@ pub struct ExecutionDetail {
     /// Last N non-empty lines of stderr. Populated on failure and on
     /// mkvmerge warnings (exit code 1). Empty on clean success.
     pub stderr_tail: String,
+    /// Full stderr captured from a failed executor invocation.
+    ///
+    /// This is intentionally optional so existing persisted plan results and
+    /// non-ffmpeg executors can continue to provide only `stderr_tail`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr_full: Option<String>,
     /// Wall-clock execution time in milliseconds.
     pub duration_ms: u64,
 }
@@ -1401,6 +1407,24 @@ mod tests {
         assert_eq!(deserialized.policy_name, "default");
         assert_eq!(deserialized.actions.len(), 1);
         assert_eq!(deserialized.actions[0].operation, OperationType::SetDefault);
+    }
+
+    #[test]
+    fn execution_detail_deserializes_legacy_json_without_stderr_full() {
+        let json = r#"{
+            "command": "ffmpeg -i in.mkv out.mkv",
+            "exit_code": 1,
+            "stderr_tail": "Conversion failed",
+            "duration_ms": 42
+        }"#;
+
+        let detail: ExecutionDetail = serde_json::from_str(json).unwrap();
+
+        assert_eq!(detail.command, "ffmpeg -i in.mkv out.mkv");
+        assert_eq!(detail.exit_code, Some(1));
+        assert_eq!(detail.stderr_tail, "Conversion failed");
+        assert_eq!(detail.stderr_full, None);
+        assert_eq!(detail.duration_ms, 42);
     }
 
     #[test]
