@@ -563,10 +563,20 @@ mod tests {
         file
     }
 
+    // There is no `test_handles` here: the kernel never invokes
+    // Guest::handles for WASM plugins. The per-event filter is the
+    // manifest's `handles_events` list. Test what your on_event
+    // actually does with each event type instead.
+
     #[test]
-    fn test_handles() {
-        assert!(handles("file.introspected"));
-        assert!(!handles("plan.created"));
+    fn test_on_event_ignores_unsubscribed_event_type() {
+        let event = Event::PlanCreated(/* …minimal fixture… */);
+        let payload = serialize_event(&event).unwrap();
+        let result = MyWasmPlugin::on_event(EventData {
+            event_type: event.event_type().to_string(),
+            payload,
+        });
+        assert!(result.is_none(), "plan.created is not in handles_events");
     }
 
     #[test]
@@ -761,7 +771,7 @@ For the WASM boundary, capabilities are encoded as colon-separated strings:
 
 5. **Test without WASM** — Write your plugin logic as regular Rust functions and test them with standard `#[test]`. Only the WIT bindings require the WASM target.
 
-6. **Keep manifests accurate** — The manifest's `handles_events` must match what your `handles()` function returns. The manifest is read before the plugin is loaded.
+6. **Keep manifests accurate** — For WASM plugins, the manifest's `handles_events` is what the host uses to filter event dispatch (the WIT `handles` export is not invoked). List every event type your `on_event` actually consumes; an event missing from `handles_events` will never reach your plugin. For native plugins, the kernel calls `Plugin::handles` directly, so the trait method is authoritative.
 
 7. **WASM plugins are sandboxed** — You cannot access the filesystem, network, or environment directly. All external access goes through host functions.
 
