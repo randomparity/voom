@@ -51,6 +51,11 @@ const PRIORITY_CAPABILITY_COLLECTOR: i32 = 35;
 // matters for in-process consumers within the same dispatch, and the policy
 // evaluator caches independently.
 const PRIORITY_POLICY_EVALUATOR: i32 = 36;
+// Phase orchestrator — Exclusive single-handler plugin (claims
+// Capability::OrchestratePhases). Stateless: subscribes to no events, so the
+// priority value is only used by the unused bus-dispatch ordering. Slotted
+// next to the evaluator (37) for natural grouping (PR #378 / Phase 5).
+const PRIORITY_PHASE_ORCHESTRATOR: i32 = 37;
 // Backup manager dispatches before executors (30 < 39/40) so the source
 // file is backed up before any executor mutates it.
 const PRIORITY_BACKUP_MANAGER: i32 = 30;
@@ -276,6 +281,16 @@ pub fn bootstrap_kernel_with_store(config: &AppConfig) -> Result<BootstrapResult
         voom_policy_evaluator::PolicyEvaluatorPlugin::for_bootstrap(),
         PRIORITY_POLICY_EVALUATOR,
         "policy evaluator"
+    );
+
+    // Phase orchestrator — claims Capability::OrchestratePhases. Stateless:
+    // on_call routes Call::Orchestrate to the existing free-function
+    // orchestrate(plans) surface (PR #378 / Phase 5).
+    register_if_enabled!(
+        "phase-orchestrator",
+        voom_phase_orchestrator::PhaseOrchestratorPlugin::for_bootstrap(),
+        PRIORITY_PHASE_ORCHESTRATOR,
+        "phase orchestrator"
     );
 
     // Executor — mkvtoolnix (MKV metadata, track removal/reorder, convert-to-MKV)

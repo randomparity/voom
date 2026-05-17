@@ -3977,9 +3977,11 @@ name = "voom-phase-orchestrator"
 version = "0.1.0"
 dependencies = [
  "insta",
+ "serde_json",
  "tracing",
  "voom-domain",
  "voom-dsl",
+ "voom-kernel",
  "voom-policy-evaluator",
 ]
 

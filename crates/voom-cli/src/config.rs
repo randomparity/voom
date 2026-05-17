@@ -336,6 +336,7 @@ pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
     "backup-manager",
     "job-manager",
     "policy-evaluator",
+    "phase-orchestrator",
     "report",
     "verifier",
 ];
@@ -348,12 +349,13 @@ pub const KNOWN_PLUGIN_NAMES: &[&str] = &[
 /// `disabled_plugins` in config.toml is an unrunnable configuration; we
 /// reject it at config load with an explicit error rather than failing at
 /// dispatch time with a less actionable "no handler" message.
-pub const REQUIRED_PLUGIN_NAMES: &[&str] = &["discovery", "policy-evaluator"];
+pub const REQUIRED_PLUGIN_NAMES: &[&str] = &["discovery", "policy-evaluator", "phase-orchestrator"];
 
 /// Generate a default config.toml with all options commented out and documented.
 pub fn default_config_contents() -> String {
     let data_dir = default_data_dir();
     let data_dir_str = data_dir.display();
+    let required_list = REQUIRED_PLUGIN_NAMES.join(", ");
 
     format!(
         r#"# VOOM configuration file
@@ -376,7 +378,7 @@ pub fn default_config_contents() -> String {
 # List of plugin names to disable at startup.
 # Optional plugins (safe to disable): sqlite-store, tool-detector,
 #   mkvtoolnix-executor, ffmpeg-executor, backup-manager, job-manager
-# Required plugins (cannot be disabled): discovery
+# Required plugins (cannot be disabled): {required_list}
 # disabled_plugins = ["mkvtoolnix-executor"]
 
 # Default policy file applied when no --policy or --policy-map flag is given.
@@ -634,7 +636,7 @@ mod tests {
 
     #[test]
     fn test_known_plugin_names_count() {
-        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 14);
+        assert_eq!(KNOWN_PLUGIN_NAMES.len(), 15);
     }
 
     #[test]
@@ -703,6 +705,25 @@ mod tests {
         assert!(contents.contains("[retention.event_log]"));
         assert!(contents.contains("[retention.file_transitions]"));
         assert!(contents.contains("[retention.plugin_stats]"));
+    }
+
+    #[test]
+    fn default_config_contents_lists_every_required_plugin() {
+        // The template's "Required plugins" comment must be derived from
+        // REQUIRED_PLUGIN_NAMES so it can never go stale when the
+        // required-list grows. Iterating the constant in the assertion
+        // guarantees the comment updates in lockstep with the constant.
+        let contents = default_config_contents();
+        let required_line = contents
+            .lines()
+            .find(|l| l.contains("Required plugins (cannot be disabled)"))
+            .expect("template must label the required-plugin list explicitly");
+        for name in REQUIRED_PLUGIN_NAMES {
+            assert!(
+                required_line.contains(name),
+                "required-plugin comment must mention {name}; got: {required_line}"
+            );
+        }
     }
 
     // ── load_config with temp files ──────────────────────────
