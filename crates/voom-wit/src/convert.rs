@@ -549,6 +549,7 @@ mod tests {
             command: "handbrake --input movie.mkv".to_string(),
             exit_code: Some(0),
             stderr_tail: String::new(),
+            stderr_full: Some("complete diagnostic stream".to_string()),
             duration_ms: 25,
         };
         let mut result = EventResult::plan_succeeded("executor", None);
@@ -559,7 +560,12 @@ mod tests {
 
         assert!(restored.claimed);
         assert_eq!(restored.execution_error, None);
-        assert_eq!(restored.execution_detail.unwrap().command, detail.command);
+        let restored_detail = restored.execution_detail.as_ref().unwrap();
+        assert_eq!(restored_detail.command, detail.command);
+        assert_eq!(restored_detail.exit_code, detail.exit_code);
+        assert_eq!(restored_detail.stderr_tail, detail.stderr_tail);
+        assert_eq!(restored_detail.stderr_full, detail.stderr_full);
+        assert_eq!(restored_detail.duration_ms, detail.duration_ms);
     }
 
     #[test]

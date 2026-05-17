@@ -193,6 +193,7 @@ fn execute_plan_with_runners(
                 command: command_str,
                 exit_code: Some(0),
                 stderr_tail: String::new(),
+                stderr_full: None,
                 duration_ms,
             };
             let action_results = actions
@@ -215,6 +216,7 @@ fn execute_plan_with_runners(
                 "ffmpeg failed"
             );
             let tail = voom_process::stderr_tail(&output.stderr, STDERR_TAIL_LINES);
+            let stderr_full = crate::capture_stderr_full(&output.stderr);
             let display_tail = if tail.is_empty() {
                 "(no output)"
             } else {
@@ -228,6 +230,7 @@ fn execute_plan_with_runners(
                 command: command_str,
                 exit_code: output.status.code(),
                 stderr_tail: tail,
+                stderr_full: Some(stderr_full),
                 duration_ms,
             };
             let action_results = vec![
@@ -1020,9 +1023,34 @@ mod tests {
         }
     }
 
+    struct FailingProcessRunner {
+        stderr: Vec<u8>,
+    }
+
+    impl ProcessRunner for FailingProcessRunner {
+        fn run(
+            &self,
+            _tool: &str,
+            _args: &[String],
+            _timeout: Duration,
+            _env_vars: &[(&str, &str)],
+        ) -> Result<Output> {
+            Ok(Output {
+                status: failure_status(),
+                stdout: Vec::new(),
+                stderr: self.stderr.clone(),
+            })
+        }
+    }
+
     #[cfg(unix)]
     fn success_status() -> ExitStatus {
         ExitStatus::from_raw(0)
+    }
+
+    #[cfg(unix)]
+    fn failure_status() -> ExitStatus {
+        ExitStatus::from_raw(1 << 8)
     }
 
     fn command_output_path(tool: &str, args: &[String]) -> Option<PathBuf> {
@@ -1257,6 +1285,42 @@ mod tests {
 
         let outcome = &prepared.outcomes[0];
         assert_eq!(outcome.target_vmaf, Some(88));
+    }
+
+    #[test]
+    fn ffmpeg_failures_preserve_full_stderr_alongside_tail() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let source_path = tmp.path().join("source.mp4");
+        fs::write(&source_path, b"input video").unwrap();
+
+        let mut plan = video_plan(TranscodeSettings::default());
+        plan.file.path = source_path;
+        let full_stderr = (0..=24)
+            .map(|i| format!("ffmpeg diagnostic line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let runner = FailingProcessRunner {
+            stderr: full_stderr.clone().into_bytes(),
+        };
+
+        let execution = execute_plan_with_runners(
+            &plan,
+            &HwAccelConfig::new(),
+            &SuccessfulVmafRunner,
+            &runner,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(execution.action_results.len(), 1);
+        assert!(!execution.action_results[0].success);
+        let detail = execution.action_results[0]
+            .execution_detail
+            .as_ref()
+            .expect("failed ffmpeg result should include execution detail");
+        assert_eq!(detail.stderr_full.as_deref(), Some(full_stderr.as_str()));
+        assert!(!detail.stderr_tail.contains("diagnostic line 0"));
+        assert!(detail.stderr_tail.contains("diagnostic line 24"));
     }
 
     #[test]

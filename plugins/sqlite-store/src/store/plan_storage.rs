@@ -438,6 +438,7 @@ mod tests {
             command: "ffmpeg -i in.mkv out.mkv".into(),
             exit_code: Some(1),
             stderr_tail: "codec not supported".into(),
+            stderr_full: Some("full stderr with codec not supported".into()),
             duration_ms: 1_234,
         };
         store
@@ -450,6 +451,10 @@ mod tests {
         assert_eq!(parsed["error"], "transcode failed");
         assert_eq!(parsed["detail"]["exit_code"], 1);
         assert_eq!(parsed["detail"]["duration_ms"], 1_234);
+        assert_eq!(
+            parsed["detail"]["stderr_full"],
+            "full stderr with codec not supported"
+        );
     }
 
     #[test]

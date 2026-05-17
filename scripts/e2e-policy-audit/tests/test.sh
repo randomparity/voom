@@ -571,7 +571,7 @@ run_failure_clusters_test() {
 
   cat >"${actual}/failed-plans.tsv" <<'EOF'
 plan_id	file_id	phase	result
-plan-1	file-1	transcode-video	{"detail":{"exit_code":187,"command":"ffmpeg -i '/lib/show/S01E01.mkv' out.mkv","stderr_tail":"cuCtxCreate failed -> CUDA_ERROR_OUT_OF_MEMORY: out of memory"},"error":"ffmpeg exited with exit status: 187"}
+plan-1	file-1	transcode-video	{"detail":{"exit_code":187,"command":"ffmpeg -i '/lib/show/S01E01.mkv' out.mkv","stderr_tail":"Conversion failed","stderr_full":"cuCtxCreate failed -> CUDA_ERROR_OUT_OF_MEMORY: out of memory\nConversion failed"},"error":"ffmpeg exited with exit status: 187"}
 plan-2	file-2	transcode-video	{"detail":null,"error":"storage error: failed to insert transcode outcome: FOREIGN KEY constraint failed"}
 EOF
 
@@ -595,7 +595,7 @@ EOF
 
   cat >"${actual}/expected-clusters.tsv" <<'EOF'
 phase	signature	exit_code	container	video_codec	count	top_resolution	sample_path	sample_plan_id	sample_error
-transcode-video	cuda-context-oom	187	mkv	h264	1	1920x1080	/lib/show/S01E01.mkv	plan-1	ffmpeg exited with exit status: 187 | cuCtxCreate failed -> CUDA_ERROR_OUT_OF_MEMORY: out of memory
+transcode-video	cuda-context-oom	187	mkv	h264	1	1920x1080	/lib/show/S01E01.mkv	plan-1	ffmpeg exited with exit status: 187 | cuCtxCreate failed -> CUDA_ERROR_OUT_OF_MEMORY: out of memory | Conversion failed
 transcode-video	storage-fk-transcode-outcome		mkv	mpeg4	1	640x480	/lib/show/S01E02.mkv	plan-2	storage error: failed to insert transcode outcome: FOREIGN KEY constraint failed
 EOF
 

@@ -50,6 +50,17 @@ struct FfmpegExecutorConfig {
 }
 
 const DEFAULT_NVENC_MAX_PARALLEL_PER_GPU: usize = 2;
+pub(crate) const STDERR_FULL_MAX_BYTES: usize = 1024 * 1024;
+
+pub(crate) fn capture_stderr_full(stderr: &[u8]) -> String {
+    if stderr.len() <= STDERR_FULL_MAX_BYTES {
+        return String::from_utf8_lossy(stderr).into_owned();
+    }
+
+    let mut captured = String::from_utf8_lossy(&stderr[..STDERR_FULL_MAX_BYTES]).into_owned();
+    captured.push_str("\n...[stderr truncated after 1048576 bytes]");
+    captured
+}
 
 fn positive_or_default(value: Option<usize>, default: usize) -> usize {
     match value {
@@ -430,6 +441,7 @@ impl FfmpegExecutorPlugin {
                     command: command_str,
                     exit_code: Some(0),
                     stderr_tail: String::new(),
+                    stderr_full: None,
                     duration_ms,
                 };
                 Ok(vec![
@@ -440,6 +452,7 @@ impl FfmpegExecutorPlugin {
             Ok(o) => {
                 let _ = std::fs::remove_file(&temp_path);
                 let tail = voom_process::stderr_tail(&o.stderr, 20);
+                let stderr_full = capture_stderr_full(&o.stderr);
                 let display_tail = if tail.is_empty() {
                     "(no output)"
                 } else {
@@ -455,6 +468,7 @@ impl FfmpegExecutorPlugin {
                     command: command_str,
                     exit_code: o.status.code(),
                     stderr_tail: tail,
+                    stderr_full: Some(stderr_full),
                     duration_ms,
                 };
                 Ok(vec![
@@ -722,6 +736,18 @@ mod tests {
         let mut plan = Plan::new(file, "test", "process");
         plan.actions = actions;
         plan
+    }
+
+    #[test]
+    fn capture_stderr_full_keeps_head_and_caps_size() {
+        let mut stderr = vec![b'a'; STDERR_FULL_MAX_BYTES + 32];
+        stderr[0..8].copy_from_slice(b"ROOT_OOM");
+
+        let captured = capture_stderr_full(&stderr);
+
+        assert!(captured.starts_with("ROOT_OOM"));
+        assert!(captured.contains("stderr truncated after 1048576 bytes"));
+        assert!(!captured.ends_with(&"a".repeat(32)));
     }
 
     #[test]

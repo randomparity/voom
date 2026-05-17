@@ -1238,6 +1238,7 @@ mod tests {
             command: "ffmpeg -i /test.mkv out.mkv".into(),
             exit_code: Some(1),
             stderr_tail: "Error opening input".into(),
+            stderr_full: Some("full stderr: Error opening input".into()),
             duration_ms: 1234,
         });
 
@@ -1247,6 +1248,10 @@ mod tests {
         let detail = restored.execution_detail.unwrap();
         assert_eq!(detail.exit_code, Some(1));
         assert_eq!(detail.stderr_tail, "Error opening input");
+        assert_eq!(
+            detail.stderr_full.as_deref(),
+            Some("full stderr: Error opening input")
+        );
         assert_eq!(detail.duration_ms, 1234);
     }
 

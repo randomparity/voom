@@ -101,6 +101,7 @@ pub fn execute_merge_actions(
             exit_code: output.status.code(),
             // exit code 1 = mkvmerge warnings; capture stderr for diagnostics
             stderr_tail: voom_process::stderr_tail(&output.stderr, 20),
+            stderr_full: None,
             duration_ms,
         };
         Ok(actions
@@ -127,6 +128,7 @@ pub fn execute_merge_actions(
             command: command_str,
             exit_code: output.status.code(),
             stderr_tail: tail,
+            stderr_full: None,
             duration_ms,
         };
         Ok(vec![
