@@ -237,8 +237,11 @@ the matching `Capability`. The caller gets exactly one `CallResponse` (or an
 error). Best for "I need *the* policy evaluator to evaluate this file":
 
 ```rust
+let query = CapabilityQuery::Exclusive {
+    kind: Capability::EvaluatePolicy.kind().to_string(),
+};
 let response = kernel.dispatch_to_capability(
-    CapabilityQuery::Single(Capability::EvaluatePolicy),
+    query,
     Call::EvaluatePolicy {
         policy: Box::new(compiled),
         file: Box::new(media_file),
@@ -251,18 +254,24 @@ let response = kernel.dispatch_to_capability(
 let CallResponse::EvaluatePolicy(eval_result) = response else { unreachable!() };
 ```
 
-Implemented in the plugin via `on_call`:
+Implemented in the plugin via `on_call`. `Plugin::on_call` takes `&Call`, so
+the destructured variant fields are references; deref coercion lets them flow
+into functions that take `&CompiledPolicy` / `&MediaFile`:
 
 ```rust
 impl Plugin for PolicyEvaluatorPlugin {
-    fn on_call(&self, call: Call) -> Result<CallResponse> {
-        match call {
-            Call::EvaluatePolicy { policy, file, .. } => {
-                let result = self.evaluate(*policy, *file)?;
-                Ok(CallResponse::EvaluatePolicy(result))
-            }
-            other => bail!("policy-evaluator does not handle {:?}", call_kind(&other)),
-        }
+    fn on_call(&self, call: &Call) -> voom_domain::errors::Result<CallResponse> {
+        let Call::EvaluatePolicy { policy, file, .. } = call else {
+            return Err(VoomError::plugin(
+                self.name(),
+                format!(
+                    "PolicyEvaluatorPlugin only handles Call::EvaluatePolicy, got {:?}",
+                    std::mem::discriminant(call)
+                ),
+            ));
+        };
+        let result = self.evaluate(policy, file)?;
+        Ok(CallResponse::EvaluatePolicy(result))
     }
 }
 ```
@@ -304,12 +313,18 @@ Each `Capability` variant declares its resolution discipline via
 - **Shared** — any plugin may claim; the caller picks one explicitly (rare;
   reserved for future use).
 
-A plugin claims a capability by returning it from `Plugin::capabilities()`:
+A plugin claims one or more capabilities by returning them from
+`Plugin::capabilities()`. The trait returns `&[Capability]`, so plugins
+typically store the claim list in a field set up by `new()`:
 
 ```rust
+pub struct PhaseOrchestratorPlugin {
+    capabilities: Vec<Capability>,
+}
+
 impl Plugin for PhaseOrchestratorPlugin {
-    fn capabilities(&self) -> Vec<Capability> {
-        vec![Capability::OrchestratePhases]
+    fn capabilities(&self) -> &[Capability] {
+        &self.capabilities
     }
 }
 ```
