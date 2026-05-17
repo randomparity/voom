@@ -407,9 +407,18 @@ Defaults: keep for 30 days, keep last 100,000 rows.
 **Coverage:** Every kernel-registered plugin appears in the rollup after the
 plugin contract rev-6 migration (#378). Both event subscribers (timed via
 `on_event`) and unary/streaming RPC handlers (timed via `on_call`) feed the
-same kernel-owned stats sink, so `discovery`, `policy-evaluator`, and
-`phase-orchestrator` all show rows after a representative `voom scan` or
-`voom process` run.
+same kernel-owned stats sink. Which plugin_ids appear after a given run
+depends on which Calls that command dispatches:
+
+- `voom scan` dispatches `Call::ScanLibrary`, producing rows for
+  `discovery` plus any subscriber that observes scan-time events (e.g.
+  `sqlite-store`). It does **not** invoke the evaluator or orchestrator,
+  so those rows will be absent.
+- `voom process` against a file that introspects successfully additionally
+  dispatches `Call::EvaluatePolicy` and `Call::Orchestrate`, producing
+  rows for `policy-evaluator` and `phase-orchestrator`. Files that fail
+  introspection short-circuit before those Calls, so their per-file
+  contribution to the rollup will lack evaluator and orchestrator rows.
 
 ---
 
