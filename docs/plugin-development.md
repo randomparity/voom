@@ -391,6 +391,16 @@ interface host {
 
 ### Implementation
 
+> **Capability and identity routing for WASM plugins comes from the
+> manifest TOML, not from `Guest::get_info`.** The kernel loads
+> `name`, `version`, the capability claim list, and the
+> `handles_events` filter from the `<plugin-name>.toml` file that
+> sits beside the `.wasm` artifact (`crates/voom-kernel/src/loader.rs`).
+> `Guest::get_info` and `Guest::handles` are part of the WIT contract
+> but the kernel does not call them today — they exist for forward
+> compatibility. Keep the manifest as your source of truth; treat the
+> `PluginInfo` returned from `get_info` as a stub.
+
 **`src/lib.rs`:**
 
 ```rust
@@ -405,24 +415,24 @@ wit_bindgen::generate!({
 struct MyWasmPlugin;
 
 impl Guest for MyWasmPlugin {
+    // The kernel does not invoke `get_info`. Identity and capabilities
+    // are loaded from the manifest TOML below. Return a minimal stub.
     fn get_info() -> PluginInfo {
         PluginInfo {
             name: "my-wasm-plugin".to_string(),
             version: "0.1.0".to_string(),
-            description: Some("My custom metadata enrichment plugin".to_string()),
+            description: None,
             author: None,
-            license: Some("MIT".to_string()),
+            license: None,
             homepage: None,
-            capabilities: vec![
-                Capability::EnrichMetadata(EnrichCap {
-                    source: "my-source".to_string(),
-                }),
-            ],
+            capabilities: vec![],
         }
     }
 
-    fn handles(event_type: String) -> bool {
-        event_type == "file.introspected"
+    // Not invoked by the kernel today — the per-event filter is
+    // `manifest.handles_events`. Returning false here is harmless.
+    fn handles(_event_type: String) -> bool {
+        false
     }
 
     fn on_event(event: EventData) -> Option<EventResult> {
