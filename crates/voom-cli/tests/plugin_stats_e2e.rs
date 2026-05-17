@@ -494,15 +494,20 @@ async fn event_log_contains_no_call_payloads_after_process() {
         );
     }
 
-    // `event_type LIKE 'call.%'` is the generic invariant; specific Call
-    // variant payload patterns would rot the moment a new Call variant
-    // landed without updating the test.
+    // Two regression classes to catch, both kept generic so a new `Call`
+    // variant never silently bypasses the guard:
+    //   1. event_type LIKE 'call.%' — a plugin re-emits a Call as an event.
+    //   2. payload LIKE '%"call.%'  — a Call's debug-format string leaks
+    //      into the payload of any legitimate event (e.g. a PluginError
+    //      that includes the Call in its message).
     let db_path = env.db_path();
     let conn = rusqlite::Connection::open(&db_path)
         .unwrap_or_else(|e| panic!("open {}: {e}", db_path.display()));
     let call_event_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM event_log WHERE event_type LIKE 'call.%'",
+            "SELECT COUNT(*) FROM event_log
+             WHERE event_type LIKE 'call.%'
+                OR payload LIKE '%\"call.%'",
             [],
             |row| row.get(0),
         )
