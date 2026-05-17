@@ -121,7 +121,7 @@ tracing-test = "0.2"
 wasmtime = { version = "44", features = ["component-model"] }
 
 # Config
-toml = "0.9"
+toml = "1.1"
 
 # Database
 rusqlite = { version = "0.31", features = ["bundled"] }
