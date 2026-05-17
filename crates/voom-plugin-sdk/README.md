@@ -107,7 +107,9 @@ author = "Me"
 license = "MIT"
 homepage = "https://example.com/my-plugin"
 
-# Events the plugin subscribes to (drives Plugin::handles in the host).
+# Events the plugin subscribes to. The host uses this list (not the
+# WASM module's WIT handles export) to decide which events to forward
+# into the module's on-event entry point.
 handles_events = ["file.introspected"]
 
 # Capability claims (drives Plugin::capabilities → routing for Calls).
@@ -146,14 +148,16 @@ sketches that demonstrate the SDK helper types but do not include the
 `wit_bindgen::generate!` / `export!` lines and so do not produce
 loadable `.wasm` artifacts as-is.)
 
-The `Guest` trait has four methods that map to the WIT contract:
+The `Guest` trait has four methods that map to the WIT contract. Only
+two are invoked by the kernel today; the other two exist in the contract
+but are satisfied entirely by the manifest TOML:
 
 | WIT export                                  | Guest method   | What the host does with the return |
 | ------------------------------------------- | -------------- | --- |
-| `get-info: func() -> plugin-info`           | `get_info`     | not invoked by the kernel today; capabilities come from the manifest |
-| `handles: func(event-type) -> bool`         | `handles`      | per-event filter for `on-event` dispatch |
-| `on-event: func(event-data) -> option<...>` | `on_event`     | event payload + optional produced events |
-| `on-call: func(list<u8>) -> result<...>`    | `on_call`      | MessagePack-encoded `CallResponse` or error string |
+| `get-info: func() -> plugin-info`           | `get_info`     | not invoked; identity and capabilities come from the manifest |
+| `handles: func(event-type) -> bool`         | `handles`      | not invoked; the per-event filter is `manifest.handles_events` |
+| `on-event: func(event-data) -> option<...>` | `on_event`     | called for each event the manifest opted into; returns optional produced events |
+| `on-call: func(list<u8>) -> result<...>`    | `on_call`      | called when the kernel routes a Call to this plugin; returns MessagePack `CallResponse` bytes or error string |
 
 A minimal implementation that uses SDK helpers for the Call boundary:
 
@@ -185,6 +189,8 @@ impl Guest for MyPlugin {
         }
     }
 
+    // handles is also unused by the kernel today; the per-event filter
+    // is `manifest.handles_events`. Returning false here is harmless.
     fn handles(_event_type: String) -> bool { false }
 
     fn on_event(_event: EventData) -> Option<EventResult> { None }
