@@ -80,42 +80,74 @@ cancellation via `cancel.is_cancelled()`. See `docs/architecture.md`
 `Cargo.toml` dependencies: `voom-plugin-sdk`, `wit-bindgen`. WIT files
 live in `crates/voom-wit/wit/`.
 
-WASM plugins do not implement `voom_kernel::Plugin`. They implement the
-WIT-generated `Guest` trait and decode/encode the WASM-safe mirror of
-`Call` (`WasmCall`) at the `on-call` boundary. `WasmCall` omits the
-non-serde fields (`sink`, `root_done`, `cancel`) — those are host-only;
-streaming emission goes through host imports.
+WASM plugins do not implement `voom_kernel::Plugin`. They expose three
+free functions — `get_info`, `handles`, `on_event`, and (for plugins
+that claim a Call-handling capability) an `on_call` — and the
+SDK-driven `wit_bindgen::generate!` + `export!` wiring connects them to
+the WIT `Guest` exports. The shape that matches the in-tree
+`wasm-plugins/example-metadata` and `wasm-plugins/radarr-metadata`
+templates:
 
 ```rust
 use voom_plugin_sdk::{
-    WasmCall, CallResponse,
-    decode_call, encode_response,
+    Capability, Event, HostFunctions, OnEventResult, PluginInfoData,
+    WasmCall, CallResponse, decode_call, encode_response,
 };
 
-wit_bindgen::generate!({
-    world: "voom-plugin",
-    path: "path/to/voom-wit/wit",
-});
-
-struct MyPlugin;
-
-impl Guest for MyPlugin {
-    fn on_call(call_bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-        let call = decode_call(&call_bytes)?;
-        let response = match call {
-            WasmCall::EvaluatePolicy { policy, file, .. } => {
-                let result = evaluate(&policy, &file)
-                    .map_err(|e| e.to_string())?;
-                CallResponse::EvaluatePolicy(result)
-            }
-            other => return Err(format!("unhandled WasmCall: {other:?}")),
-        };
-        encode_response(&response)
-    }
+// Identity + capability claim. Capabilities are the same
+// `voom_domain::capabilities::Capability` enum the native side uses,
+// re-exported from voom-plugin-sdk.
+pub fn get_info() -> PluginInfoData {
+    PluginInfoData::new(
+        "my-plugin",
+        "0.1.0",
+        vec![Capability::EnrichMetadata { source: "my-plugin".into() }],
+    )
+    .with_description("Example metadata enrichment plugin")
+    .with_license("MIT")
 }
 
-export!(MyPlugin);
+pub fn handles(event_type: &str) -> bool {
+    event_type == Event::FILE_INTROSPECTED
+}
+
+pub fn on_event(
+    event_type: &str,
+    payload: &[u8],
+    host: &dyn HostFunctions,
+) -> Option<OnEventResult> {
+    // ... see wasm-plugins/example-metadata for a worked example.
+    let _ = (event_type, payload, host);
+    None
+}
 ```
+
+### Handling Calls in WASM
+
+For plugins that claim a Call-handling capability, decode the host-supplied
+bytes into the WASM-safe mirror `WasmCall`, do the work, then encode the
+`CallResponse`. `WasmCall` omits the non-serde fields (`sink`, `root_done`,
+`cancel`) — those are host-only; streaming emission goes through host
+imports (see below).
+
+```rust
+pub fn on_call(call_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let call = decode_call(call_bytes)?;
+    let response = match call {
+        WasmCall::EvaluatePolicy { policy, file, .. } => {
+            let result = evaluate(&policy, &file)
+                .map_err(|e| e.to_string())?;
+            CallResponse::EvaluatePolicy(result)
+        }
+        other => return Err(format!("unhandled WasmCall: {other:?}")),
+    };
+    encode_response(&response)
+}
+```
+
+The `wit_bindgen::generate!` + `export!` block that wires `get_info`,
+`handles`, `on_event`, and `on_call` to the WIT `Guest` exports is the
+final step; see the example plugin sources for the boilerplate.
 
 ### Streaming Calls (WASM)
 
@@ -142,11 +174,14 @@ The underlying WIT contract — `on-call`, `emit-call-item`,
 
 ## Capabilities
 
-Both tiers claim capabilities via the same `voom_domain::capabilities::Capability`
-enum:
+Both tiers claim capabilities via the same
+`voom_domain::capabilities::Capability` enum (re-exported from
+`voom_plugin_sdk` for WASM authors):
 
 - **Native** — return them from `Plugin::capabilities() -> &[Capability]`.
-- **WASM** — list them in the `PluginInfo` returned by `Guest::get_info()`.
+- **WASM** — pass them as the third argument to `PluginInfoData::new`
+  inside your `get_info()` free function (the SDK forwards them through
+  the WIT `plugin-info.capabilities` field).
 
 Each capability has a resolution discipline
 (`voom_domain::capability_resolution::CapabilityResolution`): `Exclusive`
