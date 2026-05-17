@@ -460,6 +460,15 @@ async fn process_records_stats_rows_for_discovery_evaluator_orchestrator() {
 /// emission from inside a plugin's `on_call` path: the kernel maps `Call`
 /// variants to `call.<variant>` strings only as a debug formatting aid, and
 /// none of those strings should ever survive into `event_log`.
+///
+/// The test uses the real Matroska fixture and asserts on
+/// `outcome.result.is_ok()` plus the presence of `policy-evaluator` and
+/// `phase-orchestrator` rows in `plugin_stats` BEFORE checking `event_log`.
+/// Those preconditions are not decoration — they prove the calls actually
+/// ran during this run. A previous version of this test used synthetic
+/// bytes that failed ffprobe before evaluator/orchestrator were ever
+/// dispatched, which made the absence assertion vacuous (Codex adversarial
+/// review).
 #[tokio::test]
 async fn event_log_contains_no_call_payloads_after_process() {
     let _lock = TEST_LOCK.lock().await;
@@ -470,7 +479,7 @@ async fn event_log_contains_no_call_payloads_after_process() {
             phase init { container mkv }
         }"#,
     );
-    env.write_media("clip.mkv", 32);
+    copy_real_mkv_fixture(&env.root().join("clip.mkv"));
 
     let policy_path = env
         .policy_path()
@@ -479,15 +488,41 @@ async fn event_log_contains_no_call_payloads_after_process() {
         .to_string();
     let root = env.root().to_str().expect("utf-8 root").to_string();
 
-    let _outcome = env
+    let outcome = env
         .run_process(&[&root, "--policy", &policy_path, "--dry-run", "--no-backup"])
         .await;
+    outcome.result.as_ref().unwrap_or_else(|e| {
+        panic!(
+            "voom process must succeed so evaluator and orchestrator are actually \
+             dispatched; otherwise the event_log absence assertion below is vacuous: {e:#}"
+        )
+    });
 
     tokio::time::sleep(Duration::from_millis(2000)).await;
 
     let db_path = env.db_path();
     let conn = rusqlite::Connection::open(&db_path)
         .unwrap_or_else(|e| panic!("open {}: {e}", db_path.display()));
+
+    // Precondition: prove the Call paths we're guarding actually ran during
+    // this run. Without these rows, the event_log absence assertion below
+    // would still pass on a regression that re-emits Calls as events,
+    // because the regression simply wouldn't be exercised.
+    let names_seen: Vec<String> = conn
+        .prepare("SELECT DISTINCT plugin_id FROM plugin_stats")
+        .expect("prepare distinct plugin_id query")
+        .query_map([], |row| row.get(0))
+        .expect("execute distinct plugin_id query")
+        .map(|r| r.expect("read plugin_id row"))
+        .collect();
+    for required in ["policy-evaluator", "phase-orchestrator"] {
+        assert!(
+            names_seen.iter().any(|n| n == required),
+            "precondition: this guard test is meaningful only if the {required} \
+             Call actually ran; saw plugin_ids: {names_seen:?}"
+        );
+    }
+
     let call_event_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM event_log
