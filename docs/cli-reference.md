@@ -404,24 +404,12 @@ Stats are persisted to the `plugin_stats` SQLite table with retention managed
 by the same `[retention.plugin_stats]` config section as other tables (PR #170).
 Defaults: keep for 30 days, keep last 100,000 rows.
 
-**Note (coverage):** Only plugins that *subscribe* to events appear in
-the rollup. Two kinds of code are missing for distinct reasons:
-
-- `discovery` is a kernel-registered plugin that publishes
-  `FileDiscovered` but does not subscribe to anything, so the
-  dispatcher never observes it.
-- `phase-orchestrator` and `policy-evaluator` are not plugins at all —
-  they are library-only crates the CLI calls directly. The
-  corresponding `Plan*` events come from the CLI's `PlanDispatcher`,
-  not from those crates.
-
-This is an intentional design boundary for Deliverable 1 of #92; see
-[Bus dispatcher instrumentation — Coverage: subscribers only][arch] in
-the architecture docs for the rationale and the path to full coverage
-via Prometheus / OpenTelemetry (Deliverables 2 and 3). Tracked as
-follow-up #378.
-
-[arch]: ../docs/architecture.md#coverage-subscribers-only
+**Coverage:** Every kernel-registered plugin appears in the rollup after the
+plugin contract rev-6 migration (#378). Both event subscribers (timed via
+`on_event`) and unary/streaming RPC handlers (timed via `on_call`) feed the
+same kernel-owned stats sink, so `discovery`, `policy-evaluator`, and
+`phase-orchestrator` all show rows after a representative `voom scan` or
+`voom process` run.
 
 ---
 

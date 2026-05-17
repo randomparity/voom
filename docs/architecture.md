@@ -29,10 +29,10 @@ VOOM (Video Orchestration Operations Manager) is a policy-driven video library m
 │   MKVToolNix ───── FFmpeg ──────────── Backup                  │
 │   Job Manager ──── Introspection ───── Bus Tracer              │
 │   Health ───────── Capabilities ────── Report                  │
+│   Phase Orchestrator ── Policy Evaluator                       │
 │                                                                │
-│     Native Plugins — Library-Only (called directly by CLI)     │
+│     Native Plugins — Library-Only (started by `serve` command) │
 │                                                                │
-│   Evaluator ────── Orchestrator                                │
 │   Web Server                                                   │
 ├────────────────────────────────────────────────────────────────┤
 │            WASM Plugins (loaded at runtime via wasmtime)       │
@@ -124,7 +124,7 @@ pub trait Plugin: Send + Sync {
 }
 ```
 
-Plugins that participate in event-driven coordination override `handles()` and `on_event()`. Library-only plugins (policy-evaluator, phase-orchestrator, web-server) are called directly by the CLI and are not registered with the kernel — they don't participate in event dispatch.
+Plugins that participate in event-driven coordination override `handles()` and `on_event()`. Plugins that handle capability-routed RPCs override `on_call()` and return the relevant `Capability` from `capabilities()` — see [Communication primitives — Events vs Calls](#communication-primitives--events-vs-calls) and [Capability-based routing](#capability-based-routing) below. The `web-server` is the remaining library-only plugin: it is started by `voom serve` and is not registered with the kernel during one-shot CLI runs.
 
 The ffprobe-introspector is both kernel-registered (subscribes to `FileDiscovered` to enqueue introspection jobs) and called directly by the CLI (for deterministic progress reporting). The bus-tracer is a development tool that logs events to a file with configurable glob-pattern filtering.
 
@@ -175,7 +175,7 @@ pub enum Capability {
 }
 ```
 
-Capabilities are used for plugin registration and discovery. Currently, executor routing uses priority-ordered event dispatch: when a `PlanCreated` event is published, the first executor that claims it (via `EventResult.claimed`) handles the plan. Capability-based routing is planned for a future sprint; the registry currently uses name-based lookup only.
+Capabilities are used for plugin registration and discovery. Currently, executor routing uses priority-ordered event dispatch: when a `PlanCreated` event is published, the first executor that claims it (via `EventResult.claimed`) handles the plan. Capability-based routing is now first-class for unary and streaming RPCs — see [Capability-based routing](#capability-based-routing) below. Executor selection for `PlanCreated` still uses priority-ordered event dispatch; converting the executors to capability-routed `on_call` is tracked separately.
 
 ## Event Bus
 
@@ -206,44 +206,119 @@ Events are published to all subscribed plugins, ordered by priority (lower = run
 
 ### Bus dispatcher instrumentation
 
-Every plugin invocation is timed by the dispatcher and forwarded to a
-`StatsSink` (issue #92). The default sink (`NoopStatsSink`) discards records;
-the CLI wires `SqliteStatsSink` to persist to the `plugin_stats` table.
-Records carry `plugin_id`, `event_type`, `started_at`, `duration_ms`, and an
-`outcome` of `ok` / `skipped` / `err{category}` / `panic`. Records are
+Every plugin invocation that flows through the kernel — whether the kernel
+calls `Plugin::on_event` (event subscribers) or `Plugin::on_call` (unary and
+streaming RPCs routed via `dispatch_to_capability`) — is timed and recorded as
+one `PluginStatRecord`. The stats sink is kernel-internal; plugins have no
+write API. Outcomes are classified `Ok` / `Err` / `Panic`. Coverage is
+complete: pure publishers like `discovery` are now kernel-registered plugins
+whose work happens inside `on_call(Call::ScanLibrary)`, and offline callees
+like `policy-evaluator` and `phase-orchestrator` are kernel-registered with
+`on_call(Call::EvaluatePolicy)` and `on_call(Call::Orchestrate)`
+respectively. The default sink (`NoopStatsSink`) discards records; the CLI
+wires `SqliteStatsSink` to persist to the `plugin_stats` table. Records are
 written in background batches and dropped if the bounded channel overflows —
 the bus must not block.
 
-#### Coverage: subscribers only
+### Communication primitives — Events vs Calls
 
-The dispatcher instruments only plugins that subscribe to events
-through the bus — its instrumentation point is the
-`Plugin::on_event(...)` invocation. Two distinct kinds of code emit
-events but never enter that path, and their absence from
-`plugin_stats` is for two different reasons:
+The kernel supports three primitives, each suited to a different interaction
+shape:
 
-- **Kernel-registered no-subscriber plugins.** `discovery` is a
-  registered plugin whose `handles()` returns `false` for every event,
-  so the dispatcher never calls `on_event` on it. It emits
-  `FileDiscovered` events via `kernel.dispatch(...)` from within its
-  own scan loop. This is the textbook "publisher-only plugin" case:
-  the work *is* a plugin invocation, just not one the dispatcher
-  observes.
-- **Library-only callees.** `phase-orchestrator` and `policy-evaluator`
-  are not registered with the kernel at all (see
-  [Two-Tier Plugin Model](#two-tier-plugin-model)). The CLI calls them
-  directly; the corresponding `PlanCreated` / `PlanExecuting` /
-  `PlanCompleted` events are dispatched by the CLI's `PlanDispatcher`,
-  not by the libraries themselves. There is no plugin invocation to
-  attribute time to.
+**Event broadcast (pub/sub).** Plugins emit events via
+`kernel.dispatch(Event::*)`. Every subscriber receives a copy in priority
+order. The event author does not know — and cannot influence — who handles
+it. Best for one-to-many notifications (`FileDiscovered`, `PlanCompleted`,
+`JobStarted`). Subscribers implement `Plugin::on_event` and declare interest
+via `Plugin::handles`.
 
-For end-to-end visibility across both kinds of gap, use the
-Deliverable-2 (Prometheus `/metrics`) and Deliverable-3
-(OpenTelemetry) exporters that #92 builds toward. Issue #378 records
-the decision to leave Deliverable 1 scoped to dispatcher-observed
-subscribers; a future host-API issue can revisit a plugin
-self-reporting primitive if `discovery`-class coverage gaps become a
-measured operational pain point.
+**Unary Call.** A request-response RPC dispatched to whichever plugin claims
+the matching `Capability`. The caller gets exactly one `CallResponse` (or an
+error). Best for "I need *the* policy evaluator to evaluate this file":
+
+```rust
+let response = kernel.dispatch_to_capability(
+    CapabilityQuery::Single(Capability::EvaluatePolicy),
+    Call::EvaluatePolicy {
+        policy: Box::new(compiled),
+        file: Box::new(media_file),
+        phase: None,
+        phase_outputs: None,
+        phase_outcomes: None,
+        capabilities_override: None,
+    },
+)?;
+let CallResponse::EvaluatePolicy(eval_result) = response else { unreachable!() };
+```
+
+Implemented in the plugin via `on_call`:
+
+```rust
+impl Plugin for PolicyEvaluatorPlugin {
+    fn on_call(&self, call: Call) -> Result<CallResponse> {
+        match call {
+            Call::EvaluatePolicy { policy, file, .. } => {
+                let result = self.evaluate(*policy, *file)?;
+                Ok(CallResponse::EvaluatePolicy(result))
+            }
+            other => bail!("policy-evaluator does not handle {:?}", call_kind(&other)),
+        }
+    }
+}
+```
+
+**Streaming Call.** A long-lived RPC that emits items through a host-provided
+`mpsc::Sender` while running. Best when the producer's output is unbounded or
+the consumer wants backpressure (`Call::ScanLibrary` streams
+`FileDiscoveredEvent`s through `sink: mpsc::Sender<FileDiscoveredEvent>` so a
+saturated CLI consumer blocks the plugin's `blocking_send`). Cancellation
+flows the opposite direction via `CancellationToken`. WASM plugins use
+`emit-call-item` (host import) to enqueue items.
+
+**Why three?** Event broadcast loses the response. Unary Call doesn't fit
+producers whose output is the work. Streaming Call adds the per-item channel
+without the breadth-first cost of broadcast.
+
+### Capability-based routing
+
+`Kernel::dispatch_to_capability(query, call)` resolves the routing target at
+call time rather than baking handler identity into the caller:
+
+```rust
+pub fn dispatch_to_capability(
+    &self,
+    query: CapabilityQuery,
+    call: Call,
+) -> Result<CallResponse>
+```
+
+Each `Capability` variant declares its resolution discipline via
+`Capability::resolution()`:
+
+- **Exclusive** — at most one registered plugin may claim it. Registration
+  fails with a duplicate-claim error if two plugins both declare the same
+  Exclusive capability. Used by `EvaluatePolicy`, `OrchestratePhases`, and
+  `ScanLibrary`. The kernel routes the call to the single claimant.
+- **Sharded** — multiple plugins claim disjoint shards (e.g. one executor per
+  codec family). The kernel routes on a shard key the caller supplies.
+- **Shared** — any plugin may claim; the caller picks one explicitly (rare;
+  reserved for future use).
+
+A plugin claims a capability by returning it from `Plugin::capabilities()`:
+
+```rust
+impl Plugin for PhaseOrchestratorPlugin {
+    fn capabilities(&self) -> Vec<Capability> {
+        vec![Capability::OrchestratePhases]
+    }
+}
+```
+
+The kernel enforces uniqueness at `Registry::register` and surfaces
+violations as an actionable error with the colliding plugin names.
+`Registry::get_typed::<P>()` is available for the rare case where a caller
+wants the concrete plugin handle rather than a routed call (used internally
+by some test fixtures).
 
 ### Retention invariants
 
