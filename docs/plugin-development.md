@@ -391,6 +391,16 @@ interface host {
 
 ### Implementation
 
+> **Capability and identity routing for WASM plugins comes from the
+> manifest TOML, not from `Guest::get_info`.** The kernel loads
+> `name`, `version`, the capability claim list, and the
+> `handles_events` filter from the `<plugin-name>.toml` file that
+> sits beside the `.wasm` artifact (`crates/voom-kernel/src/loader.rs`).
+> `Guest::get_info` and `Guest::handles` are part of the WIT contract
+> but the kernel does not call them today — they exist for forward
+> compatibility. Keep the manifest as your source of truth; treat the
+> `PluginInfo` returned from `get_info` as a stub.
+
 **`src/lib.rs`:**
 
 ```rust
@@ -405,24 +415,24 @@ wit_bindgen::generate!({
 struct MyWasmPlugin;
 
 impl Guest for MyWasmPlugin {
+    // The kernel does not invoke `get_info`. Identity and capabilities
+    // are loaded from the manifest TOML below. Return a minimal stub.
     fn get_info() -> PluginInfo {
         PluginInfo {
             name: "my-wasm-plugin".to_string(),
             version: "0.1.0".to_string(),
-            description: Some("My custom metadata enrichment plugin".to_string()),
+            description: None,
             author: None,
-            license: Some("MIT".to_string()),
+            license: None,
             homepage: None,
-            capabilities: vec![
-                Capability::EnrichMetadata(EnrichCap {
-                    source: "my-source".to_string(),
-                }),
-            ],
+            capabilities: vec![],
         }
     }
 
-    fn handles(event_type: String) -> bool {
-        event_type == "file.introspected"
+    // Not invoked by the kernel today — the per-event filter is
+    // `manifest.handles_events`. Returning false here is harmless.
+    fn handles(_event_type: String) -> bool {
+        false
     }
 
     fn on_event(event: EventData) -> Option<EventResult> {
@@ -553,10 +563,20 @@ mod tests {
         file
     }
 
+    // There is no `test_handles` here: the kernel never invokes
+    // Guest::handles for WASM plugins. The per-event filter is the
+    // manifest's `handles_events` list. Test what your on_event
+    // actually does with each event type instead.
+
     #[test]
-    fn test_handles() {
-        assert!(handles("file.introspected"));
-        assert!(!handles("plan.created"));
+    fn test_on_event_ignores_unsubscribed_event_type() {
+        let event = Event::PlanCreated(/* …minimal fixture… */);
+        let payload = serialize_event(&event).unwrap();
+        let result = MyWasmPlugin::on_event(EventData {
+            event_type: event.event_type().to_string(),
+            payload,
+        });
+        assert!(result.is_none(), "plan.created is not in handles_events");
     }
 
     #[test]
@@ -751,7 +771,7 @@ For the WASM boundary, capabilities are encoded as colon-separated strings:
 
 5. **Test without WASM** — Write your plugin logic as regular Rust functions and test them with standard `#[test]`. Only the WIT bindings require the WASM target.
 
-6. **Keep manifests accurate** — The manifest's `handles_events` must match what your `handles()` function returns. The manifest is read before the plugin is loaded.
+6. **Keep manifests accurate** — For WASM plugins, the manifest's `handles_events` is what the host uses to filter event dispatch (the WIT `handles` export is not invoked). List every event type your `on_event` actually consumes; an event missing from `handles_events` will never reach your plugin. For native plugins, the kernel calls `Plugin::handles` directly, so the trait method is authoritative.
 
 7. **WASM plugins are sandboxed** — You cannot access the filesystem, network, or environment directly. All external access goes through host functions.
 

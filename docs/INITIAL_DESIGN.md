@@ -1597,3 +1597,22 @@ voom
 | **Plan** | Execution plan: list of actions to perform on a file. Produced by evaluator, consumed by executors. |
 | **Phase** | Named stage in a policy pipeline. Phases execute sequentially with optional skip/dependency conditions. |
 | **Event** | Typed enum variant published to the event bus. Plugins subscribe by event type string. |
+
+---
+
+## 16. Addendum — Plugin contract rev-6 (#378)
+
+The original design (sections 1–15 above) described two plugin tiers:
+kernel-registered plugins invoked via `Plugin::on_event` and library-only
+crates the CLI called directly. The rev-6 contract collapses this
+distinction. All former library-only crates (`discovery`,
+`policy-evaluator`, `phase-orchestrator`) are now kernel-registered and
+invoked via `Kernel::dispatch_to_capability`. The kernel exposes three
+communication primitives — event broadcast, unary Call, streaming Call —
+and times every invocation through the shared stats sink.
+
+The full design rationale, including `Call` / `CallResponse` shape,
+capability resolution discipline, and the WASM `on-call` ABI, lives in
+`docs/superpowers/specs/2026-05-14-plugin-stats-self-reporting-design.md`.
+See `docs/architecture.md` ("Communication primitives — Events vs Calls"
+and "Capability-based routing") for the runtime view.

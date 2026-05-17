@@ -17,7 +17,7 @@ use voom_domain::plugin_stats::PluginStatsFilter;
 use voom_domain::storage::PluginStatsStorage;
 use voom_sqlite_store::store::SqliteStore;
 
-use common::{EnvOverride, TestEnv};
+use common::{EnvOverride, ProcessOutcome, TestEnv};
 
 // All tests in this file manipulate `XDG_CONFIG_HOME` via std::env::set_var.
 // That is not safe to do concurrently. Serialize with this mutex.
@@ -376,5 +376,145 @@ async fn process_dry_run_populates_policy_evaluator_stats_row() {
          dry-run process; the CLI dispatches Call::EvaluatePolicy through \
          Kernel::dispatch_to_capability which records the resolved plugin id \
          (#378 Phase 4). Got {evaluator_count} rows."
+    );
+}
+
+// ─── Phase 6 acceptance: full kernel-registered coverage ─────────────────────
+
+/// Copy the bundled `distorted.mkv` fixture (a real, ffprobe-readable Matroska
+/// file under 16 KiB) into the given destination. Synthetic bytes fail
+/// ffprobe, which short-circuits the process pipeline before evaluator and
+/// orchestrator Calls are dispatched — so any Phase 6 test that needs those
+/// Calls to actually run must seed with a real Matroska file.
+fn copy_real_mkv_fixture(dest: &std::path::Path) {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = std::path::Path::new(manifest_dir)
+        .join("../../plugins/ffmpeg-executor/tests/fixtures/vmaf/distorted.mkv");
+    let src = src
+        .canonicalize()
+        .unwrap_or_else(|e| panic!("canonicalize {}: {e}", src.display()));
+    std::fs::copy(&src, dest).unwrap_or_else(|e| {
+        panic!(
+            "copy real mkv fixture {} -> {}: {e}",
+            src.display(),
+            dest.display()
+        )
+    });
+}
+
+/// Drive a `voom process --dry-run --no-backup` against a single-phase policy
+/// seeded with the real Matroska fixture. Returns the full `ProcessOutcome`
+/// so callers can assert on `result` when their invariant requires the run
+/// to have succeeded.
+async fn run_phase6_dry_run(env: &mut TestEnv, policy_name: &str) -> ProcessOutcome {
+    env.set_policy(&format!(
+        r#"policy "{policy_name}" {{ phase init {{ container mkv }} }}"#
+    ));
+    copy_real_mkv_fixture(&env.root().join("clip.mkv"));
+    let policy_path = env
+        .policy_path()
+        .to_str()
+        .expect("utf-8 policy path")
+        .to_string();
+    let root = env.root().to_str().expect("utf-8 root").to_string();
+    env.run_process(&[&root, "--policy", &policy_path, "--dry-run", "--no-backup"])
+        .await
+}
+
+/// Read the set of distinct `plugin_id` values currently in `plugin_stats`
+/// via the storage trait (the same query path the file's first test uses).
+fn distinct_plugin_ids(env: &TestEnv) -> Vec<String> {
+    let filter = PluginStatsFilter::new(None, None, None);
+    open_store(env)
+        .rollup_plugin_stats(&filter)
+        .expect("rollup_plugin_stats")
+        .into_iter()
+        .map(|r| r.plugin_id)
+        .collect()
+}
+
+/// After rev-6, every kernel-registered plugin invoked by `voom process`
+/// produces at least one `plugin_stats` row. The `phase-orchestrator` row in
+/// particular requires introspection to succeed (its only entry point is
+/// `on_call(Call::Orchestrate)`), so the test seeds with the real Matroska
+/// fixture rather than synthetic bytes.
+#[tokio::test]
+async fn process_records_stats_rows_for_discovery_evaluator_orchestrator() {
+    let _lock = TEST_LOCK.lock().await;
+    let mut env = TestEnv::new().await;
+
+    let _outcome = run_phase6_dry_run(&mut env, "phase6-coverage-fixture").await;
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    let names_seen = distinct_plugin_ids(&env);
+    for required in voom_cli::config::REQUIRED_PLUGIN_NAMES {
+        assert!(
+            names_seen.iter().any(|n| n == required),
+            "plugin_stats must include row for {required} after `voom process`; \
+             saw plugin_ids: {names_seen:?}"
+        );
+    }
+}
+
+/// Call dispatches are RPC, not broadcast — they must not appear in
+/// `event_log`. The test asserts that `policy-evaluator` and
+/// `phase-orchestrator` rows are present in `plugin_stats` first, so the
+/// absence assertion below is meaningful: a regression that re-emits Calls
+/// as events would otherwise produce a vacuous pass on a fixture that
+/// short-circuited before those Calls ran.
+#[tokio::test]
+async fn event_log_contains_no_call_payloads_after_process() {
+    let _lock = TEST_LOCK.lock().await;
+    let mut env = TestEnv::new().await;
+
+    let outcome = run_phase6_dry_run(&mut env, "phase6-event-log-fixture").await;
+    outcome.result.as_ref().unwrap_or_else(|e| {
+        panic!(
+            "voom process must succeed so evaluator and orchestrator are actually \
+             dispatched; otherwise the event_log absence assertion below is vacuous: {e:#}"
+        )
+    });
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+
+    // Precondition: prove the Call paths we're guarding actually ran. Without
+    // these rows, the event_log absence check would pass even on a regression
+    // that re-emits Calls as events, because the regression wouldn't be
+    // exercised.
+    let names_seen = distinct_plugin_ids(&env);
+    for required in voom_cli::config::REQUIRED_PLUGIN_NAMES
+        .iter()
+        .filter(|n| **n != "discovery")
+    {
+        assert!(
+            names_seen.iter().any(|n| n == required),
+            "precondition: this guard test is meaningful only if the {required} \
+             Call actually ran; saw plugin_ids: {names_seen:?}"
+        );
+    }
+
+    // Two regression classes to catch, both kept generic so a new `Call`
+    // variant never silently bypasses the guard:
+    //   1. event_type LIKE 'call.%' — a plugin re-emits a Call as an event.
+    //   2. payload LIKE '%"call.%'  — a Call's debug-format string leaks
+    //      into the payload of any legitimate event (e.g. a PluginError
+    //      that includes the Call in its message).
+    let db_path = env.db_path();
+    let conn = rusqlite::Connection::open(&db_path)
+        .unwrap_or_else(|e| panic!("open {}: {e}", db_path.display()));
+    let call_event_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM event_log
+             WHERE event_type LIKE 'call.%'
+                OR payload LIKE '%\"call.%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count call-shaped event_log rows");
+    assert_eq!(
+        call_event_count, 0,
+        "Call dispatches must never appear in event_log; found \
+         {call_event_count} call-shaped rows"
     );
 }
